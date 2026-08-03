@@ -1,5 +1,16 @@
 # @sentientui/react
 
+## 0.18.2
+
+### Patch Changes
+
+- 8ecd00f: Point `repository` metadata at the public source mirror (`github.com/SentientUI/sdk`)
+  so the "Repository" link on npm resolves, and add a `bugs` URL for issue reporting.
+  No runtime changes.
+- Updated dependencies [8ecd00f]
+  - @sentientui/core@0.16.7
+  - @sentientui/policy@0.3.3
+
 ## 0.18.1
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@sentientui/policy",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": false,
   "description": "Pure decision-policy functions shared by the SentientUI API and the keyless local engine",
   "license": "MIT",

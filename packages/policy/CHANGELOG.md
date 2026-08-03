@@ -1,5 +1,13 @@
 # @sentientui/policy
 
+## 0.3.3
+
+### Patch Changes
+
+- 8ecd00f: Point `repository` metadata at the public source mirror (`github.com/SentientUI/sdk`)
+  so the "Repository" link on npm resolves, and add a `bugs` URL for issue reporting.
+  No runtime changes.
+
 ## 0.3.2
 
 ### Patch Changes
