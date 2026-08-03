@@ -1,0 +1,88 @@
+{
+  "name": "@sentientui/core",
+  "version": "0.16.6",
+  "private": false,
+  "license": "MIT",
+  "sideEffects": false,
+  "description": "SentientUI core SDK — the framework-agnostic client that powers adaptive UI personalization: session tracking, bandit variant assignment, adaptive slots, and persona decisions. SSR-safe.",
+  "homepage": "https://sentient-ui.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SentientUI/sdk.git",
+    "directory": "packages/core"
+  },
+  "bugs": "https://github.com/SentientUI/sdk/issues",
+  "keywords": [
+    "sentientui",
+    "sentient-ui",
+    "personalization",
+    "ab-testing",
+    "conversion-optimization",
+    "adaptive-ui",
+    "multi-armed-bandit",
+    "ssr"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./graph": {
+      "types": "./dist/index-graph.d.ts",
+      "import": "./dist/index-graph.mjs",
+      "require": "./dist/index-graph.js"
+    },
+    "./engagement": {
+      "types": "./dist/index-engagement.d.ts",
+      "import": "./dist/index-engagement.mjs",
+      "require": "./dist/index-engagement.js"
+    },
+    "./server": {
+      "types": "./dist/index-server.d.ts",
+      "import": "./dist/index-server.mjs",
+      "require": "./dist/index-server.js"
+    },
+    "./local": {
+      "types": "./dist/index-local.d.ts",
+      "development": {
+        "import": "./dist/index-local.mjs",
+        "require": "./dist/index-local.js"
+      },
+      "production": {
+        "import": "./dist/index-local-stub.mjs",
+        "require": "./dist/index-local-stub.js"
+      },
+      "import": "./dist/index-local-stub.mjs",
+      "require": "./dist/index-local-stub.js"
+    }
+  },
+  "files": [
+    "dist",
+    "llms.txt"
+  ],
+  "dependencies": {
+    "@sentientui/policy": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "size-check": "tsx scripts/size-check.ts",
+    "verify:local-exclusion": "tsx scripts/verify-local-exclusion.ts",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "esbuild": "^0.24.0",
+    "jsdom": "^25.0.1",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

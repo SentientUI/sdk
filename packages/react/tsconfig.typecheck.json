@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "baseUrl": ".",
+    "paths": {
+      "@sentientui/policy": ["../policy/src/index.ts"],
+      "@sentientui/core/server": ["../core/src/index-server.ts"],
+      "@sentientui/core/graph": ["../core/src/index-graph.ts"],
+      "@sentientui/core": ["../core/src/index.ts"],
+      // `paths` in an extending tsconfig replaces (does not merge with) the
+      // parent's, so the self-reference map from tsconfig.json must be repeated
+      // here. Without it, typecheck resolves the `@sentientui/react` self-import
+      // in src/next/adaptive-root-client.tsx to dist/index.js and fails with
+      // TS7016 when dist is absent (fresh CI checkout).
+      "@sentientui/react": ["./src/index.ts"]
+    }
+  }
+}

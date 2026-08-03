@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2019", "DOM"],
+    "jsx": "react-jsx",
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": true,
+    "baseUrl": ".",
+    // Self-reference: src/next/adaptive-root-client.tsx imports the provider from
+    // the package entry (`@sentientui/react`) so the built /next bundle shares the
+    // main entry's single AdaptiveContext at runtime (kept `external` in tsup).
+    // Map the specifier to source so the DTS build resolves its types without
+    // depending on dist/index.d.ts already existing (parallel builds + clean:true
+    // on CI otherwise fail with TS7016). Does not affect bundling — esbuild leaves
+    // the `external` specifier untouched.
+    "paths": {
+      "@sentientui/react": ["./src/index.ts"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

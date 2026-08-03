@@ -1,0 +1,52 @@
+name: Bug report
+description: Something in a @sentientui/* package isn't working
+labels: ["bug", "needs-repro"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. The **version** field below is the highest-value line —
+        please don't skip it. For anything security-related, use private reporting instead
+        (see SECURITY.md), not this form.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      options:
+        - "@sentientui/core"
+        - "@sentientui/react"
+        - "@sentientui/snippet"
+        - "@sentientui/cli"
+        - "@sentientui/policy"
+        - not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      description: The exact installed version, e.g. 0.18.1 (from your lockfile or package.json).
+      placeholder: "0.18.1"
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Framework / browser
+      description: e.g. Next.js 15 App Router + Chrome 120, or Vite + Safari 17.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A minimal repro (link to a repo/sandbox is ideal). What did you do?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+      description: What did you expect to happen, and what happened instead?
+    validations:
+      required: true

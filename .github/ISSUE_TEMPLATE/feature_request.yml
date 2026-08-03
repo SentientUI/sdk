@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest an improvement to a @sentientui/* package
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the problem or use case, not just the solution you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like the SDK to do? API sketch welcome.
+    validations:
+      required: false
+  - type: dropdown
+    id: package
+    attributes:
+      label: Which package?
+      options:
+        - "@sentientui/core"
+        - "@sentientui/react"
+        - "@sentientui/snippet"
+        - "@sentientui/cli"
+        - "@sentientui/policy"
+        - not sure / cross-cutting
+    validations:
+      required: false

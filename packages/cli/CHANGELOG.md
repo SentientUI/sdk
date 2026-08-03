@@ -1,0 +1,84 @@
+# @sentientui/cli
+
+## 0.2.5
+
+### Patch Changes
+
+- 0da8854: Audit-fix hardening across the CLI, MCP, and policy packages.
+
+  **@sentientui/cli**
+
+  - `init` now ABORTS (throws, non-zero exit) instead of merely warning when
+    `--key` is not a publishable `pk_` key, so a secret `sk_…` can no longer be
+    written into a client-exposed env var (`NEXT_PUBLIC_/VITE_/REACT_APP_`) and
+    shipped to the browser. New `assertPublishableKey` guard.
+  - `writeEnvFile`'s "already assigned" detection now also matches commented-out
+    assignments (`# VAR=`), so it no longer appends a confusing active duplicate.
+  - Build: `tsup` now targets `es2022` (the repo-wide `es2017` down-levelled
+    `import.meta` to `{}`, leaving `import.meta.url` undefined so the bin's
+    self-exec guard never fired) and runs with `shims:false` so `import.meta`
+    stays native — matching the MCP boot-crash fix.
+
+  **@sentientui/mcp**
+
+  - `create_project` now routes through the shared `withApiErrorGuidance`
+    wrapper (extended to accept per-tool extra/override case mappings) instead of
+    re-implementing the `insufficient_scope` / `demo_read_only` / `insufficient_role`
+    mapper with divergent wording — one guidance source.
+  - `create_variant` output schema `displayName` is now `.nullable()` to match the
+    API contract (`displayName ?? null`), and its `componentId` / `displayName`
+    inputs now require non-empty strings with sane maxes.
+
+  **@sentientui/policy**
+
+  - `applyClusterHeuristic` maps a present-but-off-vocabulary section type (e.g.
+    `newsletter`) to `generic`'s rank (last) instead of `indexOf === -1`, which
+    had sorted it ahead of `pricing` and hijacked the top of every persona layout.
+  - `validateSlotDecl` rejects `=` in enumerated arm ids (reserved for the dims
+    encoding), keeping `parseArm(arm) !== null` a sound dims-vs-enumerated
+    discriminator.
+  - `weightCellsFor` treats an empty-string persona like `unknown` (segment
+    marginal + global only), defensively avoiding a stray `''` child weight row.
+
+## 0.2.4
+
+### Patch Changes
+
+- 150cd26: Warn loudly when a non-publishable key (e.g. a secret `sk_` key) is passed to the CLI, since it would be written into a client-exposed env var and shipped to the browser. Also makes the CLI entrypoint importable without side effects for testing.
+
+## 0.2.3
+
+### Patch Changes
+
+- 7f3d9c6: Add `homepage`, `repository`, and `keywords` to package metadata so the packages are discoverable from the SentientUI brand on the npm registry and link back to the docs and source.
+
+## 0.2.2
+
+### Patch Changes
+
+- 73f7c59: Add a README (what `init` does and does not do, `--key` flag) and reword the package description — `init` sets up adaptive UI but never edits your layout; you do the wrap-and-mount step it prints.
+
+## 0.2.1
+
+### Patch Changes
+
+- Docs: correct the install command from `npx sentientui init` to `npx @sentientui/cli init`. The published package is scoped, so the bare `sentientui` name 404s on npm. Updates the CLI usage/help text and package description, the MCP integration guide, and the `llms.txt` agent-facing docs.
+
+## 0.2.0
+
+### Minor Changes
+
+- 8fb5c32: The adaptive ladder. Four public rungs — Observe, Style, Swap, Reorder — with keyless local
+  mode and a 60-second `npx sentientui init` onboarding.
+
+  - `@sentientui/react` 0.14.0: `useAdaptiveTokens` (learned style tokens), `useAdaptive`
+    (headless swap, supersedes `useAssignment`), `<AdaptiveGroup>` (bounded reorder), persona
+    attributes on `<html>` (`data-sentient-persona` / `data-sentient-confidence`),
+    `AdaptiveRoot slots`, testing scenarios for slots/persona.
+  - `@sentientui/core` 0.11.0: client-side `decide()` with slots, `getSlotResult`/`getPersona`,
+    decision snapshot + `renderPrePaintScript`, keyless local mode via `@sentientui/core/local`
+    (development export condition only).
+  - `@sentientui/policy` 0.2.0 (new): shared pure decision policy — personas, layout heuristics,
+    hashing, Thompson sampling, arm encoding, shrinkage — used by the API and local mode.
+  - `@sentientui/cli` 0.2.0 (new): `npx sentientui init` scaffolding.
+  - `@sentientui/snippet` 0.2.0 (new): Style-rung IIFE snippet for non-React sites (<= 15 KB gzip).

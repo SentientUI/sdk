@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "baseUrl": ".",
+    "paths": {
+      "@sentientui/policy": ["../policy/src/index.ts"],
+      "@sentientui/core/local": ["./src/index-local.ts"]
+    }
+  }
+}

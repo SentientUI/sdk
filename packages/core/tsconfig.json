@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2017", "DOM"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@sentientui/core/local": ["./src/index-local.ts"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -1,0 +1,47 @@
+# SentientUI
+
+> SentientUI makes websites adapt to each visitor. The SDK observes behaviour, classifies
+> visitors into personas (buyer, researcher, deal_seeker, browser, unknown), and a server-side
+> persona-keyed optimizer picks — per visitor type — which styling, content, and section order
+> to show, learning from real conversions. Decisions are locked per session: Visit 1 learns,
+> Visit 2 converts. React SDK, vanilla JS SDK, and a script-tag snippet are open source; the
+> learning API is hosted (api.sentient-ui.com).
+
+## Install (agent quickstart)
+
+- React app: `npx @sentientui/cli init` — detects the framework (Next App/Pages, Vite, Remix, CRA),
+  installs @sentientui/react, writes .env.local, scaffolds an example. It does NOT edit your
+  layout: it prints the wrap snippet — you must wrap the app with <AdaptiveRoot> (or
+  <AdaptiveProvider>) yourself, or nothing adapts and nothing is tracked. Works with NO API key
+  (keyless local mode: deterministic simulated decisions).
+  Verify by opening the app with `?sentient_persona=buyer` vs `?sentient_persona=deal_seeker`.
+- Real learning: create a project at https://sentient-ui.com, put the pk_ key in
+  NEXT_PUBLIC_SENTIENT_API_KEY, add the domain to allowed origins.
+- Non-React site: use @sentientui/snippet (one script tag, Style rung only) or
+  @sentientui/core (full JS SDK).
+
+## The four rungs (exact APIs, @sentientui/react)
+
+- Rung 0 Observe: install = visitor intelligence in the dashboard. No authoring.
+- Rung 1 Style (CSS only):
+  - Persona attributes on <html>: data-sentient-persona="buyer|researcher|deal_seeker|browser|unknown",
+    data-sentient-confidence="low|medium|high". Requires suppressHydrationWarning on <html> and
+    AdaptiveRoot at the top of the tree. Write plain CSS against these.
+  - useAdaptiveTokens(id: string, dims: Record<string, readonly string[]>, opts?: { goal?: string | GoalConfig })
+    → { tokens: Record<string, string>; props: Record<string, string> } — spread props
+    (data-<dim> attributes) on the element; 1–4 dims, 2–6 values each, first value = baseline.
+- Rung 2 Swap:
+  - useAdaptive<T>(id: string, config: { variants: Record<string, T>; goal: string | GoalConfig })
+    → { variant, value, bind, fireGoal } — attach bind to a rendered element; goal is required.
+  - <Adaptive id variants goal /> (wrapper form), <AdaptiveText id default /> (managed text).
+- Rung 3 Reorder:
+  - <AdaptiveGroup id arrangements={Record<string, string[]>} baseline? goal?> keyed children
+    </AdaptiveGroup> — declared orders of keyed children only; first arrangement = baseline.
+  - AdaptiveRoot sections={string[]} + useLayoutOrder() for page-level section order.
+
+## Docs
+
+- React SDK: packages/react/README.md (in-repo) or https://sentient-ui.com/docs
+- Core SDK: packages/core/README.md
+- MCP server for agents: @sentientui/mcp (tool get_integration_guide returns this guide expanded)
+- This package: the four rungs above are importable from '@sentientui/react' (AdaptiveRoot from '@sentientui/react/next'; testing helpers from '@sentientui/react/testing').

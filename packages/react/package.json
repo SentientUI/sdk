@@ -1,0 +1,108 @@
+{
+  "name": "@sentientui/react",
+  "version": "0.18.1",
+  "private": false,
+  "license": "MIT",
+  "sideEffects": false,
+  "description": "SentientUI React SDK — adaptive UI personalization with <Adaptive> components that learn what converts per visitor. SSR-safe.",
+  "homepage": "https://sentient-ui.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SentientUI/sdk.git",
+    "directory": "packages/react"
+  },
+  "bugs": "https://github.com/SentientUI/sdk/issues",
+  "keywords": [
+    "react",
+    "sentientui",
+    "sentient-ui",
+    "personalization",
+    "ab-testing",
+    "conversion-optimization",
+    "adaptive-ui",
+    "ssr",
+    "nextjs"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.mjs",
+      "require": "./dist/server.js"
+    },
+    "./next": {
+      "types": "./dist/next/adaptive-root.d.ts",
+      "import": "./dist/next/adaptive-root.js",
+      "default": "./dist/next/adaptive-root.js"
+    },
+    "./devtools": {
+      "types": "./dist/devtools.d.ts",
+      "import": "./dist/devtools.mjs",
+      "require": "./dist/devtools.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.mjs",
+      "require": "./dist/testing.js"
+    },
+    "./testing/node": {
+      "types": "./dist/testing/node.d.ts",
+      "import": "./dist/testing/node.mjs",
+      "require": "./dist/testing/node.js"
+    }
+  },
+  "files": [
+    "dist",
+    "llms.txt"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "size-check": "tsx scripts/size-check.ts",
+    "lint": "eslint src",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@sentientui/core": "workspace:*",
+    "@sentientui/policy": "workspace:*"
+  },
+  "peerDependencies": {
+    "@testing-library/react": ">=14.0.0",
+    "msw": ">=2.0.0",
+    "next": ">=14.0.0",
+    "react": ">=18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "next": {
+      "optional": true
+    },
+    "@testing-library/react": {
+      "optional": true
+    },
+    "msw": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "jsdom": "^25.0.1",
+    "msw": "^2.15.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

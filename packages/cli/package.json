@@ -1,0 +1,49 @@
+{
+  "name": "@sentientui/cli",
+  "version": "0.2.5",
+  "description": "SentientUI CLI — `npx @sentientui/cli init` sets up adaptive UI in an existing React app (installs the SDK, writes env config, scaffolds an example, and prints the wrap instructions)",
+  "license": "MIT",
+  "homepage": "https://sentient-ui.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SentientUI/sdk.git",
+    "directory": "packages/cli"
+  },
+  "bugs": "https://github.com/SentientUI/sdk/issues",
+  "keywords": [
+    "cli",
+    "sentientui",
+    "sentient-ui",
+    "personalization",
+    "react",
+    "scaffolding",
+    "conversion-optimization"
+  ],
+  "type": "module",
+  "bin": {
+    "sentientui": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx src/index.ts",
+    "lint": "eslint src",
+    "prepublishOnly": "pnpm build && pnpm typecheck"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
