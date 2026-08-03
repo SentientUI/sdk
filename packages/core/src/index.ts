@@ -45,7 +45,11 @@ export {
   uaTokenMatch,
   matchedAgentToken,
   agentUaList,
+  agentIntent,
+  classifiedAgents,
+  AGENT_INTENTS,
 } from './session-meta.js';
+export type { AgentIntent } from './session-meta.js';
 
 const DEFAULT_INGEST_URL = 'https://api.sentient-ui.com/v1/events';
 

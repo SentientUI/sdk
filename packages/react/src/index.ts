@@ -59,7 +59,3 @@ export {
   renderAgentMarkdown,
 } from './agent-feed.js';
 export type { AgentFeed, AgentBlock } from './agent-feed.js';
-
-// Re-exported from core so consumers can detect AI-agent user-agents without a
-// direct `@sentientui/core` dependency (pure functions, client- and server-safe).
-export { matchedAgentToken, uaTokenMatch } from '@sentientui/core';

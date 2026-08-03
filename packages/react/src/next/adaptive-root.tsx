@@ -16,6 +16,13 @@ import { logAgentFetch } from './log-agent-fetch.js';
 export { createAgentFeed } from './agent-feed-route.js';
 export type { AgentFeedRouteConfig, AgentFeedReadEntry } from './agent-feed-route.js';
 export { defineAgentContent, buildAgentFeed as buildAgentFeedFor } from '../agent-feed.js';
+// Re-exported from core on the SERVER entry (this module is server-only — it
+// imports next/headers). Lets server components do agent detection with just the
+// `@sentientui/react` package, no direct core dependency. Do NOT add this to the
+// package's client index: re-exporting a plain function through a 'use client'
+// module turns it into a client reference that throws when called during SSR.
+export { matchedAgentToken, uaTokenMatch, agentIntent, classifiedAgents } from '@sentientui/core';
+export type { AgentIntent } from '@sentientui/core';
 export type { AgentFeed } from '../agent-feed.js';
 
 const DEFAULT_API_BASE_URL = 'https://api.sentient-ui.com/v1';

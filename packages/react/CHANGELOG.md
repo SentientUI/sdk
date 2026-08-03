@@ -1,5 +1,19 @@
 # @sentientui/react
 
+## 0.18.5
+
+### Patch Changes
+
+- de26748: Re-export `agentIntent` / `classifiedAgents` (and the `AgentIntent` type) from the server entry `@sentientui/react/next`, so server components can classify agent traffic with a single SDK import.
+- Updated dependencies [de26748]
+  - @sentientui/core@0.16.9
+
+## 0.18.4
+
+### Patch Changes
+
+- 25821a1: Fix: `matchedAgentToken` / `uaTokenMatch` are re-exported from the **server** entry `@sentientui/react/next` instead of the client index. Re-exporting a plain function through the `'use client'` package index turned it into a client reference that threw "client function called from the server" when a Server Component called it during SSR. Server-side agent detection should import from `@sentientui/react/next` (alongside `AdaptiveRoot`).
+
 ## 0.18.3
 
 ### Patch Changes

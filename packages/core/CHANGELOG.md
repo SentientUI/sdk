@@ -1,5 +1,11 @@
 # @sentientui/core
 
+## 0.16.9
+
+### Patch Changes
+
+- de26748: Add agent-fetch intent classification: `agentIntent(botName)` labels a matched agent user-agent as `user` (an assistant answering a real person, live), `search` (answer-engine index), `training` (model crawl), or `other`, and `classifiedAgents()` returns the full `agentUaList` grouped by intent. The `AGENT_INTENTS` map is maintained beside `agentUaList`.
+
 ## 0.16.8
 
 ### Patch Changes

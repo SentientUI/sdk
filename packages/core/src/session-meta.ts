@@ -37,6 +37,50 @@ export function matchedAgentToken(userAgent: string): string | null {
   return agentUaList.find((token) => s.includes(token.toLowerCase())) ?? null;
 }
 
+/**
+ * Purpose category for an agent fetch, inferred from its published user-agent:
+ *  - `user`     — a person asked an assistant to read the page, live (…-User UAs)
+ *  - `search`   — indexing for an AI answer engine (…-SearchBot / SearchBot)
+ *  - `training` — model-training crawl (GPTBot, ClaudeBot, CCBot, …)
+ *  - `other`    — not clearly AI, or an unknown/new token
+ */
+export type AgentIntent = 'user' | 'search' | 'training' | 'other';
+
+/** Intent per agent token. Maintained beside `agentUaList` — when you add or
+ *  rename a token above, set its intent here (a unit test enforces coverage). */
+export const AGENT_INTENTS: Record<string, AgentIntent> = {
+  'GPTBot': 'training',
+  'ChatGPT-User': 'user',
+  'OAI-SearchBot': 'search',
+  'ClaudeBot': 'training',
+  'Claude-User': 'user',
+  'Claude-SearchBot': 'search',
+  'PerplexityBot': 'search',
+  'Perplexity-User': 'user',
+  'Google-Extended': 'training',
+  'Applebot-Extended': 'training',
+  'Meta-ExternalAgent': 'training',
+  'Bytespider': 'training',
+  'CCBot': 'training',
+  'Amazonbot': 'other',
+  'cohere-ai': 'training',
+  'Diffbot': 'other',
+};
+
+/** Intent for a matched bot token (case-insensitive); `other` for null/unknown. */
+export function agentIntent(botName: string | null): AgentIntent {
+  if (!botName) return 'other';
+  const hit = agentUaList.find((t) => t.toLowerCase() === botName.toLowerCase());
+  return (hit && AGENT_INTENTS[hit]) || 'other';
+}
+
+/** `agentUaList` grouped by intent — the "which crawlers do you classify?" reference. */
+export function classifiedAgents(): Record<AgentIntent, string[]> {
+  const out: Record<AgentIntent, string[]> = { user: [], search: [], training: [], other: [] };
+  for (const t of agentUaList) out[AGENT_INTENTS[t] ?? 'other'].push(t);
+  return out;
+}
+
 export function detectDeviceClass(userAgent: string): string {
   const s = userAgent.toLowerCase();
   if (/ipad|tablet|playbook|kindle|silk/.test(s)) return 'tablet';

@@ -8,6 +8,10 @@ import {
   referrerDomainFromReferer,
   uaTokenMatch,
   matchedAgentToken,
+  agentIntent,
+  classifiedAgents,
+  agentUaList,
+  AGENT_INTENTS,
 } from './session-meta.js';
 
 describe('uaTokenMatch — known agent user-agent tokens', () => {
@@ -189,5 +193,34 @@ describe('referrerDomainFromReferer', () => {
   });
   it('returns null for a malformed URL', () => {
     expect(referrerDomainFromReferer('::::not-a-url')).toBeNull();
+  });
+});
+
+describe('agentIntent', () => {
+  it('classifies the published provider UAs', () => {
+    expect(agentIntent('ChatGPT-User')).toBe('user');
+    expect(agentIntent('Claude-User')).toBe('user');
+    expect(agentIntent('Perplexity-User')).toBe('user');
+    expect(agentIntent('OAI-SearchBot')).toBe('search');
+    expect(agentIntent('Claude-SearchBot')).toBe('search');
+    expect(agentIntent('PerplexityBot')).toBe('search');
+    expect(agentIntent('GPTBot')).toBe('training');
+    expect(agentIntent('ClaudeBot')).toBe('training');
+    expect(agentIntent('CCBot')).toBe('training');
+    expect(agentIntent('Amazonbot')).toBe('other');
+    expect(agentIntent('Diffbot')).toBe('other');
+  });
+  it('is case-insensitive and defaults unknown/null to other', () => {
+    expect(agentIntent('gptbot')).toBe('training');
+    expect(agentIntent('unclassified agent')).toBe('other');
+    expect(agentIntent(null)).toBe('other');
+  });
+  it('every agentUaList token has an explicit mapping', () => {
+    for (const t of agentUaList) expect(AGENT_INTENTS[t]).toBeDefined();
+  });
+  it('classifiedAgents groups every token exactly once', () => {
+    const g = classifiedAgents();
+    const flat = [...g.user, ...g.search, ...g.training, ...g.other];
+    expect(flat.slice().sort()).toEqual(agentUaList.slice().sort());
   });
 });
