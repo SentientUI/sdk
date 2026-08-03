@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createGraphClient, type PageNode } from './graph';
+import { createGraphClient, sanitizePageUrl, type PageNode } from './graph';
 
 const pageNode = (overrides: Partial<PageNode> = {}): PageNode => ({
   id: 'node-1',
@@ -206,6 +206,32 @@ describe('createGraphClient', () => {
     // carries visitor attribution — the server tolerates the extra fields.
     expect(body.sessionId).toBe('sess-1');
     expect(body.projectId).toBe('proj-1');
+    vi.unstubAllGlobals();
+  });
+
+  it('sanitizePageUrl strips query and hash', () => {
+    expect(sanitizePageUrl('https://shop.example/reset?token=secret#frag')).toBe(
+      'https://shop.example/reset',
+    );
+    expect(sanitizePageUrl('not a url')).toBe('/');
+  });
+
+  it('syncOnce sends origin+pathname only (strips query and hash)', () => {
+    const fetchMock = vi.fn().mockReturnValue(Promise.resolve({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    const prev = window.location.href;
+    // jsdom allows href assignment; query/hash must not appear in the payload.
+    window.history.pushState({}, '', '/reset?token=secret#frag');
+
+    const client = createGraphClient({ syncUrl: 'https://api.example/graph/sync', apiKey: 'pk_test' });
+    client.addPageNode(pageNode());
+    client.syncOnce();
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body.pageUrl).toMatch(/\/reset$/);
+    expect(body.pageUrl).not.toContain('token');
+    expect(body.pageUrl).not.toContain('#');
+    window.history.pushState({}, '', prev);
     vi.unstubAllGlobals();
   });
 

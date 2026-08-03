@@ -514,8 +514,8 @@ export function init(config: SentientConfig): SentientClient {
   const resolvedIngestUrl = config.ingestUrl ?? DEFAULT_INGEST_URL;
 
   const sessionStart = Date.now();
-  const session = initSession({ ssrSessionId: config.ssrSessionId });
-  const assignmentCache = createAssignmentCache();
+  const session = initSession({ ssrSessionId: config.ssrSessionId, apiKey: config.apiKey });
+  const assignmentCache = createAssignmentCache(undefined, config.apiKey);
   const eventQueue = createEventQueue({ ingestUrl: resolvedIngestUrl, apiKey: config.apiKey });
   const baseUrl = deriveBaseUrl(resolvedIngestUrl);
 

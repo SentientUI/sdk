@@ -87,13 +87,21 @@ describe('index-graph init override', () => {
     expect(graphClient.restore).not.toHaveBeenCalled();
   });
 
-  it('feeds scanned nodes and edges into the graph then syncs once', async () => {
+  it('feeds scanned nodes and edges into the graph then syncs once (no DOM text by default)', async () => {
     init({ apiKey: 'pk_test', context: 'saas', graph: true });
     await vi.waitFor(() => expect(graphClient.syncOnce).toHaveBeenCalled());
     expect(graphClient.addPageNode).toHaveBeenCalledWith(
-      expect.objectContaining({ componentId: 'hero', semanticType: 'hero', answers: ['Hi'] }),
+      expect.objectContaining({ componentId: 'hero', semanticType: 'hero', answers: [] }),
     );
     expect(graphClient.addStructuralEdge).toHaveBeenCalledWith(SCAN_RESULT.edges[0]);
+  });
+
+  it('includes heading text in answers only when captureDomText is true', async () => {
+    init({ apiKey: 'pk_test', context: 'saas', graph: true, captureDomText: true });
+    await vi.waitFor(() => expect(graphClient.addPageNode).toHaveBeenCalled());
+    expect(graphClient.addPageNode).toHaveBeenCalledWith(
+      expect.objectContaining({ componentId: 'hero', answers: ['Hi'] }),
+    );
   });
 
   it('debounces sync on mutation-observer events (500ms)', async () => {

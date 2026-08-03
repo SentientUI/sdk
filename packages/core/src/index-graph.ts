@@ -46,6 +46,7 @@ export type {
   GraphConfig,
   GraphClient,
 } from './graph.js';
+export { sanitizePageUrl } from './graph.js';
 
 import { init as initLean, isDoNotTrackEnabled, type SentientConfig, type SentientClient } from './index.js';
 
@@ -60,6 +61,12 @@ export type GraphSentientConfig = SentientConfig & {
    * identically to `@sentientui/core`.
    */
   graph?: boolean;
+  /**
+   * Include captured heading / DOM text in graph sync payloads. OFF by default —
+   * headings can contain account names or user-generated content. Structure
+   * (component ids, semantic types, prominence) still syncs when `graph: true`.
+   */
+  captureDomText?: boolean;
 };
 
 function readSntUid(): string | undefined {
@@ -132,7 +139,7 @@ export function init(config: GraphSentientConfig): SentientClient {
         id: node.componentId,
         componentId: node.componentId,
         semanticType: node.semanticType,
-        answers: node.headingText ? [node.headingText] : [],
+        answers: config.captureDomText && node.headingText ? [node.headingText] : [],
         prominenceScore: node.prominenceScore,
         depth: node.depth,
       });
@@ -158,7 +165,7 @@ export function init(config: GraphSentientConfig): SentientClient {
         id: node.componentId,
         componentId: node.componentId,
         semanticType: node.semanticType,
-        answers: node.headingText ? [node.headingText] : [],
+        answers: config.captureDomText && node.headingText ? [node.headingText] : [],
         prominenceScore: node.prominenceScore,
         depth: node.depth,
       });

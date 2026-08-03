@@ -1,5 +1,7 @@
 /** Synchronous variant assignment cache (memory + localStorage). */
 
+import { storageSuffix } from './storage-key.js';
+
 export type Assignment = {
   variantId: string;
   assignedAt: number;
@@ -21,7 +23,6 @@ export type AssignmentCache = {
   clear(): void;
 };
 
-const KEY_PREFIX = '_snt_asgn_';
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 
 function cacheKey(componentId: string, segment: string): string {
@@ -32,47 +33,49 @@ function cacheKey(componentId: string, segment: string): string {
   return `${encodeURIComponent(componentId)}:${encodeURIComponent(segment)}`;
 }
 
-function storageKey(componentId: string, segment: string): string {
-  // Both parts are URI-encoded and joined with a literal ':' separator. Since
-  // encodeURIComponent escapes ':' (and the parts can otherwise contain '_' or
-  // ':'), the separator is unambiguous and the key round-trips exactly.
-  return `${KEY_PREFIX}${encodeURIComponent(componentId)}:${encodeURIComponent(segment)}`;
-}
-
-function parseStorageKey(key: string): { componentId: string; segment: string } | null {
-  const suffix = key.slice(KEY_PREFIX.length);
-  const sep = suffix.indexOf(':');
-  if (sep < 0) return null;
-  try {
-    return {
-      componentId: decodeURIComponent(suffix.slice(0, sep)),
-      segment: decodeURIComponent(suffix.slice(sep + 1)),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function listStorageKeys(): string[] {
-  try {
-    const keys: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith(KEY_PREFIX)) {
-        keys.push(key);
-      }
-    }
-    return keys;
-  } catch {
-    return [];
-  }
-}
-
 /**
- * Creates an assignment cache with optional TTL (default 30 minutes).
+ * Creates an assignment cache with optional TTL (default 30 minutes). Pass the
+ * project's `apiKey` so the localStorage keys are namespaced per project —
+ * otherwise two projects on the same origin share cached assignments.
  */
-export function createAssignmentCache(ttlMs: number = DEFAULT_TTL_MS): AssignmentCache {
+export function createAssignmentCache(ttlMs: number = DEFAULT_TTL_MS, apiKey?: string): AssignmentCache {
   const memory = new Map<string, Assignment>();
+
+  // Per-project localStorage prefix. No apiKey (local mode) → the legacy
+  // `_snt_asgn_` prefix so single-project behavior is unchanged.
+  const keyPrefix = `_snt_asgn${storageSuffix(apiKey)}_`;
+
+  const storageKey = (componentId: string, segment: string): string =>
+    `${keyPrefix}${encodeURIComponent(componentId)}:${encodeURIComponent(segment)}`;
+
+  const parseStorageKey = (key: string): { componentId: string; segment: string } | null => {
+    const suffix = key.slice(keyPrefix.length);
+    const sep = suffix.indexOf(':');
+    if (sep < 0) return null;
+    try {
+      return {
+        componentId: decodeURIComponent(suffix.slice(0, sep)),
+        segment: decodeURIComponent(suffix.slice(sep + 1)),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const listStorageKeys = (): string[] => {
+    try {
+      const keys: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key?.startsWith(keyPrefix)) {
+          keys.push(key);
+        }
+      }
+      return keys;
+    } catch {
+      return [];
+    }
+  };
 
   // Honor a per-entry TTL (server-provided assignmentTtlMs) when present; fall
   // back to the cache-wide default otherwise.

@@ -55,7 +55,7 @@ function readPersonaOverrideFromUrl(): string | undefined {
 }
 
 export function createLocalModeClient(config: SentientConfig): SentientClient {
-  const session = initSession({ ssrSessionId: config.ssrSessionId });
+  const session = initSession({ ssrSessionId: config.ssrSessionId, apiKey: config.apiKey });
   const sessionId = session.getSessionId() ?? 'local';
   const forcedPersona = readPersonaOverrideFromUrl();
 

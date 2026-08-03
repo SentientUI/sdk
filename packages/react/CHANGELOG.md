@@ -1,5 +1,15 @@
 # @sentientui/react
 
+## 0.18.3
+
+### Patch Changes
+
+- 8663750: `AdaptiveRoot` now captures JS-less AI-assistant fetches server-side: when a request's user-agent matches a known agent (GPTBot, ChatGPT-User, Claude-User, PerplexityBot, …), it logs the fetch to your agent analytics (fire-and-forget, no cookie, no session). Add `captureAgents={false}` to opt out. The standalone `sentientAgentMiddleware` export is removed — `AdaptiveRoot` supersedes it, so agent capture now happens on any page that renders `AdaptiveRoot`.
+- 8663750: CSP: `SentientPersonaScript` and `AdaptiveRoot` accept a `nonce` for their inline persona / JSON-LD scripts, so strict `Content-Security-Policy` deployments that block `'unsafe-inline'` can allow them explicitly. Privacy: `AdaptiveProvider` gains `captureDomText` (off by default) to opt into sending captured heading/DOM text in graph sync. Fix: escape the NUL byte in `adaptive.tsx` (the file is plain text again). DX: re-exports `matchedAgentToken` / `uaTokenMatch` from `@sentientui/core`, so agent detection needs only the single `@sentientui/react` import.
+- Updated dependencies [8663750]
+- Updated dependencies [8663750]
+  - @sentientui/core@0.16.8
+
 ## 0.18.2
 
 ### Patch Changes

@@ -5,6 +5,12 @@ export type SentientPersonaScriptProps = {
   /** Publishable API key — selects the localStorage snapshot in the fallback path. */
   apiKey: string;
   /**
+   * CSP nonce for the inline pre-paint script. Pass the same nonce your
+   * `Content-Security-Policy` `script-src` allows (e.g. from Next.js middleware).
+   * Required for strict CSP deployments that block `'unsafe-inline'`.
+   */
+  nonce?: string;
+  /**
    * SSR-decided persona (from `loadAdaptiveDecision`). When present the
    * script embeds the literal values; when absent it reads the local
    * decision snapshot (SPA / return-visit path).
@@ -47,6 +53,7 @@ export function SentientPersonaScript(props: SentientPersonaScriptProps): JSX.El
   return (
     <script
       data-sentient-persona-script=""
+      nonce={props.nonce}
       dangerouslySetInnerHTML={{ __html: personaScriptBody(props) }}
     />
   );

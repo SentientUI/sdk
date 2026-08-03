@@ -11,13 +11,20 @@ vi.mock('./adaptive-root-client.js', () => ({ AdaptiveRootClient: vi.fn(() => nu
 vi.mock('@sentientui/core', () => ({
   deriveSessionSegment: vi.fn(() => 'desktop:direct'),
   renderPrePaintScript: vi.fn(() => '/* snapshot pre-paint */'),
+  matchedAgentToken: vi.fn((ua: string) => {
+    const m = /GPTBot|ClaudeBot|Claude-User|PerplexityBot/i.exec(ua ?? '');
+    return m ? m[0] : null;
+  }),
 }));
+vi.mock('./log-agent-fetch.js', () => ({ logAgentFetch: vi.fn() }));
 
 import { headers, cookies } from 'next/headers';
 import { loadAdaptiveAssignments, loadAdaptiveDecision } from '../server.js';
 import { AdaptiveRootClient } from './adaptive-root-client.js';
 import { AdaptiveRoot } from './adaptive-root.js';
+import { logAgentFetch } from './log-agent-fetch.js';
 
+const mockedLog = vi.mocked(logAgentFetch);
 const mockedHeaders = vi.mocked(headers);
 const mockedCookies = vi.mocked(cookies);
 const mockedDecision = vi.mocked(loadAdaptiveDecision);
@@ -79,6 +86,33 @@ beforeEach(() => {
     assignments: { hero_cta: { variantId: 'default' } },
     sessionId: 'sess-2',
   } as never);
+});
+
+describe('AdaptiveRoot — server-side agent capture', () => {
+  it('logs a crawler fetch when the UA is a known agent', async () => {
+    mockedHeaders.mockResolvedValue(headerStore({ host: 'acme.com', 'user-agent': 'Mozilla/5.0 (compatible; GPTBot/1.2)', 'x-pathname': '/pricing' }));
+    await AdaptiveRoot(baseProps({ appOrigin: 'https://acme.com' }));
+    expect(mockedLog).toHaveBeenCalledTimes(1);
+    expect(mockedLog.mock.calls[0]![0]).toMatchObject({ botName: 'GPTBot', path: '/pricing', apiKey: 'pk_test' });
+  });
+
+  it('does not log for an ordinary browser UA', async () => {
+    mockedHeaders.mockResolvedValue(headerStore({ host: 'acme.com', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0) Chrome/120 Safari/537.36' }));
+    await AdaptiveRoot(baseProps({ appOrigin: 'https://acme.com' }));
+    expect(mockedLog).not.toHaveBeenCalled();
+  });
+
+  it('falls back to path "/" when x-pathname is absent', async () => {
+    mockedHeaders.mockResolvedValue(headerStore({ host: 'acme.com', 'user-agent': 'ClaudeBot/1.0' }));
+    await AdaptiveRoot(baseProps({ appOrigin: 'https://acme.com' }));
+    expect(mockedLog.mock.calls[0]![0]).toMatchObject({ path: '/', botName: 'ClaudeBot' });
+  });
+
+  it('does not log when captureAgents is false', async () => {
+    mockedHeaders.mockResolvedValue(headerStore({ host: 'acme.com', 'user-agent': 'GPTBot/1.2' }));
+    await AdaptiveRoot(baseProps({ appOrigin: 'https://acme.com', captureAgents: false }));
+    expect(mockedLog).not.toHaveBeenCalled();
+  });
 });
 
 describe('AdaptiveRoot (Server Component)', () => {

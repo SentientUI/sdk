@@ -182,6 +182,11 @@ export type AdaptiveProviderProps = {
    */
   enableGraph?: boolean;
   /**
+   * Include captured heading / DOM text in graph sync payloads. OFF by default.
+   * Only applies when graph scanning is enabled (`enableGraph` not `false`).
+   */
+  captureDomText?: boolean;
+  /**
    * Behavioral engagement capture (per-section dwell/scroll + semantic section
    * registration) powering personas. ON by default — pass `false` to disable.
    * Never runs for a DNT/GPC or consent-gated visitor (no client → no capture).
@@ -259,7 +264,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       // client (graph-capable). Pass enableGraph={false} for the lean client.
       void import('@sentientui/core/graph').then(({ init: initGraph }) => {
         if (cancelled) return;
-        created = initGraph({ ...config, graph: true });
+        created = initGraph({ ...config, graph: true, captureDomText: props.captureDomText === true });
         setClient(created);
         startEngagement(created);
       });

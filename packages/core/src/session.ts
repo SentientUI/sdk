@@ -1,10 +1,17 @@
 /** Manages anonymous session identity with cookie + localStorage layers. */
 
 import { randomUuidV4 } from './uuid.js';
+import { storageSuffix } from './storage-key.js';
 
 export type SessionConfig = {
   cookieName?: string;
   cookieTTLDays?: number;
+  /**
+   * Public apiKey — namespaces the `_snt_uid` cookie + storage per project, so
+   * two projects on the same exact origin don't share a visitor id (which would
+   * cross-contaminate sessions server-side). Omit in local mode.
+   */
+  apiKey?: string;
   /**
    * Session ID generated during SSR (e.g. from `loadAdaptiveAssignments`).
    * Used as the fallback when no existing cookie or localStorage entry is found,
@@ -132,7 +139,12 @@ export function initSession(config?: SessionConfig): SessionManager {
     return SSR_MANAGER;
   }
 
-  const cookieName = config?.cookieName ?? DEFAULT_COOKIE_NAME;
+  // Namespace the visitor-id keys per project so multiple keys on one origin
+  // don't share a `_snt_uid` (see storage-key.ts). An explicit cookieName still
+  // wins for callers that manage their own naming.
+  const suffix = storageSuffix(config?.apiKey);
+  const cookieName = config?.cookieName ?? `${DEFAULT_COOKIE_NAME}${suffix}`;
+  const storageKey = `${STORAGE_KEY}${suffix}`;
   const cookieTTLDays = config?.cookieTTLDays ?? DEFAULT_COOKIE_TTL_DAYS;
   const maxAgeSeconds = cookieTTLDays * 24 * 60 * 60;
 
@@ -147,17 +159,17 @@ export function initSession(config?: SessionConfig): SessionManager {
 
   let sessionId: string | null =
     nonEmpty(readCookie(cookieName)) ??
-    nonEmpty(readLocalStorage(STORAGE_KEY)) ??
-    nonEmpty(readSessionStorage(STORAGE_KEY)) ??
+    nonEmpty(readLocalStorage(storageKey)) ??
+    nonEmpty(readSessionStorage(storageKey)) ??
     nonEmpty(config?.ssrSessionId) ??
     generateSessionId();
 
   writeCookie(cookieName, sessionId, maxAgeSeconds);
-  const lsOk = writeLocalStorage(STORAGE_KEY, sessionId);
+  const lsOk = writeLocalStorage(storageKey, sessionId);
   const cookieOk = probeCookieWritable(cookieName);
   // Always write sessionStorage when localStorage fails — it covers same-tab
   // navigation even in strict storage environments.
-  const ssOk = !lsOk ? writeSessionStorage(STORAGE_KEY, sessionId) : false;
+  const ssOk = !lsOk ? writeSessionStorage(storageKey, sessionId) : false;
   const ephemeral = !lsOk && !cookieOk && !ssOk;
 
   return {
@@ -166,8 +178,8 @@ export function initSession(config?: SessionConfig): SessionManager {
     destroy: () => {
       sessionId = null;
       clearCookie(cookieName);
-      removeLocalStorage(STORAGE_KEY);
-      removeSessionStorage(STORAGE_KEY);
+      removeLocalStorage(storageKey);
+      removeSessionStorage(storageKey);
     },
   };
 }

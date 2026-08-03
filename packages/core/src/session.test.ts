@@ -38,6 +38,20 @@ describe('initSession', () => {
     expect(localStorage.getItem('_snt_uid')).toBe(id);
   });
 
+  it('namespaces the visitor id per project so two keys on one origin do not collide', () => {
+    // apiKeys < 12 chars so slice(0,12) is the whole key (stable assertion).
+    const a = initSession({ apiKey: 'pk_projectA' }).getSessionId();
+    const b = initSession({ apiKey: 'pk_projectB' }).getSessionId();
+    // Different projects → different namespaced keys → independent ids.
+    expect(a).not.toBe(b);
+    expect(localStorage.getItem('_snt_uid_pk_projectA')).toBe(a);
+    expect(localStorage.getItem('_snt_uid_pk_projectB')).toBe(b);
+    // The legacy unprefixed key is never written when an apiKey is supplied.
+    expect(localStorage.getItem('_snt_uid')).toBeNull();
+    // Re-init for the same project restores the same id.
+    expect(initSession({ apiKey: 'pk_projectA' }).getSessionId()).toBe(a);
+  });
+
   it('generates a valid RFC4122 v4 session ID when crypto.randomUUID is unavailable', () => {
     // Insecure context (plain http:// non-localhost): Web Crypto is absent, so
     // the generator must still produce a spec-valid UUID — the sessions/goals/

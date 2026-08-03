@@ -192,7 +192,8 @@ describe('init() Do Not Track', () => {
     Object.defineProperty(navigator, 'doNotTrack', { value: '1', configurable: true });
     const client = init({ ...BASE_CONFIG, respectDoNotTrack: false });
     expect(vi.mocked(fetch).mock.calls.some(([u]) => String(u).includes('/sessions'))).toBe(true);
-    expect(document.cookie).toMatch(/_snt_uid=[^;]/);
+    // The visitor-id cookie is namespaced per project (see storage-key.ts).
+    expect(document.cookie).toMatch(/_snt_uid_[^=;]+=[^;]/);
     client.destroy();
   });
 

@@ -1,5 +1,7 @@
 /** In-memory context graph with persistence and backend sync. */
 
+import { storageSuffix } from './storage-key.js';
+
 export type PageNode = {
   id: string;
   componentId: string;
@@ -39,7 +41,6 @@ export type GraphClient = {
   destroy(): void;
 };
 
-const NODES_KEY = '_snt_graph_nodes';
 // _snt_graph_edges was written by earlier builds but never synced to the backend.
 // We still read and clear any leftover key on init/destroy so old clients don't
 // accumulate stale data, but we no longer write it.
@@ -87,6 +88,19 @@ function toValidSemanticType(type: string): string {
   return VALID_SEMANTIC_TYPES.has(type) ? type : 'generic';
 }
 
+/**
+ * Path-only page URL for graph sync — strips query + fragment so tokens,
+ * emails, and other sensitive URL params never leave the browser by default.
+ */
+export function sanitizePageUrl(href: string): string {
+  try {
+    const u = new URL(href);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return '/';
+  }
+}
+
 function contentHashOf(componentId: string, semanticType: string, answers: string[]): string {
   const input = `${componentId}:${semanticType}:${answers.join(',')}`;
   let h = 5381;
@@ -103,9 +117,13 @@ export function createGraphClient(config?: GraphConfig): GraphClient {
   const pageNodes = new Map<string, PageNode>();
   const structuralEdges = new Map<string, StructuralEdge>();
 
+  // Per-project localStorage key so two projects on one origin don't share a
+  // graph-node cache (see storage-key.ts). Legacy `_snt_graph_nodes` with no key.
+  const nodesKey = `_snt_graph_nodes${storageSuffix(config?.apiKey)}`;
+
   const persist = (): void => {
     if (typeof window === 'undefined') return;
-    writeStorage(NODES_KEY, [...pageNodes.values()]);
+    writeStorage(nodesKey, [...pageNodes.values()]);
   };
 
   const restore = (data: string): void => {
@@ -121,7 +139,7 @@ export function createGraphClient(config?: GraphConfig): GraphClient {
   };
 
   if (typeof window !== 'undefined') {
-    const storedNodes = readStorage<PageNode[]>(NODES_KEY, []);
+    const storedNodes = readStorage<PageNode[]>(nodesKey, []);
     for (const node of storedNodes) {
       pageNodes.set(node.componentId, node);
     }
@@ -201,7 +219,7 @@ export function createGraphClient(config?: GraphConfig): GraphClient {
         }
 
         const payload = {
-          pageUrl: window.location.href,
+          pageUrl: sanitizePageUrl(window.location.href),
           // Visitor/project attribution. The /graph/sync handler ignores unknown
           // top-level fields (Fastify additionalProperties + Zod strips extras),
           // so these ride along harmlessly and let beacons carry attribution.
@@ -250,7 +268,7 @@ export function createGraphClient(config?: GraphConfig): GraphClient {
     destroy(): void {
       if (typeof window === 'undefined') return;
       try {
-        localStorage.removeItem(NODES_KEY);
+        localStorage.removeItem(nodesKey);
         localStorage.removeItem(STALE_EDGES_KEY);
       } catch {
         /* ignore */

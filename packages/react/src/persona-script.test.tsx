@@ -60,6 +60,17 @@ describe('SentientPersonaScript component', () => {
     expect(html).toContain('data-sentient-persona');
   });
 
+  it('forwards a CSP nonce onto the script element when provided', () => {
+    const html = renderToString(
+      createElement(SentientPersonaScript, {
+        apiKey: 'pk_x',
+        nonce: 'csp-nonce-abc',
+        persona: { persona: 'buyer', confidence: 1 },
+      }),
+    );
+    expect(html).toContain('nonce="csp-nonce-abc"');
+  });
+
   it('rendering the React tree itself never writes the html attributes (script not executed by React)', () => {
     render(createElement(SentientPersonaScript, { apiKey: 'pk_x', persona: { persona: 'buyer', confidence: 1 } }));
     // React inserts the <script> node without executing it; only real page

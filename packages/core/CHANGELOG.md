@@ -1,5 +1,15 @@
 # @sentientui/core
 
+## 0.16.8
+
+### Patch Changes
+
+- 8663750: Browser storage is now namespaced per project. The visitor id (`_snt_uid`), assignment cache (`_snt_asgn_*`), and graph-node cache (`_snt_graph_nodes`) are suffixed with the `pk_` key prefix, matching the retry queue's existing convention. This fixes cross-project collisions when two SentientUI keys run on the same exact origin — most importantly, two projects previously shared one `_snt_uid`, and because sessions are keyed globally server-side, one project's traffic could land on another project's session row.
+
+  Note: because the visitor-id key name changes, existing returning visitors are assigned a fresh id once on upgrade (their prior anonymous profile is orphaned). Single-project sites are otherwise unaffected; local mode (no key) keeps the legacy key names.
+
+- 8663750: Graph sync is now data-minimizing by default. Page URLs are reduced to `origin + pathname` (`sanitizePageUrl`), so query strings and fragments — which can carry tokens, emails, or other sensitive params — never leave the browser. Captured heading / DOM text is now opt-in via `captureDomText` (off by default); component structure (ids, semantic types, prominence) still syncs when `graph` is enabled.
+
 ## 0.16.7
 
 ### Patch Changes

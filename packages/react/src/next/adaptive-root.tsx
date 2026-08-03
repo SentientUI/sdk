@@ -1,4 +1,4 @@
-import { deriveSessionSegment } from '@sentientui/core';
+import { deriveSessionSegment, matchedAgentToken } from '@sentientui/core';
 import type { SlotDeclInput, SlotResult } from '@sentientui/core';
 import { cookies, headers } from 'next/headers';
 import type { ReactNode } from 'react';
@@ -11,11 +11,10 @@ import {
 } from '../server.js';
 import { AdaptiveRootClient } from './adaptive-root-client.js';
 import { buildAgentFeed, renderAgentJsonLdBody, type AgentBlock } from '../agent-feed.js';
+import { logAgentFetch } from './log-agent-fetch.js';
 
 export { createAgentFeed } from './agent-feed-route.js';
 export type { AgentFeedRouteConfig, AgentFeedReadEntry } from './agent-feed-route.js';
-export { sentientAgentMiddleware } from './agent-middleware.js';
-export type { SentientAgentMiddlewareConfig, CrawlerRequestEntry } from './agent-middleware.js';
 export { defineAgentContent, buildAgentFeed as buildAgentFeedFor } from '../agent-feed.js';
 export type { AgentFeed } from '../agent-feed.js';
 
@@ -71,6 +70,18 @@ export type AdaptiveRootProps = Omit<
     /** Structured page content. Falls back to the `defineAgentContent` registry for this path. */
     content?: Record<string, unknown>;
   };
+  /**
+   * When true (default), a known AI-agent fetch (matched by user-agent —
+   * GPTBot, ChatGPT-User, Claude-User, PerplexityBot, …) is logged server-side
+   * to your agent analytics. Machine telemetry only (no cookie, no session);
+   * fire-and-forget, never affects render. Set false to opt out.
+   */
+  captureAgents?: boolean;
+  /**
+   * CSP nonce for the inline persona (and optional agent JSON-LD) scripts.
+   * Pass through from Next.js middleware / `headers()` when using a strict CSP.
+   */
+  nonce?: string;
   children: ReactNode;
 };
 
@@ -122,6 +133,8 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
     ssrSessionId: ssrSessionIdProp,
     timeoutMs,
     agentFeed,
+    captureAgents,
+    nonce,
     children,
     ...providerProps
   } = props;
@@ -156,6 +169,17 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   const baseUrl = providerProps.apiBaseUrl
     ? providerProps.apiBaseUrl.replace(/\/$/, '')
     : DEFAULT_API_BASE_URL;
+
+  // Server-side agent-fetch capture (spec: nextjs-agent-fetch-capture). JS-less
+  // assistants (GPTBot / ChatGPT-User / Claude-User / PerplexityBot / …) never
+  // run client JS, but they trigger SSR — so AdaptiveRoot sees their UA here.
+  // Fire-and-forget; never blocks or breaks render. `agentPath` is reused by the
+  // agentFeed JSON-LD below.
+  const agentPath = agentFeed?.path ?? headerStore.get('x-pathname') ?? '/';
+  const agentBot = matchedAgentToken(userAgent ?? '');
+  if (captureAgents !== false && agentBot) {
+    logAgentFetch({ baseUrl, apiKey: providerProps.apiKey, path: agentPath, botName: agentBot, userAgent });
+  }
 
   let initialAssignments: ServerAssignments;
   let initialLayoutOrder: string[] | null = null;
@@ -206,7 +230,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   // Single-writer inline script — ALWAYS the first child, before any markup
   // that CSS keyed on the persona attributes could style.
   const personaScript = (
-    <SentientPersonaScript apiKey={providerProps.apiKey} persona={initialPersona} />
+    <SentientPersonaScript apiKey={providerProps.apiKey} persona={initialPersona} nonce={nonce} />
   );
 
   const client = (
@@ -235,9 +259,8 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   // Server-rendered inline JSON-LD for AI crawlers. Emitted only on the server
   // path so passive crawlers (no JS) see it in the raw HTML. The body escapes
   // '<' so page content cannot break out of the <script> element.
-  const path = agentFeed.path ?? headerStore.get('x-pathname') ?? '/';
   const feed = buildAgentFeed({
-    page: path,
+    page: agentPath,
     blocks: assignmentsToBlocks(initialAssignments),
     layoutOrder: initialLayoutOrder ?? undefined,
     content: agentFeed.content,
@@ -248,6 +271,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       {personaScript}
       <script
         type="application/ld+json"
+        nonce={nonce}
         dangerouslySetInnerHTML={{ __html: renderAgentJsonLdBody(feed) }}
       />
       {client}
