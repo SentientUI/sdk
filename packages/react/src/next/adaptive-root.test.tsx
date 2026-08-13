@@ -76,7 +76,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
   mockedHeaders.mockResolvedValue(headerStore({ host: 'shop.example.com', 'user-agent': 'UA', referer: 'https://g.co' }));
-  mockedCookies.mockResolvedValue({} as never);
+  // Shape matches next/headers: always a store with .get(), usually empty.
+  mockedCookies.mockResolvedValue({ get: () => undefined } as never);
   mockedDecision.mockResolvedValue({
     assignments: { hero_cta: { variantId: 'accent' } },
     layoutOrder: ['pricing', 'hero'],
@@ -317,5 +318,143 @@ describe('AdaptiveRoot — persona script + slots (adaptive ladder)', () => {
     );
     expect(scripts).toHaveLength(1); // single writer
     expect(String((scripts[0] as unknown as { props: { dangerouslySetInnerHTML: { __html: string } } }).props.dangerouslySetInnerHTML.__html)).toContain('"buyer"');
+  });
+});
+
+describe('AdaptiveRoot — consent gate', () => {
+  // AdaptiveRoot threaded doNotTrack into the SSR loaders but never consent, so
+  // <AdaptiveRoot consent={false}> still ran /v1/decide and minted a session
+  // row — despite the documented contract of "no cookies, no events". That is
+  // what forced sites to hide AdaptiveRoot behind a conditional render and
+  // wait on router.refresh() before they could start tracking.
+  it('skips the SSR decide and mints no session when consent is false', async () => {
+    await AdaptiveRoot(baseProps({ consent: false, sections: ['hero', 'pricing'] }));
+    expect(mockedDecision).not.toHaveBeenCalled();
+    expect(mockedAssign).not.toHaveBeenCalled();
+  });
+
+  it('skips the SSR assign when consent is false and no sections are declared', async () => {
+    await AdaptiveRoot(baseProps({ consent: false }));
+    expect(mockedAssign).not.toHaveBeenCalled();
+    expect(mockedDecision).not.toHaveBeenCalled();
+  });
+
+  it('passes no ssrSessionId to the client when consent is false', async () => {
+    const el = await AdaptiveRoot(baseProps({ consent: false }));
+    const props = clientEl(el as never).props as Record<string, unknown>;
+    expect(props.ssrSessionId).toBeUndefined();
+    expect(props.consent).toBe(false);
+  });
+
+  it('still captures a JS-less agent fetch when consent is false', async () => {
+    mockedHeaders.mockResolvedValue(
+      headerStore({ host: 'acme.com', 'user-agent': 'Mozilla/5.0 (compatible; GPTBot/1.2)', 'x-pathname': '/' }),
+    );
+    await AdaptiveRoot(baseProps({ consent: false, appOrigin: 'https://acme.com' }));
+    // Machine telemetry: no cookie, no session, independent of consent.
+    expect(mockedLog).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the SSR decide normally when consent is true', async () => {
+    await AdaptiveRoot(baseProps({ consent: true, sections: ['hero'] }));
+    expect(mockedDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the SSR decide when consent is omitted (default: granted)', async () => {
+    await AdaptiveRoot(baseProps({ sections: ['hero'] }));
+    expect(mockedDecision).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AdaptiveRoot — consentFrom', () => {
+  // With a client-side consent source the server cannot know the answer unless
+  // the app also resolves the cookie and passes consent. Defaulting to "run the
+  // SSR call" would mint a session for a visitor who has not consented, so the
+  // absence of an explicit consent={true} must gate the server.
+  it('skips the SSR call when consentFrom is set and consent is unknown', async () => {
+    await AdaptiveRoot(baseProps({ consentFrom: { cookie: 'c', event: 'e' }, sections: ['hero'] }));
+    expect(mockedDecision).not.toHaveBeenCalled();
+  });
+
+  it('skips the SSR call when consentFrom is set and consent is false', async () => {
+    await AdaptiveRoot(
+      baseProps({ consentFrom: { cookie: 'c', event: 'e' }, consent: false, sections: ['hero'] }),
+    );
+    expect(mockedDecision).not.toHaveBeenCalled();
+  });
+
+  // The app resolved the cookie server-side, so a returning visitor still gets
+  // SSR personalization and zero layout shift.
+  it('runs the SSR call when the app resolved consent server-side', async () => {
+    await AdaptiveRoot(
+      baseProps({ consentFrom: { cookie: 'c', event: 'e' }, consent: true, sections: ['hero'] }),
+    );
+    expect(mockedDecision).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AdaptiveRoot — server-resolved consentFrom', () => {
+  function cookieStore(map: Record<string, string>) {
+    return {
+      get: (k: string) => (k in map ? { name: k, value: map[k] } : undefined),
+    } as unknown as Awaited<ReturnType<typeof cookies>>;
+  }
+
+  // AdaptiveRoot is a Server Component and already reads cookies(), so making
+  // the app read the same cookie again just to pass `consent` was duplicated
+  // knowledge — and naming the cookie twice invites them to drift.
+  it('resolves consent from the consentFrom cookie without an explicit consent prop', async () => {
+    mockedCookies.mockResolvedValue(cookieStore({ cookie_consent: 'accepted' }));
+    await AdaptiveRoot(
+      baseProps({ consentFrom: { cookie: 'cookie_consent', event: 'e' }, sections: ['hero'] }),
+    );
+    expect(mockedDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it('honours a custom accepted value', async () => {
+    mockedCookies.mockResolvedValue(cookieStore({ cc: 'yes' }));
+    await AdaptiveRoot(
+      baseProps({ consentFrom: { cookie: 'cc', value: 'yes', event: 'e' }, sections: ['hero'] }),
+    );
+    expect(mockedDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays gated when the cookie holds a different value', async () => {
+    mockedCookies.mockResolvedValue(cookieStore({ cookie_consent: 'declined' }));
+    await AdaptiveRoot(
+      baseProps({ consentFrom: { cookie: 'cookie_consent', event: 'e' }, sections: ['hero'] }),
+    );
+    expect(mockedDecision).not.toHaveBeenCalled();
+  });
+
+  it('stays gated when the cookie is absent', async () => {
+    mockedCookies.mockResolvedValue(cookieStore({}));
+    await AdaptiveRoot(
+      baseProps({ consentFrom: { cookie: 'cookie_consent', event: 'e' }, sections: ['hero'] }),
+    );
+    expect(mockedDecision).not.toHaveBeenCalled();
+  });
+
+  // A predicate runs in the browser and cannot be evaluated here.
+  it('stays gated for a check()-only source even if some cookie exists', async () => {
+    mockedCookies.mockResolvedValue(cookieStore({ cookie_consent: 'accepted' }));
+    await AdaptiveRoot(
+      baseProps({ consentFrom: { check: () => true, event: 'e' }, sections: ['hero'] }),
+    );
+    expect(mockedDecision).not.toHaveBeenCalled();
+  });
+
+  it('lets an explicit consent prop win over the cookie', async () => {
+    mockedCookies.mockResolvedValue(cookieStore({ cookie_consent: 'accepted' }));
+    await AdaptiveRoot(
+      baseProps({ consentFrom: { cookie: 'cookie_consent', event: 'e' }, consent: false, sections: ['hero'] }),
+    );
+    expect(mockedDecision).not.toHaveBeenCalled();
+  });
+
+  it('forwards the resolved consent to the client so it does not start gated', async () => {
+    mockedCookies.mockResolvedValue(cookieStore({ cookie_consent: 'accepted' }));
+    const el = await AdaptiveRoot(baseProps({ consentFrom: { cookie: 'cookie_consent', event: 'e' } }));
+    expect((clientEl(el as never).props as Record<string, unknown>).consent).toBe(true);
   });
 });

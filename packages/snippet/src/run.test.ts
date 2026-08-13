@@ -135,6 +135,40 @@ describe('run — window.SentientSnippet global', () => {
   });
 });
 
+describe('run — bootstrap on a project with nothing published', () => {
+  // Contract the API's empty-registry 200 depends on (apps/api decide route):
+  // an empty DECISION must still start capture, while a FAILED decide must not.
+  // If this pair ever inverts, a freshly-installed site silently stops feeding
+  // the persona pipeline again.
+  beforeEach(() => { (window as Window).sentient = { apiKey: 'pk_test' }; }); // registry install
+
+  it('an empty decision still starts engagement capture', async () => {
+    mockInit.mockReturnValue({
+      decide: vi.fn().mockResolvedValue({
+        layoutOrder: [], assignments: {}, slots: {}, persona: 'unknown', confidence: 0,
+      }),
+      getPersona: vi.fn().mockReturnValue(null),
+      goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(),
+    } as never);
+
+    await run();
+
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed decide starts nothing (why the server must not 400 here)', async () => {
+    mockInit.mockReturnValue({
+      decide: vi.fn().mockResolvedValue(null), // what a 400 produces in core
+      getPersona: vi.fn().mockReturnValue(null),
+      goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(),
+    } as never);
+
+    await run();
+
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
+});
+
 describe('run — served section map types the engagement capture', () => {
   it('resolves sectionMap locators for the current page and passes typeOf to capture', async () => {
     (window as Window).sentient = { apiKey: 'pk_test' }; // registry install

@@ -109,6 +109,37 @@ export type AdaptiveProviderProps = {
    */
   consent?: boolean;
   /**
+   * Where to read the visitor's consent decision from, so the SDK can gate and
+   * un-gate itself instead of the host app wiring `grantConsent()` by hand.
+   *
+   * Keep your own banner or CMP — this only tells us how to observe it. The
+   * provider reads the source on mount, re-reads it whenever `event` fires, and
+   * initialises the moment it grants. Nothing is requested and no cookie is set
+   * until then, and there is no page reload.
+   *
+   * Because the provider owns the whole lifecycle there is no ordering rule to
+   * get right: pass this instead of managing `consent` yourself.
+   *
+   * @example // cookie written by your own banner
+   * consentFrom={{ cookie: 'cookie_consent', value: 'accepted', event: 'consent-decided' }}
+   * @example // a CMP that exposes an object rather than a cookie
+   * consentFrom={{ check: () => window.Cookiebot?.consent?.statistics === true,
+   *                event: 'CookiebotOnAccept' }}
+   */
+  consentFrom?: {
+    /** Cookie to read. Granted when its value equals `value`. */
+    cookie?: string;
+    /** Cookie value that means granted. @default 'accepted' */
+    value?: string;
+    /** Predicate for CMPs with a JS API. Takes precedence over `cookie`. */
+    check?: () => boolean;
+    /**
+     * `window` event that signals a decision. The source is re-read when it
+     * fires — the event's payload is never trusted — so any CMP's event works.
+     */
+    event?: string;
+  };
+  /**
    * Behavior before consent is granted. Pass `'statistical_winner'` to serve the
    * best-performing variant via `GET /v1/winner` with zero tracking while the
    * consent banner is showing. Requires `consent: false`.
@@ -196,8 +227,54 @@ export type AdaptiveProviderProps = {
 };
 
 /**
+ * Watches a {@link AdaptiveProviderProps.consentFrom} source and reports whether
+ * it currently grants consent. Returns false (and subscribes to nothing) when no
+ * source is configured.
+ */
+function useConsentSource(source: AdaptiveProviderProps['consentFrom']): boolean {
+  const [granted, setGranted] = useState(false);
+
+  // The source is usually an inline object literal, so its identity changes
+  // every render. Read it through a ref and key the effect on its primitives,
+  // otherwise the listener would be torn down and re-added on every render.
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
+
+  const { cookie, value, event } = source ?? {};
+  const hasCheck = typeof source?.check === 'function';
+
+  useEffect(() => {
+    const read = (): boolean => {
+      const s = sourceRef.current;
+      if (!s) return false;
+      if (s.check) return s.check() === true;
+      if (!s.cookie || typeof document === 'undefined') return false;
+      const want = `${s.cookie}=${s.value ?? 'accepted'}`;
+      return document.cookie.split('; ').some((c) => c.trim() === want);
+    };
+
+    if (read()) {
+      setGranted(true);
+      return;
+    }
+    if (!event) return;
+
+    // Re-read rather than trusting the event payload, so this works with any
+    // CMP's event shape (CookiebotOnAccept, OneTrustGroupsUpdated, …) and a
+    // "declined" decision correctly leaves us gated.
+    const onDecision = (): void => {
+      if (read()) setGranted(true);
+    };
+    window.addEventListener(event, onDecision);
+    return () => window.removeEventListener(event, onDecision);
+  }, [cookie, value, event, hasCheck]);
+
+  return granted;
+}
+
+/**
  * Initialises the Sentient core SDK in a useEffect (SSR-safe) and exposes the
- * client via React context. Re-initialises when `consent` changes.
+ * client via React context. Re-initialises when consent changes.
  */
 export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
   const [client, setClient] = useState<SentientClient | null>(null);
@@ -209,9 +286,16 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
   const [previewOn, setPreviewOn] = useState(getPreviewMode());
   useEffect(() => subscribePreview(() => setPreviewOn(getPreviewMode())), []);
 
+  // When a consentFrom source is configured it owns the gate: start closed and
+  // open only once the source grants. An explicit consent={true} (e.g. resolved
+  // from the cookie on the server by AdaptiveRoot) short-circuits it, so a
+  // returning visitor isn't gated waiting for a client-side re-read.
+  const sourceGranted = useConsentSource(props.consentFrom);
+  const consent = props.consentFrom ? props.consent === true || sourceGranted : props.consent;
+
   useEffect(() => {
     // When consent is explicitly false with no preConsentBehavior, tear down any existing client.
-    if (props.consent === false && !props.preConsentBehavior) {
+    if (consent === false && !props.preConsentBehavior) {
       setClient((prev: SentientClient | null) => {
         prev?.destroy();
         return null;
@@ -225,7 +309,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       debug: props.debug,
       initialAssignments: props.initialAssignments,
       sessionSegment,
-      consent: props.consent,
+      consent,
       preConsentBehavior: props.preConsentBehavior,
       respectDoNotTrack: props.respectDoNotTrack,
       ssrSessionId: props.ssrSessionId,
@@ -283,10 +367,11 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       // consent-revocation branch above.
       created?.dispose();
     };
-    // Re-init when consent changes. Other props (incl. enableGraph) are
+    // Re-init when consent changes — whether that came from the prop or from a
+    // consentFrom source granting. Other props (incl. enableGraph) are
     // intentionally stable for a session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.consent]);
+  }, [consent]);
 
   // Poll /v1/weights every 60 s so long-lived sessions see updated bandit weights
   // without a page reload. useAssignment subscribers react via weights-store.

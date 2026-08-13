@@ -1,5 +1,11 @@
 # @sentientui/snippet
 
+## 0.12.0
+
+### Minor Changes
+
+- c55ae50: On-site editor: pause/resume element selection so you can browse the site normally mid-session; per-variant preview mode (`?sentient_preview=<slotId>&sentient_arm=<armId>` on an editor-token link) that renders a component with a chosen variant injected, with an on-page variant switcher; font variations — `fontFamily` joins the bounded style vocabulary (web-safe stacks + fonts the site already loads, never loading new font files), with a Font field in the style form.
+
 ## 0.11.5
 
 ### Patch Changes

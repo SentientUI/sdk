@@ -2,7 +2,8 @@ import { resolveLocatorOne } from '../locator';
 import { generateLocator, resolvesUniquely } from './locator-gen';
 import { clearCachedEditorToken } from '../editor-token';
 import { cssValueSafe } from '../css-guard';
-import type { CompoundLocator } from '@sentientui/core';
+import { applyOps } from '../ops';
+import type { CompoundLocator, SlotOps } from '@sentientui/core';
 
 // On-site visual editor overlay. Loaded as a SEPARATE bundle only when the
 // snippet detects ?sentient_editor=<token>. It reads its token + API base from
@@ -162,13 +163,19 @@ async function save(b: Boot, path: string, body: unknown): Promise<SaveResult> {
   }
 }
 
+/** Font families the site already loads, per the audit (targets endpoint).
+ *  Module-scope and filled lazily after mount — the style form reads it at
+ *  open time, so the label upgrades once the fetch lands. */
+let detectedFonts: string[] = [];
+
 async function fetchTargets(b: Boot): Promise<AuditTarget[]> {
   try {
     const res = await fetch(`${b.apiBase}/v1/editor/targets`, {
       headers: { authorization: `Bearer ${b.token}` },
     });
     if (!res.ok) return [];
-    const body = (await res.json()) as { targets?: AuditTarget[] };
+    const body = (await res.json()) as { targets?: AuditTarget[]; fonts?: string[] };
+    detectedFonts = Array.isArray(body.fonts) ? body.fonts.filter((f): f is string => typeof f === 'string') : [];
     return Array.isArray(body.targets) ? body.targets : [];
   } catch {
     return [];
@@ -238,10 +245,10 @@ export function computeMoveAnchors(el: Element, doc: Document): {
 
 export type StyleControls = {
   color?: string; background?: string; fontSize?: string;
-  fontWeight?: string; borderRadius?: string; textAlign?: string;
+  fontWeight?: string; borderRadius?: string; textAlign?: string; fontFamily?: string;
 };
 
-const STYLE_KEYS = ['color', 'background', 'fontSize', 'fontWeight', 'borderRadius', 'textAlign'] as const;
+const STYLE_KEYS = ['color', 'background', 'fontSize', 'fontWeight', 'borderRadius', 'textAlign', 'fontFamily'] as const;
 
 // Semantic validation ON TOP of the shared injection-safety guard (cssValueSafe).
 // A value can be injection-safe yet illegal CSS — `fontSize:"20"` (no unit),
@@ -273,6 +280,14 @@ export function styleFieldError(key: (typeof STYLE_KEYS)[number], v: string): st
     case 'color':
     case 'background':
       return isValidColor(v) ? null : 'Enter a colour, e.g. #1a1a1a.';
+    case 'fontFamily': {
+      // Mirrors the server rule (slot-registry): 1–5 comma-separated families,
+      // plain names only — a font can be referenced, never loaded.
+      const families = v.split(',').map((f) => f.trim().replace(/^['"]|['"]$/g, ''));
+      return v.length <= 120 && families.length >= 1 && families.length <= 5 &&
+        families.every((f) => /^[A-Za-z0-9][A-Za-z0-9 -]*$/.test(f))
+        ? null : 'Use a font name, e.g. Georgia, serif.';
+    }
     default:
       return null;
   }
@@ -356,6 +371,24 @@ export function mount(b: Boot): void {
   });
   title.append(dot, el('span', {}, 'SentientUI editor'));
   const hint = el('div', { opacity: '0.85', marginBottom: '8px' }, 'Click any element on the page to adapt it.');
+  // Pause/resume element picking: while paused the capture-phase handlers
+  // early-return, so clicks and hovers reach the site untouched — links
+  // navigate, menus open, forms work. Function-local, so a re-mount after a
+  // navigation always starts unpaused (you navigated to get somewhere; now
+  // you pick).
+  let pickingPaused = false;
+  const pauseBtn = el('button', btnStyle('#374151'), 'Pause selecting') as HTMLButtonElement;
+  pauseBtn.onclick = () => {
+    pickingPaused = !pickingPaused;
+    pauseBtn.textContent = pickingPaused ? 'Resume selecting' : 'Pause selecting';
+    if (pickingPaused) {
+      highlight.style.display = 'none';
+      clearTargetHighlights(document);
+      setStatus('Selection paused — browse normally, then resume.');
+    } else {
+      setStatus('Click any element on the page to adapt it.');
+    }
+  };
   // Which element the actions below apply to — pinned in the panel so it never
   // gets lost while the mouse is over here.
   const selectedLabel = el('div', {
@@ -400,7 +433,7 @@ export function mount(b: Boot): void {
   activateGoalBtn.style.display = 'none';
 
   panel.append(
-    title, hint, selectedLabel, status,
+    title, hint, pauseBtn, selectedLabel, status,
     sectionLabel('Content & style'), textBtn, styleBtn,
     sectionLabel('Track a goal'), goalBtn, formGoalBtn, pageGoalBtn,
     sectionLabel('Move'), moveUpBtn, moveDownBtn, saveArrangeBtn, undoBtn,
@@ -581,6 +614,7 @@ export function mount(b: Boot): void {
   };
 
   const onMove = (e: MouseEvent): void => {
+    if (pickingPaused) return;
     const t = e.target as Element | null;
     if (!t || panel.contains(t) || t === highlight) return;
     clearTargetHighlights(document); // user is picking their own element now
@@ -599,6 +633,7 @@ export function mount(b: Boot): void {
   };
 
   const onClick = (e: MouseEvent): void => {
+    if (pickingPaused) return;
     const t = e.target as Element | null;
     if (!t || panel.contains(t)) return;
     e.preventDefault();
@@ -750,6 +785,12 @@ export function mount(b: Boot): void {
         { key: 'background', label: 'Background colour', type: 'color' },
         { key: 'fontSize', label: 'Font size (e.g. 20px)' },
         { key: 'fontWeight', label: 'Font weight (e.g. 700)' },
+        {
+          key: 'fontFamily',
+          label: detectedFonts.length
+            ? `Font (this site has: ${detectedFonts.slice(0, 3).join(', ')})`
+            : 'Font (e.g. Georgia, serif)',
+        },
         { key: 'borderRadius', label: 'Corner radius (e.g. 8px)' },
         { key: 'textAlign', label: 'Alignment', type: 'select', options: ['left', 'center', 'right', 'justify'] },
       ],
@@ -868,6 +909,93 @@ function btnStyle(bg: string): Partial<CSSStyleDeclaration> {
   };
 }
 
+const PREVIEW_BAR_ID = 'sentient-preview-bar';
+
+type PreviewSlotRow = {
+  slot_id: string;
+  kind: string;
+  target: unknown;
+  display_name?: string | null;
+  draft_config?: { arms?: Array<{ id: string; displayName?: string; ops: SlotOps }> } | null;
+  published_config?: { arms?: Array<{ id: string; displayName?: string; ops: SlotOps }> } | null;
+};
+
+/** Per-variant preview mode (?sentient_preview=<slotId>[&sentient_arm=<id>]):
+ *  render the component with one variant's ops injected, plus a floating bar
+ *  with a chip per variant. Switching variants NAVIGATES (full reload) so every
+ *  variant applies to a clean DOM baseline — ops like text replacement are
+ *  destructive, and in-place undo bookkeeping buys nothing here. Drafts are
+ *  previewable because the editor-token slots endpoint serves draft configs. */
+async function mountPreview(b: Boot, slotId: string): Promise<void> {
+  let slot: PreviewSlotRow | null = null;
+  try {
+    const res = await fetch(`${b.apiBase}/v1/editor/slots`, {
+      headers: { authorization: `Bearer ${b.token}` },
+    });
+    if (res.ok) {
+      const body = (await res.json()) as { slots?: PreviewSlotRow[] };
+      slot = (body.slots ?? []).find((s) => s.slot_id === slotId && s.kind === 'arms') ?? null;
+    }
+  } catch { /* handled below */ }
+
+  const bar = el('div', {
+    position: 'fixed', bottom: '16px', left: '50%', transform: 'translateX(-50%)', zIndex: '2147483647',
+    display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '12px',
+    maxWidth: '90vw', flexWrap: 'wrap',
+    background: '#111827', color: '#fff', font: '13px system-ui, sans-serif',
+    border: '1px solid rgba(99,102,241,0.55)', boxShadow: '0 10px 34px rgba(0,0,0,0.45)',
+  });
+  bar.id = PREVIEW_BAR_ID;
+  const exit = el('button', {
+    padding: '4px 10px', borderRadius: '999px', border: '1px solid rgba(255,255,255,0.3)',
+    background: 'transparent', color: '#fff', font: '12px system-ui, sans-serif',
+    cursor: 'pointer', opacity: '0.7',
+  }, 'Exit preview') as HTMLButtonElement;
+  exit.onclick = () => {
+    clearCachedEditorToken();
+    const url = new URL(location.href);
+    for (const p of ['sentient_editor', 'sentient_preview', 'sentient_arm']) url.searchParams.delete(p);
+    location.assign(url.toString());
+  };
+
+  const arms = (slot?.draft_config?.arms ?? slot?.published_config?.arms) ?? [];
+  if (!slot || arms.length === 0) {
+    bar.append(el('span', {}, 'Couldn’t load this preview — reopen it from your dashboard.'), exit);
+    (document.body ?? document.documentElement).append(bar);
+    return;
+  }
+
+  const requestedArm = new URLSearchParams(location.search).get('sentient_arm');
+  // Default = the first non-original variant: previewing THE CHANGE is the point.
+  const arm = arms.find((a) => a.id === requestedArm) ?? arms[1] ?? arms[0]!;
+  bar.append(el('span', { fontWeight: '700' }, `Previewing: ${slot.display_name ?? slot.slot_id}`));
+
+  const target = slot.target && typeof slot.target === 'object'
+    ? resolveLocatorOne(slot.target as CompoundLocator, document)
+    : null;
+  if (!target) {
+    bar.append(el('span', { opacity: '0.85' },
+      '— we couldn’t find this component on this page. It may live on another page, or the page changed.'));
+  } else {
+    applyOps(target, arm.ops, `preview-${slot.slot_id}`, document);
+    try { target.scrollIntoView({ block: 'center' }); } catch { /* older browsers */ }
+    for (const a of arms) {
+      const chip = el('button', {
+        padding: '4px 10px', borderRadius: '999px', border: '1px solid rgba(255,255,255,0.3)', cursor: 'pointer',
+        background: a.id === arm.id ? '#6366f1' : 'transparent', color: '#fff', font: '12px system-ui, sans-serif',
+      }, a.displayName ?? a.id) as HTMLButtonElement;
+      chip.onclick = () => {
+        const url = new URL(location.href);
+        url.searchParams.set('sentient_arm', a.id); // full reload = clean DOM baseline
+        location.assign(url.toString());
+      };
+      bar.append(chip);
+    }
+  }
+  bar.append(exit);
+  (document.body ?? document.documentElement).append(bar);
+}
+
 async function start(): Promise<void> {
   if (typeof document === 'undefined') return;
   const b = boot();
@@ -888,6 +1016,13 @@ async function start(): Promise<void> {
       showToast(LOAD_ERROR_MESSAGE);
     }
     return; // never mounts
+  }
+  // Preview mode replaces the picker entirely — one component, one variant,
+  // a switcher bar. Only reached with a valid editor token (drafts are private).
+  const previewSlot = new URLSearchParams(location.search).get('sentient_preview');
+  if (previewSlot) {
+    if (!document.getElementById(PREVIEW_BAR_ID)) await mountPreview(b, previewSlot);
+    return;
   }
   if (document.getElementById(PANEL_ID)) return; // already mounted
   mount(b);

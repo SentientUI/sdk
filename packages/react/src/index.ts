@@ -59,3 +59,13 @@ export {
   renderAgentMarkdown,
 } from './agent-feed.js';
 export type { AgentFeed, AgentBlock } from './agent-feed.js';
+
+// Re-exported from core so a React app can wire its consent banner to the SDK
+// without adding @sentientui/core as a direct dependency — the docs already
+// point React users at grantConsent(), so it belongs on this entry.
+//
+// Safe here, unlike the server-only helpers re-exported from /next: this index
+// carries no 'use client' directive, and grantConsent is browser-only (it
+// returns immediately during SSR), so it is only ever called from a client
+// component and never becomes a client reference invoked on the server.
+export { grantConsent } from '@sentientui/core';

@@ -27,6 +27,7 @@ export const CSS_PROP: Record<string, string> = {
   letterSpacing: 'letter-spacing',
   textTransform: 'text-transform',
   gap: 'gap',
+  fontFamily: 'font-family',
 };
 
 // CSS functions safe to keep: colour + math notations that can never load or

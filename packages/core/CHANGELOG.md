@@ -1,5 +1,46 @@
 # @sentientui/core
 
+## 0.16.10
+
+### Patch Changes
+
+- 8ed4d0b: Consent can now start tracking without a page reload.
+
+  `grantConsent()` only ever worked for clients created with
+  `preConsentBehavior: 'statistical_winner'`. In `'control'` mode — the documented
+  default, and the only pre-consent mode that makes no network request — the
+  client was registered with no upgrade hook, so `grantConsent()` returned
+  silently and the site had to reload to start tracking. Every gated client now
+  gets an upgradeable proxy; control mode still sends nothing until consent.
+
+  `<AdaptiveRoot consent={false}>` also ran its SSR `/v1/decide` and minted a
+  session row, despite the documented contract of "no SDK is initialised, no
+  cookies are written, no events are sent". It now skips the server call and the
+  session entirely, matching the existing DNT/GPC behaviour — so it is safe to
+  render unconditionally and gate with the prop instead of hiding it behind a
+  conditional render.
+
+  Together these remove the `router.refresh()` round trip from consent-gated
+  Next.js apps, which silently lost every visitor who accepted and left before the
+  re-render landed.
+
+  New `consentFrom` prop on `<AdaptiveProvider>` / `<AdaptiveRoot>`: point it at
+  the cookie (or a `check()` predicate, for CMPs with a JS API) and the window
+  event your banner fires, and the SDK gates and un-gates itself. It reads the
+  source on mount, re-reads it on every event — the payload is never trusted, so
+  any CMP's event works and a "declined" decision stays gated — and initialises
+  the moment it grants. This replaces hand-wiring `grantConsent()` in a component
+  of your own, and removes the ordering hazard that came with it (a child of the
+  provider would have called it before the provider had initialised).
+
+  `<AdaptiveRoot>` resolves a cookie-based `consentFrom` from the request itself,
+  so an already-consented visitor still gets SSR variant assignment with zero
+  layout shift without the app calling `cookies()` and naming the cookie twice.
+
+  `grantConsent` is also re-exported from `@sentientui/react` for apps that drive
+  consent manually, so they no longer need `@sentientui/core` as a direct
+  dependency.
+
 ## 0.16.9
 
 ### Patch Changes

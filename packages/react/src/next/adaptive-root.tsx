@@ -165,8 +165,39 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   // session row is minted for the visitor (audit P4) — matching the client SDK,
   // which already no-ops for these signals.
   const doNotTrack = headerStore.get('dnt') === '1' || headerStore.get('sec-gpc') === '1';
+  // `consent: false` must gate the SERVER too, not just the client. Without
+  // this the SSR decide/assign still ran and still minted a session row for a
+  // visitor who had not consented — contradicting the documented contract
+  // ("no SDK is initialised, no cookies are written, no events are sent") and
+  // forcing sites to hide AdaptiveRoot behind a conditional render, which is
+  // what made consent-after-load cost a full server round trip.
   const sessionSegment = deriveSessionSegment({ userAgent, referer, appOrigin: resolvedOrigin });
   const cookieStore = await cookies();
+
+  // This is a Server Component and already has the request cookies, so resolve
+  // a cookie-based `consentFrom` here rather than making the app read the same
+  // cookie again just to pass `consent` — naming it twice only invites drift.
+  // An already-consented visitor therefore gets SSR variant assignment (zero
+  // layout shift) with no extra code.
+  //
+  // A `check()` source runs in the browser and cannot be evaluated here, so it
+  // stays gated until the client resolves it. An explicit `consent` prop always
+  // wins — it is the escape hatch for apps that track consent elsewhere.
+  const consentFrom = providerProps.consentFrom;
+  const consent =
+    providerProps.consent ??
+    (consentFrom?.cookie && !consentFrom.check
+      ? cookieStore.get(consentFrom.cookie)?.value === (consentFrom.value ?? 'accepted')
+      : undefined);
+
+  // Consent must gate the SERVER too, not just the client. Without this the SSR
+  // decide/assign still ran and still minted a session row for a visitor who
+  // had not consented — contradicting the documented contract ("no SDK is
+  // initialised, no cookies are written, no events are sent") and forcing sites
+  // to hide AdaptiveRoot behind a conditional render, which is what made
+  // consent-after-load cost a full server round trip.
+  const consentGated = consent === false || (consentFrom != null && consent !== true);
+  const skipSsr = doNotTrack || consentGated;
 
   // SSR preload MUST hit the same API host the client will use, otherwise the
   // SSR-minted session lives on the wrong host and the client's first /assign
@@ -197,6 +228,12 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   if (initialAssignmentsOverride) {
     initialAssignments = initialAssignmentsOverride;
     ssrSessionId = ssrSessionIdProp;
+  } else if (consentGated) {
+    // Nothing server-side: no decide, no assign, no session. Components fall
+    // back to `ssrFallback`, and the client starts only if the visitor later
+    // consents — via the `consent` prop or grantConsent(), neither of which
+    // needs a page reload.
+    initialAssignments = {};
   } else if ((sections && sections.length > 0) || (slots && slots.length > 0)) {
     const decision = await loadAdaptiveDecision({
       sections: sections ?? [],
@@ -208,7 +245,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       origin: resolvedOrigin,
       userAgent,
       referer,
-      doNotTrack,
+      doNotTrack: skipSsr,
       timeoutMs,
     });
     initialAssignments = decision.assignments;
@@ -227,7 +264,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       origin: resolvedOrigin,
       userAgent,
       referer,
-      doNotTrack,
+      doNotTrack: skipSsr,
       timeoutMs,
     });
     initialAssignments = result.assignments;
@@ -243,6 +280,9 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   const client = (
     <AdaptiveRootClient
       {...providerProps}
+      // Forward the server-resolved value so a consented visitor's client does
+      // not start gated and re-resolve the same cookie on mount.
+      consent={consent}
       initialAssignments={initialAssignments}
       initialLayoutOrder={initialLayoutOrder}
       initialSlots={initialSlots}

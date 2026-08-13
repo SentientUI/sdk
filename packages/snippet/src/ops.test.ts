@@ -67,6 +67,13 @@ describe('expanded style props', () => {
     applyOps(el, { style: { position: 'fixed' } as never }, 's1', document);
     expect(document.querySelector('style[data-sentient-ops]')?.textContent ?? '').not.toContain('position');
   });
+  it('applies a fontFamily style op through the generated stylesheet', () => {
+    const el = document.createElement('button');
+    document.body.appendChild(el);
+    applyOps(el, { style: { fontFamily: 'Georgia, serif' } }, 'slot-f', document);
+    const sheet = document.querySelector('style[data-sentient-ops]')!;
+    expect(sheet.textContent).toContain('font-family:Georgia, serif !important');
+  });
 });
 
 describe('external-resource guard (cssValueSafe)', () => {

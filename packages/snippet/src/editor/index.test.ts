@@ -467,6 +467,21 @@ describe('buildStyleOps / styleFieldError', () => {
     expect(style).toEqual({});
     expect(errors).toEqual({});
   });
+
+  it('accepts a valid fontFamily and emits it in style ops', () => {
+    const { style, errors } = buildStyleOps({ fontFamily: 'Georgia, serif' });
+    expect(errors).toEqual({});
+    expect(style.fontFamily).toBe('Georgia, serif');
+  });
+
+  it('rejects an invalid fontFamily with a friendly reason', () => {
+    // url(...) trips the shared injection guard; a weird-but-injection-safe
+    // value trips the per-field validator with the friendly message.
+    expect(buildStyleOps({ fontFamily: 'url(https://x)' }).errors.fontFamily).toBeTruthy();
+    expect(buildStyleOps({ fontFamily: '@Weird!' }).errors.fontFamily).toMatch(/font name/i);
+    expect(styleFieldError('fontFamily', 'a, b, c, d, e, f')).toBeTruthy(); // > 5 families
+    expect(styleFieldError('fontFamily', '"Playfair Display", Georgia, serif')).toBeNull();
+  });
 });
 
 // Shared mount helpers for the DOM-driven editor tests below (mirrors the

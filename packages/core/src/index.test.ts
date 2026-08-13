@@ -253,6 +253,71 @@ describe('grantConsent()', () => {
   it('is a no-op when called before init()', () => {
     expect(() => grantConsent()).not.toThrow();
   });
+
+  // 'control' is the documented default and the only pre-consent mode that
+  // makes no network call. It used to register `upgrade: null`, so a site that
+  // wanted zero pre-consent traffic could never start tracking without a full
+  // reload — and grantConsent() failed silently.
+  it('upgrades a control-mode pre-consent client, with no request before consent', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({ ok: true })                                                          // session upsert
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ variantId: 'B', assignmentTtlMs: 30000 }) }), // assign
+    );
+
+    // Distinct key + component ids: the assignment cache is keyed on
+    // (apiKey, componentId, variantIds) and persists in localStorage across
+    // tests in this file, so reusing them would serve a cached variant and
+    // skip the fetch this test is asserting on.
+    const client = init({
+      ...BASE_CONFIG,
+      apiKey: 'pk_ctrl_upgrade1',
+      consent: false,
+      preConsentBehavior: 'control',
+    });
+
+    // Pre-consent: serves the control variant locally, touches the network zero times.
+    expect(await client.assign('ctrl_hero', ['A', 'B'])).toBeNull();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+
+    grantConsent();
+
+    // Same client reference is now live.
+    const postResult = await client.assign('ctrl_pricing', ['X', 'Y']);
+    expect(postResult?.variantId).toBe('B');
+    // Order isn't pinned: the session upsert is fire-and-forget and can land
+    // after the assign, so match any call rather than the last one.
+    const urls = vi.mocked(fetch).mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('/assign'))).toBe(true);
+
+    client.destroy();
+  });
+
+  it('upgrades a control-mode client when preConsentBehavior is omitted', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ variantId: 'B', assignmentTtlMs: 30000 }) }),
+    );
+
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_ctrl_upgrade2', consent: false });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+
+    grantConsent();
+
+    expect((await client.assign('ctrl_default', ['X', 'Y']))?.variantId).toBe('B');
+    client.destroy();
+  });
+
+  it('does not upgrade a control-mode client while DNT is enabled', async () => {
+    Object.defineProperty(navigator, 'doNotTrack', { value: '1', configurable: true });
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_ctrl_dnt1', consent: false, preConsentBehavior: 'control' });
+
+    grantConsent();
+
+    expect(await client.assign('ctrl_dnt_hero', ['A', 'B'])).toBeNull();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    Object.defineProperty(navigator, 'doNotTrack', { value: null, configurable: true });
+    client.destroy();
+  });
 });
 
 describe('assign() agentData passthrough', () => {

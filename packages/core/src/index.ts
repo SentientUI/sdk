@@ -346,8 +346,9 @@ export function isDoNotTrackEnabled(): boolean {
 }
 
 /**
- * Upgrades a pre-consent client (created with `consent: false, preConsentBehavior: 'statistical_winner'`)
- * to a fully-tracking client. Call this from your consent management platform callback.
+ * Upgrades a pre-consent client (any client created with `consent: false`, in
+ * either `preConsentBehavior` mode) to a fully-tracking client, in place and
+ * with no page reload. Call this from your consent management platform callback.
  * For React apps, prefer updating the `consent` prop on `<AdaptiveProvider>`.
  * Pass `apiKey` to target a specific project; omit to upgrade the most-recently-initialized client.
  */
@@ -382,6 +383,11 @@ export function grantConsent(apiKey?: string): void {
 }
 
 function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient; setInner: (c: SentientClient) => void } {
+  // 'control' (the default) must reach the network zero times before consent.
+  // The proxy still exists so grantConsent() has something to upgrade in place
+  // — without it, a site wanting no pre-consent traffic could only start
+  // tracking by reloading the page.
+  const servesWinner = config.preConsentBehavior === 'statistical_winner';
   const baseUrl = deriveBaseUrl(config.ingestUrl ?? DEFAULT_INGEST_URL);
   const authHeaders = {
     'Content-Type': 'application/json',
@@ -396,6 +402,9 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
     getAssignment: () => null,
     fetchWeights: () => Promise.resolve([]),
     async assign(componentId, variantIds, _agentData?) {
+      // Control mode: no request. Callers fall back to variantIds[0] through
+      // ssrFallback, exactly as they did against the old no-op client.
+      if (!servesWinner) return null;
       try {
         const params = new URLSearchParams({ componentId });
         for (const v of variantIds ?? []) params.append('variantIds[]', v);
@@ -490,19 +499,22 @@ export function init(config: SentientConfig): SentientClient {
   }
 
   if (gated) {
-    if (config.preConsentBehavior === 'statistical_winner') {
-      if (!config.apiKey || !config.apiKey.startsWith('pk_')) {
+    if (!config.apiKey || !config.apiKey.startsWith('pk_')) {
+      if (config.preConsentBehavior === 'statistical_winner') {
         console.warn('[sentient] init() called with an invalid apiKey — expected a pk_ public key. SDK disabled.');
-        return SSR_CLIENT;
       }
-      const { proxy, setInner } = createPreConsentProxy(config);
-      // Under DNT the read-only winner still serves, but consent can never
-      // upgrade it to tracking — so drop the upgrade hook.
-      _clients.set(config.apiKey, { config, upgrade: dntBlocked ? null : setInner });
-      return proxy;
+      _clients.set(config.apiKey, { config, upgrade: null });
+      return SSR_CLIENT;
     }
-    _clients.set(config.apiKey, { config, upgrade: null });
-    return SSR_CLIENT;
+    // Every gated client gets an upgradeable proxy, not just the winner-serving
+    // one — otherwise grantConsent() is silently dead for the 'control' default
+    // and the site has to reload to start tracking. Control mode still makes no
+    // request; the proxy only exists so consent can swap the inner client.
+    const { proxy, setInner } = createPreConsentProxy(config);
+    // Under DNT the read-only winner still serves, but consent can never
+    // upgrade it to tracking — so drop the upgrade hook.
+    _clients.set(config.apiKey, { config, upgrade: dntBlocked ? null : setInner });
+    return proxy;
   }
 
   if (!config.apiKey || !config.apiKey.startsWith('pk_')) {
