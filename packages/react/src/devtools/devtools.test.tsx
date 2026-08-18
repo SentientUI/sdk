@@ -181,3 +181,103 @@ describe('AdaptiveDevtools — keyed mode', () => {
     expect(document.documentElement.dataset.sentientConfidence).toBe('high');
   });
 });
+
+describe('AdaptiveDevtools — layout reordering', () => {
+  /** Drag `from` onto `to` using the same events the browser fires. */
+  function drag(from: HTMLElement, to: HTMLElement): void {
+    fireEvent.dragStart(from);
+    fireEvent.dragOver(to);
+    fireEvent.drop(to);
+    fireEvent.dragEnd(from);
+  }
+
+  function rows(): HTMLElement[] {
+    return screen.getAllByRole('listitem');
+  }
+
+  it('lists the declared sections in order', () => {
+    registerSections(['hero', 'pricing', 'faq']);
+    render(<AdaptiveDevtools />);
+    openPanel();
+
+    expect(rows().map((li) => li.textContent)).toEqual([
+      '1⠿hero',
+      '2⠿pricing',
+      '3⠿faq',
+    ]);
+  });
+
+  it('moves a block to an arbitrary position in one drop, not one step at a time', () => {
+    registerSections(['hero', 'pricing', 'features', 'faq']);
+    render(<AdaptiveDevtools />);
+    openPanel();
+
+    // Last to first — the move a neighbour swap would take three presses to do.
+    drag(rows()[3]!, rows()[0]!);
+
+    expect(w.__sentient_layout_override).toEqual(['faq', 'hero', 'pricing', 'features']);
+    // An arrangement being tried must never train the optimizer.
+    expect(getPreviewMode()).toBe(true);
+    setPreviewMode(false);
+  });
+
+  it('notifies layout consumers so the page reorders without a reload', () => {
+    registerSections(['hero', 'pricing']);
+    render(<AdaptiveDevtools />);
+    openPanel();
+    const before = getOverridesVersion();
+
+    drag(rows()[1]!, rows()[0]!);
+
+    expect(getOverridesVersion()).toBeGreaterThan(before);
+    setPreviewMode(false);
+  });
+
+  it('renders the previewed order, so a second drag builds on the first', () => {
+    registerSections(['hero', 'pricing', 'faq']);
+    render(<AdaptiveDevtools />);
+    openPanel();
+
+    drag(rows()[2]!, rows()[0]!); // faq, hero, pricing
+    drag(rows()[2]!, rows()[0]!); // pricing, faq, hero
+
+    expect(w.__sentient_layout_override).toEqual(['pricing', 'faq', 'hero']);
+    setPreviewMode(false);
+  });
+
+  it('reset drops the override and leaves preview mode when nothing else is forced', () => {
+    registerSections(['hero', 'pricing']);
+    render(<AdaptiveDevtools />);
+    openPanel();
+    drag(rows()[1]!, rows()[0]!);
+
+    fireEvent.click(screen.getByRole('button', { name: /reset section order/i }));
+
+    expect(w.__sentient_layout_override).toBeUndefined();
+    expect(getPreviewMode()).toBe(false);
+    // Back to the registered order.
+    expect(rows().map((li) => li.textContent)).toEqual(['1⠿hero', '2⠿pricing']);
+  });
+
+  it('keeps preview mode on while a variant is still forced', () => {
+    registerSections(['hero', 'pricing']);
+    registerComponent({ id: 'hero_cta', variantIds: ['a', 'b'], goal: 'signup' });
+    render(<AdaptiveDevtools />);
+    openPanel();
+    fireEvent.click(screen.getByRole('button', { name: 'b' }));
+    drag(rows()[1]!, rows()[0]!);
+
+    fireEvent.click(screen.getByRole('button', { name: /reset section order/i }));
+
+    expect(w.__sentient_layout_override).toBeUndefined();
+    expect(getPreviewMode()).toBe(true);
+    setPreviewMode(false);
+  });
+
+  it('shows nothing to reorder when no sections are registered', () => {
+    render(<AdaptiveDevtools />);
+    openPanel();
+    expect(screen.queryByRole('list', { name: /section order/i })).toBeNull();
+    expect(screen.getByText(/no components, sections or slots/i)).toBeTruthy();
+  });
+});

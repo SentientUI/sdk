@@ -183,21 +183,18 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   // A `check()` source runs in the browser and cannot be evaluated here, so it
   // stays gated until the client resolves it. An explicit `consent` prop always
   // wins — it is the escape hatch for apps that track consent elsewhere.
-  const consentFrom = providerProps.consentFrom;
+  //
+  // Consent gates the SERVER too, not just the client: without it the SSR
+  // decide/assign still ran and still minted a session row for a visitor who
+  // had not consented, contradicting the documented contract ("no SDK is
+  // initialised, no cookies are written, no events are sent").
+  const cf = providerProps.consentFrom;
   const consent =
     providerProps.consent ??
-    (consentFrom?.cookie && !consentFrom.check
-      ? cookieStore.get(consentFrom.cookie)?.value === (consentFrom.value ?? 'accepted')
+    (cf?.cookie && !cf.check
+      ? cookieStore.get(cf.cookie)?.value === (cf.value ?? 'accepted')
       : undefined);
-
-  // Consent must gate the SERVER too, not just the client. Without this the SSR
-  // decide/assign still ran and still minted a session row for a visitor who
-  // had not consented — contradicting the documented contract ("no SDK is
-  // initialised, no cookies are written, no events are sent") and forcing sites
-  // to hide AdaptiveRoot behind a conditional render, which is what made
-  // consent-after-load cost a full server round trip.
-  const consentGated = consent === false || (consentFrom != null && consent !== true);
-  const skipSsr = doNotTrack || consentGated;
+  const skipSsr = doNotTrack || consent === false || (cf != null && consent !== true);
 
   // SSR preload MUST hit the same API host the client will use, otherwise the
   // SSR-minted session lives on the wrong host and the client's first /assign
@@ -228,7 +225,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   if (initialAssignmentsOverride) {
     initialAssignments = initialAssignmentsOverride;
     ssrSessionId = ssrSessionIdProp;
-  } else if (consentGated) {
+  } else if (skipSsr) {
     // Nothing server-side: no decide, no assign, no session. Components fall
     // back to `ssrFallback`, and the client starts only if the visitor later
     // consents — via the `consent` prop or grantConsent(), neither of which
@@ -285,6 +282,9 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       consent={consent}
       initialAssignments={initialAssignments}
       initialLayoutOrder={initialLayoutOrder}
+      // Declared regardless of what came back, so devtools can preview layout on
+      // a page whose decision was gated or timed out.
+      declaredSections={sections}
       initialSlots={initialSlots}
       initialPersona={initialPersona ?? undefined}
       sessionSegment={sessionSegment}

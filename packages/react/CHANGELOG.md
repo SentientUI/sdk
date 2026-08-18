@@ -1,5 +1,39 @@
 # @sentientui/react
 
+## 0.20.0
+
+### Minor Changes
+
+- abfdd5f: Devtools: reorder page sections to preview a layout, plus `once` on `useAdaptiveGoal`.
+
+  **Layout previewing.** The devtools panel now lists the page's declared sections and lets you drag any block to any position — the page reorders in place, no reload. The whole order is written on each drop, so moving the last block to first is one gesture rather than three neighbour swaps. Previewing sets preview mode, so an arrangement you are trying never trains the optimizer, and a dedicated reset restores the decided order.
+
+  `AdaptiveRoot` now forwards its declared `sections` to the provider (new `declaredSections` prop on `AdaptiveProvider`) so the panel knows what is reorderable even when no decision arrived. Previously sections registered only from a decision's `layoutOrder`, which left the panel empty in exactly the situation you reach for it — running a consent-gated site locally before accepting the banner.
+
+  Also fixed: clearing the last forced variant left preview mode off while a previewed section order was still on screen, so events recorded against a layout the visitor was not really served.
+
+  **`useAdaptiveGoal(id)` accepts `once`.** `fireGoal(name, { once: true })` records at most once per mounted component, for conversions that are a state rather than an action ("reached step 3", an effect that may re-run). Without it a remount silently double-counted. Omit it for genuine repeat actions — each click of "add to cart" is its own conversion. Checked after the dev-override gate, so a preview never consumes the one record a real conversion is entitled to.
+
+- abfdd5f: Add `usePageGoal(goalName, opts?)` — records a conversion once, when a page or route is reached.
+
+  Use it for funnel steps that are a destination rather than a click (pricing viewed, signup form reached, checkout opened). Pass `componentId` to credit the variant currently served for it — resolved from the localStorage-backed assignment cache, so the credit survives the navigation — or omit it for a session-level goal.
+
+  Arrival is a better signal than a click goal on the link that led there: it survives the navigation, and it counts visitors who arrived from the nav, a search result or a shared link. It also closes two silent failure modes in the hand-rolled `useAdaptiveGoal`-in-an-effect pattern the docs previously showed: the missing latch (a remount, or React's development double-invoke, records the arrival twice) and losing the goal to a consent gate that opens after the page mounts.
+
+## 0.19.1
+
+### Patch Changes
+
+- 4240ade: Internal: trim the `/next` entry back under its bundle budget after the consent
+  gate, and pin the DNT/GPC SSR contract with tests.
+
+  No behaviour change — `AdaptiveRoot` still skips the SSR decide/assign and mints
+  no session under `DNT: 1`, `Sec-GPC: 1`, or withheld consent, and still captures
+  JS-less agent fetches in all of those cases. This releases the trimmed build so
+  npm matches a commit whose full CI is green: 0.19.0 was published from a commit
+  where the bundle-size check had failed, because the release workflow runs
+  independently of CI.
+
 ## 0.19.0
 
 ### Minor Changes

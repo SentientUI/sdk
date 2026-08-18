@@ -458,3 +458,29 @@ describe('AdaptiveRoot — server-resolved consentFrom', () => {
     expect((clientEl(el as never).props as Record<string, unknown>).consent).toBe(true);
   });
 });
+
+describe('AdaptiveRoot — Do Not Track / GPC', () => {
+  // These used to fall through to the loaders, which short-circuited internally
+  // on the doNotTrack flag. They are now skipped outright, so pin the observable
+  // contract: no SSR call, no session, but agent capture still runs.
+  it('skips the SSR call when DNT: 1 is set', async () => {
+    mockedHeaders.mockResolvedValue(headerStore({ host: 'acme.com', dnt: '1' }));
+    const el = await AdaptiveRoot(baseProps({ sections: ['hero'], appOrigin: 'https://acme.com' }));
+    expect(mockedDecision).not.toHaveBeenCalled();
+    expect((clientEl(el as never).props as Record<string, unknown>).ssrSessionId).toBeUndefined();
+  });
+
+  it('skips the SSR call when Sec-GPC: 1 is set', async () => {
+    mockedHeaders.mockResolvedValue(headerStore({ host: 'acme.com', 'sec-gpc': '1' }));
+    await AdaptiveRoot(baseProps({ appOrigin: 'https://acme.com' }));
+    expect(mockedAssign).not.toHaveBeenCalled();
+  });
+
+  it('still captures a JS-less agent fetch under DNT', async () => {
+    mockedHeaders.mockResolvedValue(
+      headerStore({ host: 'acme.com', dnt: '1', 'user-agent': 'Mozilla/5.0 (compatible; GPTBot/1.2)' }),
+    );
+    await AdaptiveRoot(baseProps({ appOrigin: 'https://acme.com' }));
+    expect(mockedLog).toHaveBeenCalledTimes(1);
+  });
+});

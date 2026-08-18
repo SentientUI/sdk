@@ -355,7 +355,31 @@ function HeroContact({ method }: { method: string }) {
 }
 ```
 
-The served variant is resolved from the SDK's assignment cache (the same one `<Adaptive id="hero_headline">` populates), so render that component before firing. `opts` accepts `reward` (0–1, default 1) and `metadata`. This replaces hand-rolled helpers that call `client.track({ eventType: 'goal_achieved', componentId, variantId, … })` — you no longer need to pass or track the variant yourself.
+The served variant is resolved from the SDK's assignment cache (the same one `<Adaptive id="hero_headline">` populates), so render that component before firing.
+
+`opts.once` records the goal at most once per mounted component, however many times you call it — use it for conversions that are a *state* rather than an action ("reached step 3", an effect that may re-run). Leave it off for genuine repeat actions: each click of "add to cart" is its own conversion.
+ `opts` accepts `reward` (0–1, default 1) and `metadata`. This replaces hand-rolled helpers that call `client.track({ eventType: 'goal_achieved', componentId, variantId, … })` — you no longer need to pass or track the variant yourself.
+
+### `usePageGoal(goalName, opts?)`
+
+Records a conversion **once, when a page or route is reached** — the funnel steps that are a destination rather than a click: landing on `/pricing`, reaching a signup form, opening checkout.
+
+```tsx
+import { usePageGoal } from '@sentientui/react';
+
+function PricingPage() {
+  // Credit reaching this page to whichever hero CTA sent the visitor here.
+  usePageGoal('pricing_view', { componentId: 'hero_cta' });
+  return <Pricing />;
+}
+```
+
+Prefer this over a click goal on the link that led here. Arrival survives the navigation, and it also counts visitors who came from the nav, a search result or a shared link — none of whom clicked the CTA you're measuring. Pass `componentId` to credit the variant currently served for it (resolved from the localStorage-backed assignment cache, so it works across the page hop); omit it for a session-level goal with no per-variant attribution. `opts` also accepts `reward` and `metadata`, like `useAdaptiveGoal`.
+
+Two failure modes it exists to prevent, both silent if you hand-roll this with `useAdaptiveGoal` in a `useEffect`:
+
+- **Double counting.** `useAdaptiveGoal` has no latch, so a remount — or React's double-invoked effects in development — records the same arrival twice.
+- **Losing the goal to a consent gate.** Behind a cookie banner the client doesn't exist when the page mounts, so firing on mount drops the arrival for every visitor who accepts a moment later. `usePageGoal` holds it until the SDK is running.
 
 ### `useLayoutOrder()`
 

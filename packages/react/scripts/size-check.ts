@@ -26,10 +26,14 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
   {
     name: '@sentientui/react/next',
     entry: 'next/adaptive-root.js',
-    // 3.25 KB — bumped from 3 KB after the DNT/Sec-GPC SSR opt-out (audit P4)
-    // legitimately grew this entry past the old ceiling. Keeps the "a little
-    // above current size" headroom so real growth still trips CI.
-    limit: 3_328,
+    // 3.5 KB — bumped from 3.25 KB (itself bumped from 3 KB for the DNT/Sec-GPC
+    // SSR opt-out) for the consent gate: AdaptiveRoot now skips the SSR
+    // decide/session when consent is withheld, and resolves a cookie-based
+    // `consentFrom` from the request so apps don't read the cookie themselves.
+    // Worth ~70 bytes gzip; trimming the implementation recovered only 4, so
+    // this is a deliberate rebaseline, not a leak. Keeps the "a little above
+    // current size" headroom so real growth still trips CI.
+    limit: 3_584,
   },
 ];
 

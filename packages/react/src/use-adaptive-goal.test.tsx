@@ -61,6 +61,41 @@ describe('useAdaptiveGoal', () => {
     expect(client.goal).toHaveBeenCalledWith('hero_contact', { method: 'whatsapp' }, 1.0, 0);
   });
 
+  it('records at most once per goal type when `once` is set', () => {
+    const { result } = renderHook(() => useAdaptiveGoal('checkout'), { wrapper });
+
+    act(() => {
+      result.current('reached_step_3', { once: true });
+      result.current('reached_step_3', { once: true });
+      result.current('reached_step_3', { once: true });
+    });
+
+    expect(client.componentGoal).toHaveBeenCalledTimes(1);
+    expect(client.goal).toHaveBeenCalledTimes(1);
+  });
+
+  it('latches per goal type, not per component', () => {
+    const { result } = renderHook(() => useAdaptiveGoal('checkout'), { wrapper });
+
+    act(() => {
+      result.current('reached_step_3', { once: true });
+      result.current('reached_step_4', { once: true });
+    });
+
+    expect(client.componentGoal).toHaveBeenCalledTimes(2);
+  });
+
+  it('still records every call without `once` — a repeat action is a repeat conversion', () => {
+    const { result } = renderHook(() => useAdaptiveGoal('cart'), { wrapper });
+
+    act(() => {
+      result.current('add_to_cart');
+      result.current('add_to_cart');
+    });
+
+    expect(client.componentGoal).toHaveBeenCalledTimes(2);
+  });
+
   it('passes through undefined options when called with just a goal type', () => {
     const { result } = renderHook(() => useAdaptiveGoal('pricing'), { wrapper });
 

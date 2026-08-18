@@ -35,6 +35,39 @@ type OverrideWindow = Window & {
   __sentient_slot_overrides?: Record<string, string | Record<string, string>>;
 };
 
+/** The order the page is rendering: a previewed override, else what was registered. */
+function currentLayout(): string[] {
+  const forced = (window as unknown as OverrideWindow).__sentient_layout_override;
+  const registered = getRegisteredSections();
+  if (!forced || forced.length === 0) return registered;
+  // Registered ids the override omits still render (useLayoutOrder returns the
+  // override verbatim, and the app maps whatever ids it is given), so show them
+  // trailing rather than dropping them from the list you are dragging.
+  return [...forced, ...registered.filter((id) => !forced.includes(id))];
+}
+
+/**
+ * Move `from` to `to` within the current order and preview it.
+ *
+ * Writes the whole order rather than swapping neighbours: the point is to try an
+ * arrangement, not to walk one block up a list one press at a time.
+ */
+function reorderLayout(from: number, to: number): void {
+  const order = currentLayout();
+  if (from === to || from < 0 || to < 0 || from >= order.length || to >= order.length) return;
+  const next = [...order];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved!);
+  (window as unknown as OverrideWindow).__sentient_layout_override = next;
+  setPreviewMode(true); // an arrangement you are trying must not train the bandit
+  notifyOverridesChanged();
+}
+
+function resetLayout(): void {
+  delete (window as unknown as OverrideWindow).__sentient_layout_override;
+  notifyOverridesChanged();
+}
+
 /** Apply a simulated outcome across every surface: variants, layout, slots/tokens, persona attrs. */
 function applyOutcome(result: OutcomeToApply): void {
   for (const [id, variantId] of Object.entries(result.assignments ?? {})) {
@@ -171,6 +204,7 @@ function SentientMark({ size = 26 }: { size?: number } = {}): JSX.Element {
 export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const [activePersona, setActivePersona] = useState<string | null>(null);
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [mounted, setMounted] = useState(false);
   const [, force] = useReducer((n: number) => n + 1, 0);
   // Re-render when the component/slot registry changes. useSyncExternalStore
@@ -198,10 +232,28 @@ export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Elem
   const slots = getRegisteredSlots();
   const overrides = getOverrides();
   const slotOverrides = getSlotOverrides();
+  const sections = currentLayout();
+  const layoutForced = (window as unknown as OverrideWindow).__sentient_layout_override !== undefined;
 
-  // Preview mode stays on while ANY override (variant or slot) is active.
+  function onReorder(from: number, to: number): void {
+    reorderLayout(from, to);
+    force();
+  }
+  function onResetLayout(): void {
+    resetLayout();
+    maybeExitPreview();
+    force();
+  }
+
+  // Preview mode stays on while ANY override (variant, slot or layout) is
+  // active. Omitting layout here let clearing the last variant re-enable event
+  // recording while a previewed section order was still on screen.
   function maybeExitPreview(): void {
-    if (Object.keys(getOverrides()).length === 0 && Object.keys(getSlotOverrides()).length === 0) {
+    if (
+      Object.keys(getOverrides()).length === 0 &&
+      Object.keys(getSlotOverrides()).length === 0 &&
+      (window as unknown as OverrideWindow).__sentient_layout_override === undefined
+    ) {
       setPreviewMode(false);
     }
   }
@@ -295,8 +347,58 @@ export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Elem
               )}
             </div>
           </div>
-          {components.length === 0 && slots.length === 0 && (
-            <div style={{ opacity: .6 }}>No components or slots on this page yet.</div>
+          {sections.length > 0 && (
+            <div style={{ borderBottom: '1px solid #333', paddingBottom: 8, marginBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ opacity: .7 }}>Layout — drag to reorder</span>
+                {layoutForced && (
+                  // Distinct accessible name: the per-variant and per-slot resets
+                  // below are also labelled "reset", and three identical buttons
+                  // in one panel is ambiguous to a screen reader and to tests.
+                  <button
+                    aria-label="Reset section order"
+                    onClick={onResetLayout}
+                    style={{ ...btn(false), color: '#aaa' }}
+                  >
+                    reset
+                  </button>
+                )}
+              </div>
+              {/* Drop-on-row inserts at that row's position, so any block can go
+                  anywhere in one gesture. The whole order is written on each
+                  drop — see reorderLayout. */}
+              <ul aria-label="Section order" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                {sections.map((id, i) => (
+                  <li
+                    key={id}
+                    draggable
+                    onDragStart={() => setDragFrom(i)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (dragFrom !== null) onReorder(dragFrom, i);
+                      setDragFrom(null);
+                    }}
+                    onDragEnd={() => setDragFrom(null)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px', marginBottom: 2,
+                      borderRadius: 4, border: '1px solid #262626', cursor: 'grab',
+                      background: dragFrom === i ? '#1e293b' : '#181818',
+                      opacity: dragFrom !== null && dragFrom !== i ? .6 : 1,
+                    }}
+                  >
+                    <span style={{ opacity: .4, minWidth: 10, fontVariantNumeric: 'tabular-nums' }}>{i + 1}</span>
+                    <span aria-hidden="true" style={{ opacity: .35 }}>⠿</span>
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {id}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {components.length === 0 && slots.length === 0 && sections.length === 0 && (
+            <div style={{ opacity: .6 }}>No components, sections or slots on this page yet.</div>
           )}
           {components.map((c) => (
             <div key={c.id} style={{ borderTop: '1px solid #333', padding: '8px 0' }}>

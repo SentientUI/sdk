@@ -166,6 +166,16 @@ export type AdaptiveProviderProps = {
    */
   initialLayoutOrder?: string[] | null;
   /**
+   * The section ids the app declares as reorderable, independent of any
+   * decision. `AdaptiveRoot` forwards its `sections` prop here.
+   *
+   * Devtools reads this to offer layout previewing: a page whose decision was
+   * gated by consent, or timed out, has no `initialLayoutOrder`, and registering
+   * only that left the layout panel empty in exactly the situation you reach for
+   * it — running the site locally before accepting a cookie banner.
+   */
+  declaredSections?: string[];
+  /**
    * SSR-preloaded slot results from `loadAdaptiveDecision()` (the `slots`
    * field of its result). Guarantees `useAdaptiveTokens`/`AdaptiveGroup`
    * render the decided arm in server HTML — zero flicker, hydration-safe.
@@ -456,12 +466,20 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
     });
   }, [client, props.apiKey, apiBaseUrl]);
 
-  // Sections registry for devtools /v1/explain + local simulation.
+  // Sections registry for devtools /v1/explain + local simulation. The decided
+  // order wins when there is one (it is what the page is actually rendering);
+  // the declared list is the fallback so the layout panel still knows what is
+  // reorderable when no decision arrived.
   useEffect(() => {
-    if (props.initialLayoutOrder && props.initialLayoutOrder.length > 0) {
-      registerSections(props.initialLayoutOrder);
+    const decided = props.initialLayoutOrder;
+    if (decided && decided.length > 0) {
+      registerSections(decided);
+      return;
     }
-  }, [props.initialLayoutOrder]);
+    if (props.declaredSections && props.declaredSections.length > 0) {
+      registerSections(props.declaredSections);
+    }
+  }, [props.initialLayoutOrder, props.declaredSections]);
 
   // The client exposed to consumers — wrapped to suppress events while previewing.
   const exposedClient = useMemo(

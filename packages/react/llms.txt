@@ -38,6 +38,14 @@
   - <AdaptiveGroup id arrangements={Record<string, string[]>} baseline? goal?> keyed children
     </AdaptiveGroup> — declared orders of keyed children only; first arrangement = baseline.
   - AdaptiveRoot sections={string[]} + useLayoutOrder() for page-level section order.
+- Goals (any rung, for conversions the goal prop can't express):
+  - useAdaptiveGoal(componentId) → fireGoal(goalType, opts?) — imperative conversion credited to
+    the served variant (click handlers, form submits, custom events).
+    opts.once = true records it at most once per mount (states, re-running effects); omit for
+    repeat actions.
+  - usePageGoal(goalName, opts?: { componentId?: string; reward?; metadata? }) — fires once when a
+    page/route is REACHED; use for destination funnel steps (/pricing reached, form reached) instead
+    of a click goal on the link. Latched against remounts, and held until a consent gate opens.
 
 ## Docs
 

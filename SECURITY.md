@@ -12,7 +12,7 @@ Use one of these private channels instead:
 
 - **GitHub private vulnerability reporting** — the **Report a vulnerability** button under this
   repository's **Security** tab (preferred), or
-- Email **security@sentient-ui.com**.
+- Email **hello@sentient-ui.com** with `Security report` in the subject line.
 
 If possible, include:
 

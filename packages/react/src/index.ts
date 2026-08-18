@@ -31,6 +31,9 @@ export type { AssignmentState } from './use-assignment.js';
 export { useAdaptiveGoal } from './use-adaptive-goal.js';
 export type { FireGoal } from './use-adaptive-goal.js';
 
+export { usePageGoal } from './use-page-goal.js';
+export type { PageGoalOptions } from './use-page-goal.js';
+
 export { SentientPersonaScript } from './persona-script.js';
 export type { SentientPersonaScriptProps } from './persona-script.js';
 
