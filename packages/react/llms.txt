@@ -46,6 +46,14 @@
   - usePageGoal(goalName, opts?: { componentId?: string; reward?; metadata? }) — fires once when a
     page/route is REACHED; use for destination funnel steps (/pricing reached, form reached) instead
     of a click goal on the link. Latched against remounts, and held until a consent gate opens.
+- Funnels (multi-step journeys the optimizer trains toward):
+  - funnel="<funnelId>" prop on <Adaptive> / useAdaptive / useAdaptiveTokens / <AdaptiveGroup> —
+    declares the component serves that funnel; the optimizer credits it on journey progress
+    (small credit per step reached, full or revenue-scaled credit at completion).
+  - With a weighted_composite goal, the funnel prop also declares the funnel's ordered steps
+    server-side (a code-first funnel appears in the dashboard). Funnel ids are stable slugs —
+    use the exact id from the dashboard/chat/list_funnels. Human-edited funnels are never
+    overwritten by code declarations.
 
 ## Docs
 

@@ -6,7 +6,9 @@ import { registerComponent } from './devtools-registry.js';
 import {
   attachGoalListeners,
   goalLabelOf,
+  goalValueOf,
   isDevBuild,
+  maybeDeclareFunnel,
   normalizeGoal,
   trackExposure,
   type GoalConfig,
@@ -46,7 +48,13 @@ const warnedUnbound = new Set<string>();
  */
 export function useAdaptive<T>(
   id: string,
-  config: { variants: Record<string, T>; goal: string | GoalConfig },
+  config: {
+    variants: Record<string, T>;
+    goal: string | GoalConfig;
+    /** Funnel this component serves (stable funnel id, e.g. "checkout") —
+     *  same declaration semantics as <Adaptive funnel="...">. */
+    funnel?: string;
+  },
 ): UseAdaptiveResult<T> {
   if (isDevBuild() && !config.goal) {
     throw new Error(
@@ -98,6 +106,14 @@ export function useAdaptive<T>(
     trackExposure(client, apiKey, id, variant);
   }, [client, apiKey, id, variant, node, isOverride, settled]);
 
+  // Funnel membership declaration — same gates as <Adaptive>.
+  const funnel = config.funnel;
+  useEffect(() => {
+    if (isOverride || !settled) return;
+    if (!client || !funnel) return;
+    maybeDeclareFunnel(client, apiKey, id, funnel, goal);
+  }, [client, apiKey, id, funnel, goal, isOverride, settled]);
+
   // Goal listeners — identical machinery to <Adaptive> (shared helper).
   const goalFiredRef = useRef(false);
   useEffect(() => {
@@ -106,6 +122,9 @@ export function useAdaptive<T>(
   useEffect(() => {
     if (isOverride) return;
     if (!client || !variant || !node) return;
+    // A static goal-config value rides on both writes (spec §5); steps carry
+    // weights, never values (spec §9.4).
+    const declaredValue = goalValueOf(goal);
     return attachGoalListeners(node, goal, {
       fireGoal: () => {
         if (goalFiredRef.current) return;
@@ -116,9 +135,14 @@ export function useAdaptive<T>(
           variantId: variant,
           eventType: 'goal_achieved',
           goalType: goalLabel,
-          payload: { reward: 1.0 },
+          payload: { reward: 1.0, ...(declaredValue !== undefined ? { goalValue: declaredValue } : {}) },
         });
-        client.goal(goalLabel, { componentId: id, variantId: variant }, 1.0, 0);
+        client.goal(goalLabel, {
+          metadata: { componentId: id, variantId: variant },
+          weight: 1.0,
+          stepIndex: 0,
+          ...(declaredValue !== undefined ? { value: declaredValue } : {}),
+        });
       },
       fireStep: (name, weight, stepIndex) => {
         client.track({
@@ -129,7 +153,7 @@ export function useAdaptive<T>(
           goalType: name,
           payload: { reward: weight },
         });
-        client.goal(name, {}, weight, stepIndex);
+        client.goal(name, { metadata: {}, weight, stepIndex });
       },
     });
   }, [client, node, variant, apiKey, id, goal, goalLabel, isOverride]);
@@ -181,7 +205,14 @@ export function useAdaptive<T>(
       // that ALSO fires a declared goal on the same action records both).
       const name = goalType ?? goalLabel;
       client?.componentGoal(id, name, opts);
-      client?.goal(name, opts?.metadata ?? {}, opts?.reward ?? 1.0, 0);
+      client?.goal(name, {
+        metadata: opts?.metadata ?? {},
+        weight: opts?.reward ?? 1.0,
+        stepIndex: 0,
+        ...(opts?.value !== undefined ? { value: opts.value } : {}),
+        ...(opts?.currency !== undefined ? { currency: opts.currency } : {}),
+        ...(opts?.externalId !== undefined ? { externalId: opts.externalId } : {}),
+      });
     },
     [client, id, goalLabel, isOverride],
   );

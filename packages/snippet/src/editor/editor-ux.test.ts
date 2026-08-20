@@ -136,6 +136,23 @@ describe('goal tracking beyond clicks', () => {
     expect(body.urlPattern.length).toBeGreaterThan(0);
   });
 
+  it('scroll goal button opens the depth picker and saves a scroll_depth draft', async () => {
+    document.body.innerHTML = '<h1>Post</h1>';
+    const fetchMock = vi.mocked(fetch);
+    mount({ token: 'tok', apiBase: 'https://api.example.com' });
+
+    clickBtn('Track reading this far as a goal');
+    const select = document.querySelector('#sentient-editor-panel select[data-field="depth"]') as HTMLSelectElement | null;
+    expect(select).not.toBeNull();
+    select!.value = '75% — read most of the page';
+    clickBtn('Track it');
+
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/v1/editor/goals/read-75pct'))).toBe(true));
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/v1/editor/goals/read-75pct'))!;
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body).toEqual({ event: 'scroll_depth', threshold: 0.75 });
+  });
+
   it('offers Start tracking now after a goal saves, which activates the draft', async () => {
     document.body.innerHTML = '<button id="cta">Request a demo</button>';
     const fetchMock = vi.mocked(fetch);

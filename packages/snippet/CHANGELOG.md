@@ -1,5 +1,17 @@
 # @sentientui/snippet
 
+## 0.14.0
+
+### Minor Changes
+
+- 6dade33: `scroll_depth` goals: registry-mode sites can now count "read this far" as a conversion. The snippet installs a passive scroll listener that fires the goal once per session when the page has been scrolled past the goal's threshold (short pages already past it fire at install), and the on-site editor gains a "Track reading this far as a goal" button with a 25/50/75/90% depth picker.
+
+## 0.13.0
+
+### Minor Changes
+
+- 32996be: `SentientSnippet.goal(name, { value, currency, externalId })` records revenue conversions, with a pre-boot queue stub (`window.SentientSnippet = window.SentientSnippet || { q: [], goal: function () { this.q.push(['goal'].concat([].slice.call(arguments))); } }`) for calls made before the snippet loads.
+
 ## 0.12.0
 
 ### Minor Changes

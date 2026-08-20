@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ElementType } from 'react';
 import type { AssignResult } from '@sentientui/core';
 import { useSentient, useAdaptiveApiKey, useOnAssignment, useSessionSegment } from './provider.js';
-import { attachGoalListeners, isDevBuild, normalizeGoal, type GoalConfig } from './adaptive-shared.js';
+import { attachGoalListeners, goalValueOf, isDevBuild, normalizeGoal, type GoalConfig } from './adaptive-shared.js';
 import { getDevOverride } from './dev-override.js';
 import { subscribeOverridesChanged } from './override-events.js';
 
@@ -119,6 +119,8 @@ export function AdaptiveText({
     if (!client || !variantId || !apiKey || !goal || !goalLabel) return;
     const node = nodeRef.current;
     if (!node) return;
+    // A static goal-config value rides on both writes (spec §5).
+    const declaredValue = goalValueOf(goal);
     return attachGoalListeners(node, goal, {
       fireGoal: () => {
         if (goalFiredRef.current) return;
@@ -129,9 +131,14 @@ export function AdaptiveText({
           variantId,
           eventType: 'goal_achieved',
           goalType: goalLabel,
-          payload: { reward: 1.0 },
+          payload: { reward: 1.0, ...(declaredValue !== undefined ? { goalValue: declaredValue } : {}) },
         });
-        client.goal(goalLabel, { componentId: id, variantId }, 1.0, 0);
+        client.goal(goalLabel, {
+          metadata: { componentId: id, variantId },
+          weight: 1.0,
+          stepIndex: 0,
+          ...(declaredValue !== undefined ? { value: declaredValue } : {}),
+        });
       },
       fireStep: (name, weight, stepIndex) => {
         client.track({
@@ -142,7 +149,7 @@ export function AdaptiveText({
           goalType: name,
           payload: { reward: weight },
         });
-        client.goal(name, {}, weight, stepIndex);
+        client.goal(name, { metadata: {}, weight, stepIndex });
       },
     });
   }, [client, variantId, apiKey, id, goal, goalLabel, override]);

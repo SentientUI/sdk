@@ -49,6 +49,7 @@ export function installGoalListeners(goals: GoalDefinition[], client: GoalClient
   const clickGoals = goals.filter((g) => g.event === 'click');
   const submitGoals = goals.filter((g) => g.event === 'form_submit');
   const urlGoals = goals.filter((g) => g.event === 'url_reached');
+  const scrollGoals = goals.filter((g) => g.event === 'scroll_depth');
 
   // A goal matches if the event target is the located element or inside it.
   const matches = (g: GoalDefinition, target: Element): boolean => {
@@ -73,10 +74,20 @@ export function installGoalListeners(goals: GoalDefinition[], client: GoalClient
     for (const g of urlGoals) if (g.urlPattern && urlMatches(g.urlPattern, path)) fire(g);
   };
 
+  const onScrollDepth = (): void => {
+    const d = doc.documentElement;
+    const p = d.scrollHeight > 0 ? (d.scrollTop + d.clientHeight) / d.scrollHeight : 0;
+    for (const g of scrollGoals) if (p >= (g.threshold ?? 0.75)) fire(g);
+  };
+
   doc.addEventListener('click', onClick, true);
   doc.addEventListener('submit', onSubmit, true);
   doc.defaultView?.addEventListener('popstate', checkUrl);
   checkUrl(); // on load
+  if (scrollGoals.length > 0) {
+    doc.addEventListener('scroll', onScrollDepth, { passive: true });
+    onScrollDepth(); // short pages can already be past the threshold
+  }
 
   return {
     checkUrl,
@@ -84,6 +95,7 @@ export function installGoalListeners(goals: GoalDefinition[], client: GoalClient
       doc.removeEventListener('click', onClick, true);
       doc.removeEventListener('submit', onSubmit, true);
       doc.defaultView?.removeEventListener('popstate', checkUrl);
+      if (scrollGoals.length > 0) doc.removeEventListener('scroll', onScrollDepth);
     },
   };
 }

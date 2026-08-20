@@ -11,9 +11,9 @@ export function isDevBuild(): boolean {
   return typeof process === 'undefined' || process.env?.NODE_ENV !== 'production';
 }
 
-export type ScrollDepthGoal = { type: 'scroll_depth'; threshold: number };
-export type ClickGoal = { type: 'click'; selector?: string };
-export type FormSubmitGoal = { type: 'form_submit' };
+export type ScrollDepthGoal = { type: 'scroll_depth'; threshold: number; value?: number };
+export type ClickGoal = { type: 'click'; selector?: string; value?: number };
+export type FormSubmitGoal = { type: 'form_submit'; value?: number };
 export type CompositeGoal = { type: 'composite'; all: GoalConfig[] };
 export type WeightedStep = { goal: GoalConfig; name: string; weight: number };
 export type WeightedCompositeGoal = { type: 'weighted_composite'; steps: WeightedStep[] };
@@ -27,6 +27,17 @@ export function normalizeGoal(goal: string | GoalConfig): GoalConfig {
 /** The goalType label events are recorded under (named goal or config type). */
 export function goalLabelOf(goal: string | GoalConfig): string {
   return typeof goal === 'string' ? goal : goal.type;
+}
+
+/** Static revenue value declared on a simple goal config, if any. Composites
+ *  carry no value (weights and values don't mix — spec §9.4); dynamic values
+ *  go through the imperative hooks. */
+export function goalValueOf(goal: string | GoalConfig): number | undefined {
+  if (typeof goal === 'string') return undefined;
+  if (goal.type === 'click' || goal.type === 'form_submit' || goal.type === 'scroll_depth') {
+    return goal.value;
+  }
+  return undefined;
 }
 
 function isClickableTarget(el: EventTarget | null): boolean {
@@ -192,6 +203,48 @@ export function attachGoalListeners(node: Element, goal: GoalConfig, handlers: G
   return () => {
     for (const c of cleanups) c();
   };
+}
+
+/**
+ * Funnel declaration (spec §7.4): one steps-declaration per funnel per page
+ * load; membership is per component and idempotent server-side, so re-sends
+ * are harmless but avoided. Only a weighted_composite carries steps — a plain
+ * goal declares membership only (the funnel must exist server-side already).
+ */
+const declaredFunnels = new Set<string>();
+const declaredMemberships = new Set<string>();
+
+/** Test-only: clears the page-load dedup sets. */
+export function __resetFunnelDeclarations(): void {
+  declaredFunnels.clear();
+  declaredMemberships.clear();
+}
+
+export function maybeDeclareFunnel(
+  client: SentientClient,
+  apiKey: string,
+  componentId: string,
+  funnelId: string,
+  goal: GoalConfig,
+): void {
+  const memberKey = `${funnelId}|${componentId}`;
+  if (declaredMemberships.has(memberKey)) return;
+  declaredMemberships.add(memberKey);
+  const withSteps = goal.type === 'weighted_composite' && !declaredFunnels.has(funnelId);
+  if (withSteps) declaredFunnels.add(funnelId);
+  client.track({
+    projectId: apiKey,
+    componentId,
+    // 'funnel_declared' is server-accepted but not yet in core's EventType
+    // union — cast rather than touch core (its byte budget is exhausted).
+    eventType: 'funnel_declared' as Parameters<SentientClient['track']>[0]['eventType'],
+    payload: withSteps
+      ? {
+          funnelId,
+          steps: (goal as WeightedCompositeGoal).steps.map((s) => ({ goalId: s.name, weight: s.weight })),
+        }
+      : { funnelId },
+  });
 }
 
 /**

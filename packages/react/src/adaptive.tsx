@@ -15,7 +15,7 @@ export type {
   WeightedCompositeGoal,
   GoalConfig,
 } from './adaptive-shared.js';
-import { attachGoalListeners, isDevBuild, normalizeGoal, trackExposure, type GoalConfig } from './adaptive-shared.js';
+import { attachGoalListeners, goalValueOf, isDevBuild, maybeDeclareFunnel, normalizeGoal, trackExposure, type GoalConfig } from './adaptive-shared.js';
 
 /** Maps a detected micro-signal to a named session goal (`client.goal`). */
 export type MicroSignalGoalConfig = string | { name: string; weight?: number; stepIndex?: number };
@@ -25,6 +25,15 @@ export type AdaptiveProps = {
   id: string;
   variants: Record<string, ReactNode>;
   goal: string | GoalConfig;
+  /**
+   * Funnel this component serves (stable funnel id, e.g. "checkout" —
+   * shown on the dashboard's Funnels tab). Declares membership to the server;
+   * a weighted_composite goal also declares the funnel's ordered steps, so a
+   * code-first funnel appears in the dashboard without opening it. The
+   * optimizer then trains this component on journey progress: small credit for
+   * intermediate steps, full (or revenue-scaled) credit at completion.
+   */
+  funnel?: string;
   /**
    * When a passive micro-signal fires on this component, also record a named goal.
    * Use for inferred goals surfaced in the dashboard (e.g. rage_click → 'confused_by_hero').
@@ -111,6 +120,15 @@ function AdaptiveImpl(props: AdaptiveProps): JSX.Element | null {
     microGoalFiredRef.current = new Set();
   }, [variantId, goal]);
 
+  // Declare funnel membership (and, for weighted composites, the funnel's
+  // steps) once per page load. Same settle/override gates as the exposure —
+  // a forced dev view must not declare anything.
+  useEffect(() => {
+    if (isOverride || !settled) return;
+    if (!client || !props.funnel) return;
+    maybeDeclareFunnel(client, apiKey, props.id, props.funnel, goal);
+  }, [client, apiKey, props.id, props.funnel, goal, isOverride, settled]);
+
   // Emit cursor_signal after 800 ms of continuous hover.
   useEffect(() => {
     if (isOverride) return;
@@ -183,7 +201,9 @@ function AdaptiveImpl(props: AdaptiveProps): JSX.Element | null {
         const name = typeof mapping === 'string' ? mapping : mapping.name;
         const weight = typeof mapping === 'string' ? 1.0 : (mapping.weight ?? 1.0);
         const stepIndex = typeof mapping === 'string' ? 0 : (mapping.stepIndex ?? 0);
-        client.goal(name, { signalType, ...extra }, weight, stepIndex);
+        // Explicit options form: `extra` is arbitrary micro-signal data, so it
+        // must land in metadata and never be mistaken for GoalOptions keys.
+        client.goal(name, { metadata: { signalType, ...extra }, weight, stepIndex });
       },
       node,
       assignedAt,
@@ -197,6 +217,10 @@ function AdaptiveImpl(props: AdaptiveProps): JSX.Element | null {
     const node = containerRef.current;
     if (!node) return;
 
+    // A static `value` on the goal config rides on BOTH writes (the component-
+    // attributed event and the session funnel record) so read-time dedup never
+    // picks a valueless row. Steps carry weights, never values (spec §9.4).
+    const declaredValue = goalValueOf(goal);
     return attachGoalListeners(node, goal, {
       fireGoal: () => {
         if (goalFiredRef.current) return;
@@ -207,9 +231,14 @@ function AdaptiveImpl(props: AdaptiveProps): JSX.Element | null {
           variantId,
           eventType: 'goal_achieved',
           goalType: goalLabel,
-          payload: { reward: 1.0 },
+          payload: { reward: 1.0, ...(declaredValue !== undefined ? { goalValue: declaredValue } : {}) },
         });
-        client.goal(goalLabel, { componentId: props.id, variantId }, 1.0, 0);
+        client.goal(goalLabel, {
+          metadata: { componentId: props.id, variantId },
+          weight: 1.0,
+          stepIndex: 0,
+          ...(declaredValue !== undefined ? { value: declaredValue } : {}),
+        });
       },
       fireStep: (name, weight, stepIndex) => {
         client.track({
@@ -220,7 +249,7 @@ function AdaptiveImpl(props: AdaptiveProps): JSX.Element | null {
           goalType: name,
           payload: { reward: weight },
         });
-        client.goal(name, {}, weight, stepIndex);
+        client.goal(name, { metadata: {}, weight, stepIndex });
       },
     });
   }, [client, variantId, apiKey, props.id, goal, goalLabel, isOverride]);

@@ -58,7 +58,22 @@ describe('useAdaptiveGoal', () => {
     });
     // Also writes the session goal-funnel record (matching <Adaptive>), so a
     // manual conversion appears in the funnel, not just per-variant CVR.
-    expect(client.goal).toHaveBeenCalledWith('hero_contact', { method: 'whatsapp' }, 1.0, 0);
+    expect(client.goal).toHaveBeenCalledWith('hero_contact', {
+      metadata: { method: 'whatsapp' }, weight: 1.0, stepIndex: 0,
+    });
+  });
+
+  it('passes value/currency/externalId to BOTH componentGoal and goal (revenue goals)', () => {
+    const { result } = renderHook(() => useAdaptiveGoal('checkout'), { wrapper });
+
+    act(() => {
+      result.current('purchase', { value: 129.99, currency: 'EUR', externalId: 'o_1' });
+    });
+
+    expect(client.componentGoal).toHaveBeenCalledWith('checkout', 'purchase',
+      expect.objectContaining({ value: 129.99, currency: 'EUR', externalId: 'o_1' }));
+    expect(client.goal).toHaveBeenCalledWith('purchase',
+      expect.objectContaining({ value: 129.99, currency: 'EUR', externalId: 'o_1', weight: 1.0 }));
   });
 
   it('records at most once per goal type when `once` is set', () => {
@@ -104,7 +119,7 @@ describe('useAdaptiveGoal', () => {
     });
 
     expect(client.componentGoal).toHaveBeenCalledWith('pricing', 'subscribe', undefined);
-    expect(client.goal).toHaveBeenCalledWith('subscribe', {}, 1.0, 0);
+    expect(client.goal).toHaveBeenCalledWith('subscribe', { metadata: {}, weight: 1.0, stepIndex: 0 });
   });
 });
 
@@ -146,6 +161,6 @@ describe('useAdaptiveGoal â€” dev override suppresses tracking (#1)', () =>
     });
 
     expect(client.componentGoal).toHaveBeenCalledWith('hero', 'signup', undefined);
-    expect(client.goal).toHaveBeenCalledWith('signup', {}, 1.0, 0);
+    expect(client.goal).toHaveBeenCalledWith('signup', { metadata: {}, weight: 1.0, stepIndex: 0 });
   });
 });

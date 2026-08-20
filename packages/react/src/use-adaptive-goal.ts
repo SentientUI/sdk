@@ -63,9 +63,17 @@ export function useAdaptiveGoal(componentId: string): FireGoal {
       // cache); goal() writes the session-level conversion funnel record. A
       // declared <Adaptive goal> fires both — a manual conversion for the same
       // component must too, or it shows up in per-variant CVR but never in the
-      // session goal funnel.
+      // session goal funnel. Revenue fields ride on both writes so read-time
+      // dedup never picks a valueless row (spec §5).
       client?.componentGoal(componentId, goalType, opts);
-      client?.goal(goalType, opts?.metadata ?? {}, opts?.reward ?? 1.0, 0);
+      client?.goal(goalType, {
+        metadata: opts?.metadata ?? {},
+        weight: opts?.reward ?? 1.0,
+        stepIndex: 0,
+        ...(opts?.value !== undefined ? { value: opts.value } : {}),
+        ...(opts?.currency !== undefined ? { currency: opts.currency } : {}),
+        ...(opts?.externalId !== undefined ? { externalId: opts.externalId } : {}),
+      });
     },
     [client, componentId],
   );

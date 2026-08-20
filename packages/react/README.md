@@ -254,6 +254,33 @@ goal={{
 
 Each goal fires at most once per variant mount. `WeightedCompositeGoal` fires each step's reward independently; `CompositeGoal` waits for all sub-goals and fires reward `1.0` once.
 
+#### Funnels — `funnel` prop
+
+Add `funnel="<funnelId>"` to `<Adaptive>`, `useAdaptive`, `useAdaptiveTokens`, or `<AdaptiveGroup>` to declare that the component serves a multi-step funnel (the journey shown on the dashboard's Goals → Funnels tab). The optimizer then scores the component on journey progress: small credit for reaching intermediate steps, full credit at completion (revenue-scaled when the final conversion carries a `value`).
+
+```tsx
+// Declares BOTH the funnel's steps and this component's membership —
+// a weighted_composite goal + funnel id creates the funnel server-side.
+<Adaptive
+  id="hero"
+  funnel="checkout"
+  goal={{
+    type: 'weighted_composite',
+    steps: [
+      { goal: { type: 'scroll_depth', threshold: 0.5 }, name: 'viewed_pricing', weight: 0.2 },
+      { goal: { type: 'click' },                         name: 'clicked_cta',   weight: 0.4 },
+      { goal: { type: 'form_submit' },                   name: 'signed_up',     weight: 1.0 },
+    ],
+  }}
+  variants={...}
+/>
+
+// Membership-only: joins a funnel built in the dashboard or chat.
+<Adaptive id="pricing-cta" funnel="checkout" goal="click" variants={...} />
+```
+
+The funnel id is stable — a funnel created in the dashboard or chat is referenced from code with the exact id it shows. Code declarations never overwrite a funnel edited by a human; the dashboard version wins and the component still serves it.
+
 ### `<AdaptiveText>`
 
 Lightweight text-only variant (renders an inline `<span>` wrapper by default — change it via the `component` prop; no automatic goal wiring). Useful when you publish text variants from the dashboard WYSIWYG.

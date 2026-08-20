@@ -1,0 +1,15 @@
+# Web pixel: funnel-step goals + cart-token attribution + fast-path purchase.
+name = "SentientUI Pixel"
+type = "web_pixel_extension"
+runtime_context = "strict"
+
+[settings]
+type = "object"
+
+[settings.fields.publishableKey]
+name = "SentientUI publishable key"
+type = "single_line_text_field"
+
+[settings.fields.apiBase]
+name = "API base URL (leave default)"
+type = "single_line_text_field"

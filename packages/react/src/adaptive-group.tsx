@@ -6,7 +6,9 @@ import { registerSlot } from './devtools-registry.js';
 import {
   attachGoalListeners,
   goalLabelOf,
+  goalValueOf,
   isDevBuild,
+  maybeDeclareFunnel,
   normalizeGoal,
   trackExposure,
   type GoalConfig,
@@ -20,6 +22,9 @@ export type AdaptiveGroupProps = {
   baseline?: string;
   /** Optional slot-scoped goal — credited via componentGoal(group id). */
   goal?: string | GoalConfig;
+  /** Funnel this group serves (stable funnel id, e.g. "checkout") — same
+   *  declaration semantics as <Adaptive funnel="...">. */
+  funnel?: string;
   /** Keyed children — every key referenced by an arrangement must exist. */
   children: ReactNode;
 };
@@ -117,6 +122,14 @@ export function AdaptiveGroup(props: AdaptiveGroupProps): JSX.Element {
     trackExposure(client, apiKey, props.id, arm);
   }, [client, apiKey, props.id, arm, source]);
 
+  // Funnel membership declaration — same override gate as the exposure.
+  const funnel = props.funnel;
+  useEffect(() => {
+    if (!client || !funnel || source === 'override') return;
+    maybeDeclareFunnel(client, apiKey, props.id, funnel, normalizeGoal(props.goal ?? 'click'));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, apiKey, props.id, funnel, source]);
+
   // Optional goal — slot-scoped credit through componentGoal (the core
   // resolves the attributed arm from its slot state; see Task 3.3).
   const goalKey =
@@ -127,6 +140,7 @@ export function AdaptiveGroup(props: AdaptiveGroupProps): JSX.Element {
     const node = containerRef.current;
     if (!node) return;
     const label = goalLabelOf(props.goal);
+    const declaredValue = goalValueOf(props.goal);
     let fired = false;
     return attachGoalListeners(node, normalizeGoal(props.goal), {
       fireGoal: () => {
@@ -134,13 +148,20 @@ export function AdaptiveGroup(props: AdaptiveGroupProps): JSX.Element {
         fired = true;
         // componentGoal credits the bandit; goal() writes the session-level
         // conversion funnel record — matching <Adaptive>. Firing only the
-        // former left group conversions out of the goal funnel.
-        client.componentGoal(props.id, label);
-        client.goal(label, { componentId: props.id, arm }, 1.0, 0);
+        // former left group conversions out of the goal funnel. A static
+        // goal-config value rides on both writes (spec §5).
+        if (declaredValue !== undefined) client.componentGoal(props.id, label, { value: declaredValue });
+        else client.componentGoal(props.id, label);
+        client.goal(label, {
+          metadata: { componentId: props.id, arm },
+          weight: 1.0,
+          stepIndex: 0,
+          ...(declaredValue !== undefined ? { value: declaredValue } : {}),
+        });
       },
       fireStep: (name, weight, stepIndex) => {
         client.componentGoal(props.id, name, { reward: weight });
-        client.goal(name, { componentId: props.id, arm }, weight, stepIndex);
+        client.goal(name, { metadata: { componentId: props.id, arm }, weight, stepIndex });
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps

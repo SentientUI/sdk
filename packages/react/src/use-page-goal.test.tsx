@@ -57,14 +57,14 @@ describe('usePageGoal', () => {
     expect(client.componentGoal).toHaveBeenCalledWith('hero_cta', 'pricing_view', {});
     // Session-level record too, so the arrival shows in the goal funnel and not
     // only in per-variant CVR.
-    expect(client.goal).toHaveBeenCalledWith('pricing_view', {}, 1.0, 0);
+    expect(client.goal).toHaveBeenCalledWith('pricing_view', { metadata: {}, weight: 1.0, stepIndex: 0 });
   });
 
   it('records a session-level goal when there is no component to credit', () => {
     renderHook(() => usePageGoal('docs_view'), { wrapper: makeWrapper(true) });
 
     expect(client.componentGoal).not.toHaveBeenCalled();
-    expect(client.goal).toHaveBeenCalledWith('docs_view', {}, 1.0, 0);
+    expect(client.goal).toHaveBeenCalledWith('docs_view', { metadata: {}, weight: 1.0, stepIndex: 0 });
   });
 
   it('forwards metadata and reward', () => {
@@ -72,7 +72,7 @@ describe('usePageGoal', () => {
       wrapper: makeWrapper(true),
     });
 
-    expect(client.goal).toHaveBeenCalledWith('checkout_view', { plan: 'growth' }, 0.5, 0);
+    expect(client.goal).toHaveBeenCalledWith('checkout_view', { metadata: { plan: 'growth' }, weight: 0.5, stepIndex: 0 });
   });
 
   it('records the arrival once across re-renders', () => {

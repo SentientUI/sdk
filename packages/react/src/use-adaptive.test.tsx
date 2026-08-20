@@ -122,7 +122,9 @@ describe('useAdaptive â€” bind wiring', () => {
       variantId: 'calm',
       goalType: 'buy_click',
     });
-    expect(client.goal).toHaveBeenCalledWith('buy_click', { componentId: 'buy-box', variantId: 'calm' }, 1.0, 0);
+    expect(client.goal).toHaveBeenCalledWith('buy_click', {
+      metadata: { componentId: 'buy-box', variantId: 'calm' }, weight: 1.0, stepIndex: 0,
+    });
   });
 
   it('tracks variant_assigned exposure once when bind attaches', () => {
@@ -199,7 +201,7 @@ describe('useAdaptive â€” fireGoal and goal requirement', () => {
     mockedInit.mockReturnValue(client as never);
     const { getByText } = render(createElement(BuyBox, { manualGoal: true }), { wrapper });
     fireEvent.click(getByText('Calm buy box'));
-    expect(client.goal).toHaveBeenCalledWith('custom_goal', {}, 0.5, 0);
+    expect(client.goal).toHaveBeenCalledWith('custom_goal', { metadata: {}, weight: 0.5, stepIndex: 0 });
   });
 
   it('throws in dev when goal is missing', () => {

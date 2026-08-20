@@ -822,3 +822,107 @@ describe('componentGoal()', () => {
     expect(events.filter((e) => e.eventType === 'goal_achieved')).toHaveLength(0);
   });
 });
+
+describe('goal() options object (revenue values, spec §5)', () => {
+  function captureGoalBodies(): Array<Record<string, unknown>> {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn((url: string, opts?: RequestInit) => {
+      if (String(url).includes('/goals') && opts?.body) {
+        bodies.push(JSON.parse(opts.body as string) as Record<string, unknown>);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+    }));
+    return bodies;
+  }
+
+  it('sends value/currency/externalId on the wire', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goalopts_001' });
+    client.goal('purchase', { value: 129.99, currency: 'EUR', externalId: 'order_1042' });
+    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({
+      name: 'purchase', value: 129.99, currency: 'EUR', externalId: 'order_1042',
+      weight: 1, stepIndex: 0, metadata: {},
+    });
+    client.destroy();
+  });
+
+  it('treats an object with only foreign keys as legacy metadata', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goalopts_002' });
+    client.goal('signup', { plan: 'pro' });
+    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]!.metadata).toEqual({ plan: 'pro' });
+    expect(bodies[0]!.value).toBeUndefined();
+    client.destroy();
+  });
+
+  it('reserved keys switch interpretation to options (legacy metadata.value was inert)', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goalopts_003' });
+    client.goal('purchase', { value: 42 });
+    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]!.value).toBe(42);
+    expect(bodies[0]!.metadata).toEqual({});
+    client.destroy();
+  });
+
+  it('positional legacy signature still works', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goalopts_004' });
+    client.goal('step', { foo: 1 }, 0.4, 2);
+    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ weight: 0.4, stepIndex: 2, metadata: { foo: 1 } });
+    expect(bodies[0]!.value).toBeUndefined();
+    client.destroy();
+  });
+
+  it('options-object weight/stepIndex win over positional defaults', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goalopts_005' });
+    client.goal('step', { weight: 0.3, stepIndex: 1, metadata: { a: 1 } });
+    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ weight: 0.3, stepIndex: 1, metadata: { a: 1 } });
+    client.destroy();
+  });
+});
+
+describe('componentGoal() value passthrough (spec §5)', () => {
+  function captureEvents(): Array<Record<string, unknown>> {
+    const events: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn((url: string, opts?: RequestInit) => {
+      if (String(url).includes('/events') && opts?.body) {
+        for (const e of JSON.parse(opts.body as string) as Array<Record<string, unknown>>) {
+          events.push(e);
+        }
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+    }));
+    return events;
+  }
+
+  async function flush(client: ReturnType<typeof init>): Promise<void> {
+    await new Promise((r) => setTimeout(r, 0));
+    client.destroy();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  it('puts goalValue and currency in the event payload', async () => {
+    const events = captureEvents();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_cgval_001', initialAssignments: { checkout: 'B' } });
+    client.componentGoal('checkout', 'purchase', { value: 129.99, currency: 'USD' });
+    await flush(client);
+    const goals = events.filter((e) => e.eventType === 'goal_achieved');
+    expect(goals).toHaveLength(1);
+    expect(goals[0]!.payload).toMatchObject({ reward: 1, goalValue: 129.99, currency: 'USD' });
+  });
+
+  it('omits goalValue when no value is given (binary goal unchanged)', async () => {
+    const events = captureEvents();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_cgval_002', initialAssignments: { checkout: 'B' } });
+    client.componentGoal('checkout', 'purchase');
+    await flush(client);
+    const goals = events.filter((e) => e.eventType === 'goal_achieved');
+    expect(goals[0]!.payload).toEqual({ reward: 1 });
+  });
+});

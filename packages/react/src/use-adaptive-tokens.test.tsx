@@ -183,12 +183,11 @@ describe('useAdaptiveTokens â€” learning wiring', () => {
     });
     fireEvent.click(getByText('cta:calm'));
     expect(client.goal).toHaveBeenCalledTimes(1);
-    expect(client.goal).toHaveBeenCalledWith(
-      'buy_click',
-      { componentId: 'hero-fn', arm: 'motion=none|tone=calm' },
-      1.0,
-      0,
-    );
+    expect(client.goal).toHaveBeenCalledWith('buy_click', {
+      metadata: { componentId: 'hero-fn', arm: 'motion=none|tone=calm' },
+      weight: 1.0,
+      stepIndex: 0,
+    });
   });
 
   it('records nothing for a forced (override) arm — no exposure, no goals', () => {

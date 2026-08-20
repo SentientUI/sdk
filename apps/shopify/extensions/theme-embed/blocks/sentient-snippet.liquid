@@ -1,0 +1,33 @@
+{% comment %}
+  SentientUI snippet — the entire storefront integration (spec §3).
+  Mirrors the canonical install from the dashboard's Shopify recipe
+  (apps/dashboard/app/lib/nocode-install.ts): the window.sentient config
+  block followed by the published snippet loader.
+
+  Subresource Integrity is deliberately NOT used on this tag, matching every
+  other SentientUI install surface — the snippet is first-party and
+  self-updating, so a pinned hash would break every snippet release. If a
+  reviewer wants SRI, that's a product-wide decision for the snippet
+  pipeline, not this embed.
+{% endcomment %}
+{% if block.settings.publishable_key != blank %}
+<script>
+  window.sentient = { apiKey: {{ block.settings.publishable_key | json }} };
+</script>
+<script src="https://unpkg.com/@sentientui/snippet/dist/snippet.global.js" crossorigin="anonymous" defer></script>
+{% endif %}
+
+{% schema %}
+{
+  "name": "SentientUI",
+  "target": "head",
+  "settings": [
+    {
+      "type": "text",
+      "id": "publishable_key",
+      "label": "SentientUI publishable key",
+      "info": "Your project's pk_… key from the SentientUI dashboard (Settings → API keys)."
+    }
+  ]
+}
+{% endschema %}

@@ -113,3 +113,43 @@ describe('installGoalListeners', () => {
     expect(client.goal).not.toHaveBeenCalled();
   });
 });
+
+describe('scroll_depth goals', () => {
+  function setScroll(doc: Document, scrollTop: number, clientHeight: number, scrollHeight: number) {
+    Object.defineProperty(doc.documentElement, 'scrollTop', { value: scrollTop, configurable: true });
+    Object.defineProperty(doc.documentElement, 'clientHeight', { value: clientHeight, configurable: true });
+    Object.defineProperty(doc.documentElement, 'scrollHeight', { value: scrollHeight, configurable: true });
+  }
+
+  it('fires once when the page is scrolled past the threshold', () => {
+    const client = mockClient();
+    const goal: GoalDefinition = { goalId: 'read-75', event: 'scroll_depth', threshold: 0.75 };
+    setScroll(document, 0, 500, 2000); // 25% - below
+    const listeners = installGoalListeners([goal], client, document);
+    expect(client.goal).not.toHaveBeenCalled();
+    setScroll(document, 1200, 500, 2000); // 85% - past
+    document.dispatchEvent(new Event('scroll'));
+    document.dispatchEvent(new Event('scroll'));
+    expect(client.goal).toHaveBeenCalledTimes(1); // once per session
+    expect(client.goal).toHaveBeenCalledWith('read-75');
+    listeners.teardown();
+  });
+
+  it('checks depth at install time for short pages already past the threshold', () => {
+    const client = mockClient();
+    setScroll(document, 0, 800, 800); // page fits the viewport -> depth 1
+    installGoalListeners([{ goalId: 'read-50', event: 'scroll_depth', threshold: 0.5 }], client, document);
+    expect(client.goal).toHaveBeenCalledWith('read-50');
+  });
+
+  it('teardown removes the scroll listener', () => {
+    const client = mockClient();
+    setScroll(document, 0, 500, 2000);
+    const listeners = installGoalListeners(
+      [{ goalId: 'read-75', event: 'scroll_depth', threshold: 0.75 }], client, document);
+    listeners.teardown();
+    setScroll(document, 1500, 500, 2000);
+    document.dispatchEvent(new Event('scroll'));
+    expect(client.goal).not.toHaveBeenCalled();
+  });
+});

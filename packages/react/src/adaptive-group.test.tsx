@@ -224,7 +224,9 @@ describe('AdaptiveGroup â€” learning wiring', () => {
     const { getByText } = render(el, { wrapper: wrapperWith() });
     fireEvent.click(getByText('CHOOSE'));
     expect(client.goal).toHaveBeenCalledTimes(1);
-    expect(client.goal).toHaveBeenCalledWith('plan_click', { componentId: 'pricing-g10', arm: 'standard' }, 1.0, 0);
+    expect(client.goal).toHaveBeenCalledWith('plan_click', {
+      metadata: { componentId: 'pricing-g10', arm: 'standard' }, weight: 1.0, stepIndex: 0,
+    });
   });
 
   it('records nothing for a forced (override) arrangement — no exposure, no goals', () => {

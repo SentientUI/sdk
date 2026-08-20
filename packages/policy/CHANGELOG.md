@@ -1,5 +1,11 @@
 # @sentientui/policy
 
+## 0.4.0
+
+### Minor Changes
+
+- 6dade33: New `ev` module for expected-value ranked serving: `shrunkAvgValue` (EB-shrinks a cell's average order value toward a reference, `EV_SHRINK_K = 20`) and `sampleArmEv` (Thompson draw × shrunk value; with no value data it degrades exactly to CVR ranking), plus the `EvArm`/`ValueCell` types.
+
 ## 0.3.3
 
 ### Patch Changes

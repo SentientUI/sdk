@@ -26,6 +26,14 @@ an issue.
 The MCP server lives in its own mirror: [`SentientUI/mcp`](https://github.com/SentientUI/mcp)
 ([`@sentientui/mcp`](https://www.npmjs.com/package/@sentientui/mcp)).
 
+## Shopify app
+
+[`apps/shopify`](./apps/shopify) is the source of the SentientUI Shopify app — the pieces a
+merchant's store executes (the theme app embed carrying the snippet one-liner, the checkout
+web pixel) plus the webhook mappers that forward server-truth orders and refunds to the
+SentientUI API. It is not published to npm; the app itself is installed from the Shopify
+App Store.
+
 ## Quickstart
 
 **React**

@@ -61,11 +61,18 @@ export function usePageGoal(goalName: string, opts: PageGoalOptions = {}): void 
   useEffect(() => {
     if (!client || fired.current) return;
     fired.current = true;
-    const { metadata, reward } = optsRef.current;
+    const { metadata, reward, value, currency, externalId } = optsRef.current;
     if (componentId) {
       fireComponentGoal(goalName, optsRef.current);
       return;
     }
-    client.goal(goalName, metadata ?? {}, reward ?? 1.0, 0);
+    client.goal(goalName, {
+      metadata: metadata ?? {},
+      weight: reward ?? 1.0,
+      stepIndex: 0,
+      ...(value !== undefined ? { value } : {}),
+      ...(currency !== undefined ? { currency } : {}),
+      ...(externalId !== undefined ? { externalId } : {}),
+    });
   }, [client, componentId, goalName, fireComponentGoal]);
 }

@@ -7,3 +7,4 @@ export * from './arm-encoding';
 export * from './shrinkage';
 export * from './pooling';
 export * from './deterministic';
+export * from './ev';

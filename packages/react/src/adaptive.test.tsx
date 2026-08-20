@@ -493,8 +493,8 @@ describe('Adaptive â€” weighted_composite goal', () => {
       payload: { reward: 0.4 },
     });
 
-    // client.goal() called with weight and stepIndex
-    expect(client.goal).toHaveBeenCalledWith('clicked_cta', {}, 0.4, 0);
+    // client.goal() called with weight and stepIndex (options form)
+    expect(client.goal).toHaveBeenCalledWith('clicked_cta', { metadata: {}, weight: 0.4, stepIndex: 0 });
 
     // form_submit step has not fired
     expect(client.track.mock.calls.filter(([e]) => e.goalType === 'signed_up')).toHaveLength(0);
@@ -760,9 +760,11 @@ describe('Adaptive â€” micro-signals gated on settled (#3)', () => {
     emit!('rage_click');
     expect(client.goal).toHaveBeenCalledWith(
       'confused_by_hero',
-      expect.objectContaining({ signalType: 'rage_click' }),
-      1.0,
-      0,
+      expect.objectContaining({
+        metadata: expect.objectContaining({ signalType: 'rage_click' }),
+        weight: 1.0,
+        stepIndex: 0,
+      }),
     );
     const microEvents = client.track.mock.calls.filter(([e]) => e.eventType === 'micro_signal');
     expect(microEvents).toHaveLength(1);
@@ -796,9 +798,11 @@ describe('Adaptive â€” microSignalGoals', () => {
 
     expect(client.goal).toHaveBeenCalledWith(
       'confused_by_hero',
-      expect.objectContaining({ signalType: 'rage_click' }),
-      1.0,
-      0,
+      expect.objectContaining({
+        metadata: expect.objectContaining({ signalType: 'rage_click' }),
+        weight: 1.0,
+        stepIndex: 0,
+      }),
     );
   });
 });

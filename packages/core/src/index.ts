@@ -158,10 +158,12 @@ export type { DecisionSnapshot, SlotConfigEntry, SlotOps, CompoundLocator } from
  *  snippet to install delegated listeners from. */
 export type GoalDefinition = {
   goalId: string;
-  event: 'click' | 'form_submit' | 'url_reached';
+  event: 'click' | 'form_submit' | 'url_reached' | 'scroll_depth';
   locator?: CompoundLocator;
   urlPattern?: string;
   slotId?: string;
+  /** scroll_depth only: fraction of the page (0–1] that counts as read. */
+  threshold?: number;
 };
 
 /** One served section-classification row (registry mode): where it is on the
@@ -207,17 +209,42 @@ export type DecideInput = {
 export type WeightEntry = { variantId: string; pulls: number; avgReward: number | null };
 export type ComponentWeightEntry = { componentId: string; updatedAt: number; variants: WeightEntry[] };
 
-export type ComponentGoalOptions = {
+/** Options accepted by goal() (and inherited by componentGoal / the React
+ *  hooks / the snippet) — one shape everywhere (spec §5). */
+export type GoalOptions = {
+  /** Revenue of this conversion, in the project currency. */
+  value?: number;
+  /** ISO-4217 code, only when it differs from the project currency. */
+  currency?: string;
+  /** Merchant order/transaction id — dedupes retries, enables refunds later. */
+  externalId?: string;
+  /** Extra fields merged into the event payload / goal metadata. */
+  metadata?: Record<string, unknown>;
+  /** Advanced: partial-credit weight in [0,1] (composite steps). */
+  weight?: number;
+  /** Advanced: funnel step index (0-based). */
+  stepIndex?: number;
+};
+
+/** goal()'s second arg is the options object iff it carries a reserved key;
+ *  anything else keeps the legacy bare-metadata interpretation. Reserved keys
+ *  inside legacy metadata were inert on the server, so reinterpretation is the
+ *  upgrade the sender wanted (spec §5). */
+function isGoalOptions(v: Record<string, unknown>): boolean {
+  return 'value' in v || 'currency' in v || 'externalId' in v || 'metadata' in v || 'weight' in v || 'stepIndex' in v;
+}
+
+export type ComponentGoalOptions = GoalOptions & {
   /** Reward credited to the served variant (0–1). Defaults to 1. */
   reward?: number;
-  /** Extra fields merged into the event payload. */
-  metadata?: Record<string, unknown>;
 };
 
 export type SentientClient = {
   track(
     event: Omit<SentientEvent, 'id' | 'sessionId' | 'timestamp' | 'timeInSession'>,
   ): void;
+  goal(name: string, options?: GoalOptions): void;
+  /** @deprecated positional form — prefer goal(name, options). */
   goal(name: string, metadata?: Record<string, unknown>, weight?: number, stepIndex?: number): void;
   /**
    * Records a conversion attributed to the variant currently served for
@@ -428,7 +455,9 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
 
   const proxy: SentientClient = {
     track: (e) => inner.track(e),
-    goal: (n, m, w, s) => inner.goal(n, m, w, s),
+    // Cast: a single arrow can't structurally satisfy the overloaded member;
+    // the passthrough forwards both call shapes untouched.
+    goal: ((n: string, m?: Record<string, unknown>, w?: number, s?: number) => inner.goal(n, m, w, s)) as SentientClient['goal'],
     componentGoal: (c, g, o) => inner.componentGoal(c, g, o),
     identify: (u) => inner.identify(u),
     getAssignment: (c, s) => inner.getAssignment(c, s),
@@ -672,15 +701,31 @@ export function init(config: SentientConfig): SentientClient {
   }
 
   const client: SentientClient = {
-    goal(name, metadata = {}, weight = 1.0, stepIndex = 0) {
+    goal(name: string, metadataOrOpts: Record<string, unknown> = {}, weight = 1.0, stepIndex = 0) {
       const sid = session.getSessionId();
       if (!sid) return;
+      const opts: GoalOptions = isGoalOptions(metadataOrOpts)
+        ? (metadataOrOpts as GoalOptions)
+        : { metadata: metadataOrOpts };
       const goalId = generateEventId();
+      // undefined values vanish at JSON.stringify time, so optional fields
+      // need no conditional assembly.
+      const body = {
+        sessionId: sid,
+        name,
+        metadata: opts.metadata ?? {},
+        weight: opts.weight ?? weight,
+        stepIndex: opts.stepIndex ?? stepIndex,
+        goalId,
+        value: opts.value,
+        currency: opts.currency,
+        externalId: opts.externalId,
+      };
       sessionReady.then(() => {
         fetch(`${baseUrl}/goals`, {
           method: 'POST',
           keepalive: true,
-          body: JSON.stringify({ sessionId: sid, name, metadata, weight, stepIndex, goalId }),
+          body: JSON.stringify(body),
           headers: authHeaders,
         }).catch(() => undefined);
       });
@@ -711,7 +756,13 @@ export function init(config: SentientConfig): SentientClient {
         variantId: attributedVariantId,
         eventType: 'goal_achieved',
         goalType,
-        payload: { reward: opts?.reward ?? 1, ...(opts?.metadata ?? {}) },
+        // undefined goalValue/currency vanish at JSON.stringify time.
+        payload: {
+          reward: opts?.reward ?? 1,
+          goalValue: opts?.value,
+          currency: opts?.currency,
+          ...(opts?.metadata ?? {}),
+        },
         timestamp: Date.now(),
         timeInSession: Date.now() - sessionStart,
       };

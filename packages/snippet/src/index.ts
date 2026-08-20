@@ -21,6 +21,22 @@ export const version: string =
 const DECIDE_TIMEOUT_MS = 5000;
 const REAPPLY_DEBOUNCE_MS = 50;
 
+// Pre-boot goal queue: a merchant stub
+//   window.SentientSnippet = window.SentientSnippet || { q: [], goal: function () { this.q.push(['goal'].concat([].slice.call(arguments))); } };
+// can record conversions before this bundle loads. Captured at module-eval
+// time — tsup's IIFE assignment replaces the global right AFTER the module
+// body runs, so this is the last moment the stub is visible.
+type PrebootCall = ['goal', string, Record<string, unknown>?];
+const prebootQueue: PrebootCall[] = (() => {
+  try {
+    if (typeof window === 'undefined') return [];
+    const pre = (window as unknown as { SentientSnippet?: { q?: unknown } }).SentientSnippet;
+    return Array.isArray(pre?.q) ? (pre!.q as PrebootCall[]) : [];
+  } catch {
+    return [];
+  }
+})();
+
 type Band = 'low' | 'medium' | 'high';
 type SlotResults = Record<string, string | Record<string, string>>;
 
@@ -472,9 +488,12 @@ async function previewPersona(cfg: SnippetConfig, persona: string): Promise<void
 
 function exposeGlobal(cfg: SnippetConfig): void {
   const api = {
-    goal(name: string, metadata?: Record<string, unknown>): void {
+    /** Record a conversion. The second argument is either legacy metadata or a
+     *  GoalOptions object ({ value, currency, externalId, metadata }) — core
+     *  disambiguates; revenue fields flow through verbatim (spec §5). */
+    goal(name: string, opts?: Record<string, unknown>): void {
       try {
-        activeClient?.goal(name, metadata);
+        activeClient?.goal(name, opts);
       } catch {
         /* fail-safe */
       }
@@ -545,6 +564,14 @@ function exposeGlobal(cfg: SnippetConfig): void {
   // must win. The build-time exports are only used by bundlers importing the
   // package, never at runtime, so overwriting the global here is safe.
   (window as unknown as { SentientSnippet?: unknown }).SentientSnippet = api;
+  // Replay conversions recorded on a pre-boot stub (captured at module eval).
+  for (const call of prebootQueue.splice(0)) {
+    try {
+      if (call[0] === 'goal') api.goal(call[1], call[2]);
+    } catch {
+      /* fail-safe */
+    }
+  }
 }
 
 /**

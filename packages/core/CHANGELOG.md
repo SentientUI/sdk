@@ -1,5 +1,22 @@
 # @sentientui/core
 
+## 0.18.0
+
+### Minor Changes
+
+- 6dade33: `GoalDefinition` accepts the new `scroll_depth` event with an optional `threshold` (fraction of the page, 0–1, that counts as read). Types-only — the runtime bundle is unchanged.
+
+### Patch Changes
+
+- Updated dependencies [6dade33]
+  - @sentientui/policy@0.4.0
+
+## 0.17.0
+
+### Minor Changes
+
+- 32996be: `goal()` and `componentGoal()` accept revenue values: `client.goal('purchase', { value: 129.99, currency: 'EUR', externalId: order.id })`. The value feeds revenue reporting and (once enough valued conversions exist) value-aware optimization. The positional `goal(name, metadata, weight, stepIndex)` form still works and is deprecated.
+
 ## 0.16.10
 
 ### Patch Changes

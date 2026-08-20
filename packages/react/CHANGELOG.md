@@ -1,5 +1,31 @@
 # @sentientui/react
 
+## 0.22.1
+
+### Patch Changes
+
+- Updated dependencies [6dade33]
+- Updated dependencies [6dade33]
+  - @sentientui/policy@0.4.0
+  - @sentientui/core@0.18.0
+
+## 0.22.0
+
+### Minor Changes
+
+- 9dac129: `funnel` prop on `<Adaptive>`, `useAdaptive`, `useAdaptiveTokens`, and `<AdaptiveGroup>`: declares which funnel the component serves (and, for `weighted_composite` goals, the funnel's ordered steps) to the server, so the optimizer trains it on journey progress and the dashboard's Funnels tab shows it without manual setup.
+
+## 0.21.0
+
+### Minor Changes
+
+- 32996be: Revenue values on goals: `fireGoal('purchase', { value: cart.total, externalId: order.id })`, `usePageGoal('order_confirmed', { value })`, and a static `value` on declarative click/form_submit/scroll_depth goal configs. Values ride on both the component-attributed event and the session funnel record.
+
+### Patch Changes
+
+- Updated dependencies [32996be]
+  - @sentientui/core@0.17.0
+
 ## 0.20.0
 
 ### Minor Changes

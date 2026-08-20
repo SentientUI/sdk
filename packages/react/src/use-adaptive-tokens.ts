@@ -7,13 +7,20 @@ import { registerSlot } from './devtools-registry.js';
 import {
   attachGoalListeners,
   goalLabelOf,
+  goalValueOf,
   isDevBuild,
+  maybeDeclareFunnel,
   normalizeGoal,
   trackExposure,
   type GoalConfig,
 } from './adaptive-shared.js';
 
-export type UseAdaptiveTokensOptions = { goal?: string | GoalConfig };
+export type UseAdaptiveTokensOptions = {
+  goal?: string | GoalConfig;
+  /** Funnel this slot serves (stable funnel id, e.g. "checkout") — same
+   *  declaration semantics as <Adaptive funnel="...">. */
+  funnel?: string;
+};
 export type UseAdaptiveTokensResult = {
   tokens: Record<string, string>;
   /** Spread on the slot's element: `data-<dim>` per dim + `data-sentient-slot`. */
@@ -116,6 +123,14 @@ export function useAdaptiveTokens(
     trackExposure(client, apiKey, id, arm);
   }, [client, apiKey, id, arm, source]);
 
+  // Funnel membership declaration — same override gate as the exposure.
+  const funnel = opts?.funnel;
+  useEffect(() => {
+    if (!client || !funnel || source === 'override') return;
+    maybeDeclareFunnel(client, apiKey, id, funnel, normalizeGoal(opts?.goal ?? 'click'));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, apiKey, id, funnel, goalKey, source]);
+
   // Optional goal: the returned props carry data-sentient-slot, so the slot's
   // element is findable without a ref (the pinned return type has no ref).
   // Credit flows through componentGoal(slot id) — the core resolves the
@@ -133,6 +148,7 @@ export function useAdaptiveTokens(
       return;
     }
     const label = goalLabelOf(opts.goal);
+    const declaredValue = goalValueOf(opts.goal);
     let fired = false;
     return attachGoalListeners(node, normalizeGoal(opts.goal), {
       fireGoal: () => {
@@ -144,12 +160,19 @@ export function useAdaptiveTokens(
         // fired only the former, so slot conversions were invisible in the
         // goal funnel; fire both so membership matches components. (One funnel
         // record per conversion — see useAdaptiveGoal; keep labels unique.)
-        client.componentGoal(id, label);
-        client.goal(label, { componentId: id, arm }, 1.0, 0);
+        // A static goal-config value rides on both writes (spec §5).
+        if (declaredValue !== undefined) client.componentGoal(id, label, { value: declaredValue });
+        else client.componentGoal(id, label);
+        client.goal(label, {
+          metadata: { componentId: id, arm },
+          weight: 1.0,
+          stepIndex: 0,
+          ...(declaredValue !== undefined ? { value: declaredValue } : {}),
+        });
       },
       fireStep: (name, weight, stepIndex) => {
         client.componentGoal(id, name, { reward: weight });
-        client.goal(name, { componentId: id, arm }, weight, stepIndex);
+        client.goal(name, { metadata: { componentId: id, arm }, weight, stepIndex });
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps

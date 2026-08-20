@@ -3,6 +3,10 @@ import { generateLocator, resolvesUniquely } from './locator-gen';
 import { clearCachedEditorToken } from '../editor-token';
 import { cssValueSafe } from '../css-guard';
 import { applyOps } from '../ops';
+import {
+  buildDraftPayload, funnelSummaryLine, stepOptions, toggleStepSelection,
+  type EditorFunnel, type EditorGoal,
+} from './funnel-panel';
 import type { CompoundLocator, SlotOps } from '@sentientui/core';
 
 // On-site visual editor overlay. Loaded as a SEPARATE bundle only when the
@@ -179,6 +183,20 @@ async function fetchTargets(b: Boot): Promise<AuditTarget[]> {
     return Array.isArray(body.targets) ? body.targets : [];
   } catch {
     return [];
+  }
+}
+
+/** Authenticated editor-scope GET — null on any failure (the caller shows a
+ *  friendly status line instead of a broken panel). */
+async function fetchEditorJson<T>(b: Boot, path: string): Promise<T | null> {
+  try {
+    const res = await fetch(`${b.apiBase}${path}`, {
+      headers: { authorization: `Bearer ${b.token}` },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
   }
 }
 
@@ -411,6 +429,13 @@ export function mount(b: Boot): void {
   const formGoalBtn = el('button', btnStyle('#374151'), 'Track form submissions as a goal') as HTMLButtonElement;
   // Always available (needs no selection): counts visitors reaching this page.
   const pageGoalBtn = el('button', btnStyle('#374151'), 'Track page visits as a goal') as HTMLButtonElement;
+  // Always available (needs no selection): counts reading this far down the page.
+  const scrollGoalBtn = el('button', btnStyle('#374151'), 'Track reading this far as a goal') as HTMLButtonElement;
+  // Funnels (spec §7.3): build a multi-step funnel from tracked goals and
+  // attach the slot being edited to a step — all without the dashboard.
+  const funnelBtn = el('button', btnStyle('#374151'), 'Set up a funnel') as HTMLButtonElement;
+  const attachFunnelBtn = el('button', btnStyle('#374151'), 'Attach this test to a funnel step') as HTMLButtonElement;
+  const publishFunnelBtn = el('button', btnStyle('#10b981'), 'Turn the funnel on') as HTMLButtonElement;
   const moveUpBtn = el('button', btnStyle('#374151'), 'Move up') as HTMLButtonElement;
   const moveDownBtn = el('button', btnStyle('#374151'), 'Move down') as HTMLButtonElement;
   const saveArrangeBtn = el('button', btnStyle('#6366f1'), 'Save this arrangement') as HTMLButtonElement;
@@ -432,10 +457,13 @@ export function mount(b: Boot): void {
   publishBtn.style.display = 'none';
   activateGoalBtn.style.display = 'none';
 
+  attachFunnelBtn.style.display = 'none';
+  publishFunnelBtn.style.display = 'none';
   panel.append(
     title, hint, pauseBtn, selectedLabel, status,
     sectionLabel('Content & style'), textBtn, styleBtn,
-    sectionLabel('Track a goal'), goalBtn, formGoalBtn, pageGoalBtn,
+    sectionLabel('Track a goal'), goalBtn, formGoalBtn, pageGoalBtn, scrollGoalBtn,
+    sectionLabel('Funnels'), funnelBtn, attachFunnelBtn, publishFunnelBtn,
     sectionLabel('Move'), moveUpBtn, moveDownBtn, saveArrangeBtn, undoBtn,
     publishBtn, activateGoalBtn, closeBtn,
   );
@@ -542,11 +570,13 @@ export function mount(b: Boot): void {
 
   // After a slot draft saves, reveal "Publish now" targeting that slot. Publishing
   // is bounded/validated server-side (validateDraftConfig) and versioned, so it's
-  // reversible from the dashboard.
+  // reversible from the dashboard. The funnel-attach action targets the same
+  // slot — "this test serves step N of Checkout".
   let pendingPublishSlotId: string | null = null;
   const offerPublish = (slotId: string): void => {
     pendingPublishSlotId = slotId;
     publishBtn.style.display = 'block';
+    attachFunnelBtn.style.display = 'block';
   };
   publishBtn.onclick = async () => {
     if (!pendingPublishSlotId) return;
@@ -748,7 +778,10 @@ export function mount(b: Boot): void {
   };
   const saveGoal = async (
     goalId: string,
-    payload: { event: 'click' | 'form_submit' | 'url_reached'; locator?: CompoundLocator; urlPattern?: string },
+    payload: {
+      event: 'click' | 'form_submit' | 'url_reached' | 'scroll_depth';
+      locator?: CompoundLocator; urlPattern?: string; threshold?: number;
+    },
   ): Promise<void> => {
     setStatus('Saving…');
     const r = await save(b, `/v1/editor/goals/${encodeURIComponent(goalId)}`, payload);
@@ -774,6 +807,139 @@ export function mount(b: Boot): void {
     const path = window.location.pathname || '/';
     const seed = slugify(path) ? `reached-${slugify(path)}` : 'page-visited';
     void saveGoal(deriveGoalId(seed, path), { event: 'url_reached', urlPattern: path });
+  };
+
+  const SCROLL_CHOICES: Array<{ label: string; value: number }> = [
+    { label: '25% — skimmed the top', value: 0.25 },
+    { label: '50% — read halfway', value: 0.5 },
+    { label: '75% — read most of the page', value: 0.75 },
+    { label: '90% — read to the end', value: 0.9 },
+  ];
+  scrollGoalBtn.onclick = () => {
+    openForm(
+      [{ key: 'depth', label: 'Counts once a visitor reads', type: 'select', options: SCROLL_CHOICES.map((c) => c.label) }],
+      'Track it',
+      (v) => {
+        const choice = SCROLL_CHOICES.find((c) => c.label === v.depth) ?? SCROLL_CHOICES[2]!;
+        const pct = Math.round(choice.value * 100);
+        // Depth goals are page-agnostic: the same threshold on any page is the
+        // same goal, so the id is stable and re-tracking updates the draft.
+        void saveGoal(`read-${pct}pct`, { event: 'scroll_depth', threshold: choice.value });
+        closeForm();
+      },
+    );
+  };
+
+  // ---- Funnels: pick tracked goals in order → draft funnel → turn on; attach
+  // the just-saved slot to a step. Click order IS the funnel order. ----------
+  let pendingFunnelId: string | null = null;
+  const offerFunnelPublish = (funnelId: string): void => {
+    pendingFunnelId = funnelId;
+    publishFunnelBtn.style.display = 'block';
+  };
+  publishFunnelBtn.onclick = async () => {
+    if (!pendingFunnelId) return;
+    publishFunnelBtn.disabled = true;
+    setStatus('Turning on…');
+    const r = await save(b, `/v1/editor/funnels/${encodeURIComponent(pendingFunnelId)}/publish`, {});
+    publishFunnelBtn.disabled = false;
+    if (r === 'ok') {
+      setStatus('✓ Funnel is on — the drop-off view fills in as visitors move through it.', true);
+      publishFunnelBtn.style.display = 'none';
+      pendingFunnelId = null;
+    } else if (r === 'expired') {
+      setStatus('Editor session expired — reopen it from your dashboard to turn the funnel on. Your draft is safe.', false);
+    } else {
+      setStatus('⚠ Couldn’t turn the funnel on — try again.', false);
+    }
+  };
+
+  funnelBtn.onclick = async () => {
+    setStatus('Loading your goals…');
+    const body = await fetchEditorJson<{ goals?: EditorGoal[] }>(b, '/v1/editor/goals');
+    const goals = body?.goals ?? [];
+    if (goals.length < 2) {
+      setStatus('Track at least 2 goals first — a funnel is a sequence of them (e.g. “viewed pricing” → “signed up”).', false);
+      return;
+    }
+    setStatus('Pick the steps in order — first click = first step.');
+    closeForm();
+    let selection: string[] = [];
+    const nameLabel = el('label', { display: 'block', fontSize: '12px', opacity: '0.85', marginTop: '8px' }, 'Funnel name');
+    const nameInput = el('input', {
+      display: 'block', width: '100%', marginTop: '4px', padding: '7px 9px',
+      borderRadius: '8px', border: '1px solid rgba(255,255,255,0.18)',
+      background: '#1f2937', color: '#fff', font: '13px system-ui, sans-serif',
+    }) as HTMLInputElement;
+    formHost.append(nameLabel, nameInput);
+    const orderNote = el('div', { fontSize: '11px', opacity: '0.7', marginTop: '6px' }, 'Steps (click in journey order):');
+    formHost.append(orderNote);
+    const rows = new Map<string, HTMLButtonElement>();
+    const renderOrder = (): void => {
+      for (const [goalId, btn] of rows) {
+        const idx = selection.indexOf(goalId);
+        const name = goals.find((g) => g.goal_id === goalId)?.display_name ?? goalId;
+        btn.textContent = idx === -1 ? name : `${idx + 1}. ${name}`;
+        btn.style.background = idx === -1 ? '#374151' : '#6366f1';
+      }
+    };
+    for (const g of goals) {
+      const row = el('button', { ...btnStyle('#374151'), textAlign: 'left' }) as HTMLButtonElement;
+      rows.set(g.goal_id, row);
+      row.onclick = () => {
+        selection = toggleStepSelection(selection, g.goal_id);
+        renderOrder();
+      };
+      formHost.append(row);
+    }
+    renderOrder();
+    const saveBtn = el('button', btnStyle('#6366f1'), 'Save funnel') as HTMLButtonElement;
+    const cancelBtn = el('button', { ...btnStyle('transparent'), opacity: '0.6' }, 'Cancel') as HTMLButtonElement;
+    cancelBtn.onclick = closeForm;
+    saveBtn.onclick = async () => {
+      const built = buildDraftPayload(nameInput.value, selection);
+      if (!built.ok) { setStatus(`⚠ ${built.error}`, false); return; }
+      setStatus('Saving…');
+      const r = await save(b, `/v1/editor/funnels/${encodeURIComponent(built.funnelId)}`, built.body);
+      if (r === 'ok') { closeForm(); offerFunnelPublish(built.funnelId); }
+      reportSave(r, '✓ Funnel saved as a draft. Click “Turn the funnel on” to start measuring.');
+    };
+    formHost.append(saveBtn, cancelBtn);
+  };
+
+  attachFunnelBtn.onclick = async () => {
+    const slotId = pendingPublishSlotId;
+    if (!slotId) return;
+    setStatus('Loading funnels…');
+    const body = await fetchEditorJson<{ funnels?: EditorFunnel[] }>(b, '/v1/editor/funnels');
+    const funnels = body?.funnels ?? [];
+    if (funnels.length === 0) {
+      setStatus('No funnels yet — click “Set up a funnel” first.', false);
+      return;
+    }
+    const goalsBody = await fetchEditorJson<{ goals?: EditorGoal[] }>(b, '/v1/editor/goals');
+    const goalNames = new Map((goalsBody?.goals ?? []).map((g) => [g.goal_id, g.display_name]));
+    openForm(
+      [
+        { key: 'funnel', label: 'Funnel', type: 'select', options: funnels.map((f) => funnelSummaryLine(f)) },
+        // Steps for the FIRST funnel pre-render; re-picking after choosing a
+        // different funnel re-opens with that funnel's steps (simplest flow
+        // that fits the shared form helper).
+        { key: 'step', label: 'Which step does this element serve?', type: 'select', options: stepOptions(funnels[0]!, goalNames).map((o) => o.label) },
+      ],
+      'Attach',
+      async (v) => {
+        const funnel = funnels.find((f) => funnelSummaryLine(f) === v.funnel) ?? funnels[0]!;
+        const stepIdx = stepOptions(funnel, goalNames).findIndex((o) => o.label === v.step);
+        setStatus('Attaching…');
+        const r = await save(b, `/v1/editor/funnels/${encodeURIComponent(funnel.funnel_id)}/assign`, {
+          slotId,
+          stepIndex: stepIdx >= 0 ? stepIdx : null,
+        });
+        if (r === 'ok') closeForm();
+        reportSave(r, `✓ Attached — this test now works toward “${funnel.display_name}”.`);
+      },
+    );
   };
 
   styleBtn.onclick = () => {
