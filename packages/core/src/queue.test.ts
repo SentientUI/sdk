@@ -53,6 +53,32 @@ describe('createEventQueue', () => {
     queue.destroy();
   });
 
+  it('salvages a batch an older API rejects over the pageview type', async () => {
+    // An API deployed before migration 108 fails the whole batch on the unknown
+    // 'pageview' eventType, and a 4xx is terminal — so upgraded SDKs silently
+    // lost every co-batched exposure and dwell too. The pageviews themselves are
+    // unsendable there; the rest must still arrive.
+    const fetchMock = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      const hasPageview = String(init?.body).includes('"pageview"');
+      return new Response(null, { status: hasPageview ? 400 : 202 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const queue = createEventQueue({ ingestUrl: INGEST, apiKey: KEY, maxBatchSize: 3 });
+    queue.push(makeEvent({ id: 'p1', eventType: 'pageview', componentId: '__page__' }));
+    queue.push(makeEvent({ id: 'e1' }));
+    queue.push(makeEvent({ id: 'e2', eventType: 'goal_achieved' }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    const secondBody = String((fetchMock.mock.calls[1]![1] as RequestInit).body);
+    expect(secondBody).not.toContain('"pageview"');
+    expect(secondBody).toContain('"e1"');
+    expect(secondBody).toContain('"e2"');
+    queue.destroy();
+    // Nothing left to retry: the salvaged events were accepted, the pageview dropped.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('flush called immediately on visibilitychange to hidden', () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
     vi.stubGlobal('fetch', fetchMock);

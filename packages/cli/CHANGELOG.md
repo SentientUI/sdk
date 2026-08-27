@@ -1,5 +1,18 @@
 # @sentientui/cli
 
+## 0.3.0
+
+### Minor Changes
+
+- e8c893d: `--help` and `--version` are real flags.
+
+  `--help` landed in the command slot, so `npx @sentientui/cli --help` — the first
+  thing a developer or an agent types — was treated as an unknown command and
+  exited 1 with a one-line usage string. Both flags are now recognised in either
+  position, print to stdout, and exit 0; the usage text documents `init`, every
+  flag, keyless local mode, and where the docs live. An unknown command still goes
+  to stderr and exits 1, which is the case that should have been failing all along.
+
 ## 0.2.6
 
 ### Patch Changes

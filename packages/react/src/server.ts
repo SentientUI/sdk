@@ -35,6 +35,13 @@ export type LoadAdaptiveAssignmentsOptions = {
   doNotTrack?: boolean;
   /** Milliseconds to wait for the API before returning default variants. Defaults to 1000 (typical decide is well under 150 ms; the full budget is only reached on a cold start or a distant API). */
   timeoutMs?: number;
+  /**
+   * Declared persona — the role your app already knows for this visitor (e.g.
+   * from your auth context: 'admin', 'evaluator'). Must be a key in the
+   * project's persona vocabulary; unrecognized values are ignored server-side.
+   * Never a user id or email.
+   */
+  persona?: string;
 };
 
 function defaultSessionId(): string {
@@ -66,6 +73,7 @@ export async function loadAdaptiveAssignments(
     referer: options.referer,
     doNotTrack: options.doNotTrack,
     timeoutMs: options.timeoutMs,
+    persona: options.persona,
   });
 
   return { assignments, sessionId };
@@ -181,6 +189,7 @@ export async function loadAdaptiveDecision(
       referer: options.referer,
       doNotTrack: options.doNotTrack,
       timeoutMs: options.timeoutMs,
+      persona: options.persona,
     },
   );
 

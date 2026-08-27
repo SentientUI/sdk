@@ -1,4 +1,4 @@
-import { PERSONAS, UNKNOWN_PERSONA, type Persona, type PersonaKey } from './personas';
+import { PERSONAS, type Persona } from './personas';
 import { hashLayout } from './hash';
 
 export const CLUSTER_PRIORITY: Record<Persona, string[]> = {
@@ -11,14 +11,17 @@ export const CLUSTER_PRIORITY: Record<Persona, string[]> = {
 /**
  * Reorders section IDs based on the persona's semantic priority.
  * Sections with no graph entry are treated as 'generic'.
- * Returns the input unchanged for the unknown persona.
+ * Returns the input unchanged for 'unknown' — and for any custom vocabulary
+ * persona (declared/discovered): those have no semantic prior, so they serve
+ * the natural order until the layout bandit has learned rows, the same
+ * cold-start posture 'unknown' gets.
  */
 export function applyClusterHeuristic(
   sections: string[],
   sectionTypes: Map<string, string>,
-  persona: PersonaKey,
+  persona: string,
 ): string[] {
-  const priority = persona === UNKNOWN_PERSONA ? undefined : CLUSTER_PRIORITY[persona];
+  const priority = (CLUSTER_PRIORITY as Partial<Record<string, string[]>>)[persona];
   if (!priority) return sections;
   // A type that is PRESENT but off-vocabulary (e.g. 'newsletter') yields
   // indexOf === -1, which would sort it BEFORE index 0 ('pricing') and hijack the
@@ -46,7 +49,7 @@ export function applyClusterHeuristic(
 export function candidateLayouts(
   sections: string[],
   sectionTypes: Map<string, string>,
-  persona: PersonaKey,
+  persona: string,
 ): Map<string, string[]> {
   const byHash = new Map<string, string[]>();
   for (const cluster of [...PERSONAS, persona]) {

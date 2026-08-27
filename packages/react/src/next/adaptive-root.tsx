@@ -244,6 +244,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       referer,
       doNotTrack: skipSsr,
       timeoutMs,
+      persona: providerProps.persona,
     });
     initialAssignments = decision.assignments;
     initialLayoutOrder = decision.layoutOrder;
@@ -263,6 +264,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       referer,
       doNotTrack: skipSsr,
       timeoutMs,
+      persona: providerProps.persona,
     });
     initialAssignments = result.assignments;
     ssrSessionId = result.sessionId;

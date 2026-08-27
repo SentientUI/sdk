@@ -36,6 +36,12 @@ export function posteriorOfCounts(c: PoolCounts): { alpha: number; beta: number 
  * Every cell is optional; an absent cell contributes Beta(1,1)-with-0-evidence,
  * which is what lets the same function reproduce the legacy variant (segment-only)
  * and legacy slot (persona-only) behaviors on day one after migration.
+ *
+ * Only the parent's MEAN crosses each shrink boundary (see shrunkPosterior) —
+ * never its sample size. That is what keeps a thin child's posterior as WIDE as
+ * its own evidence warrants, so Thompson Sampling still explores it. The blend
+ * weight below therefore decides which axis sets the parent's rate; the levels'
+ * absolute magnitudes no longer leak into the child's confidence.
  */
 export function pooledPosterior(
   cells: PoolCells,
@@ -46,14 +52,12 @@ export function pooledPosterior(
   const glob = cells.global ?? ZERO;
   const globPost = posteriorOfCounts(glob);
 
-  const segLevel = shrunkPosterior(
-    { ...posteriorOfCounts(seg), exposures: seg.exposures }, globPost, m);
+  const segLevel = shrunkPosterior(posteriorOfCounts(seg), globPost, m);
   if (!personaKnown) return segLevel;
 
   const per = cells.persona ?? ZERO;
   const child = cells.child ?? ZERO;
-  const perLevel = shrunkPosterior(
-    { ...posteriorOfCounts(per), exposures: per.exposures }, globPost, m);
+  const perLevel = shrunkPosterior(posteriorOfCounts(per), globPost, m);
 
   // Laplace-smoothed evidence weighting: an axis with no data gets (near-)zero
   // say; equal data → equal say; both empty → 50/50 (≈ global either way).
@@ -62,8 +66,47 @@ export function pooledPosterior(
     alpha: wSeg * segLevel.alpha + (1 - wSeg) * perLevel.alpha,
     beta: wSeg * segLevel.beta + (1 - wSeg) * perLevel.beta,
   };
-  return shrunkPosterior(
-    { ...posteriorOfCounts(child), exposures: child.exposures }, parent, m);
+  return shrunkPosterior(posteriorOfCounts(child), parent, m);
+}
+
+/** A weight row's value-posterior columns, plus the cell it belongs to. */
+export type ValueCellRow = {
+  segment: string;
+  persona: string;
+  valueSum: number;
+  valueCount: number;
+};
+
+/**
+ * The value cell for EV ranking: the BROADEST cell present for an arm.
+ *
+ * Never a sum across cells. `weightCellsFor` writes each trial to the child,
+ * both marginals AND the global row, so adding them up counts every real order
+ * 2-4x depending on whether the persona was known. The average survives that
+ * (numerator and denominator inflate together) but the EB shrinkage weight does
+ * not: `valueCount / (valueCount + EV_SHRINK_K)` with K = 20 is meant to give a
+ * cell its own voice at ~20 valued orders, and at 4x inflation it happened at
+ * 5 — by a factor that varied with the arm's persona mix, so identical arms
+ * shrank differently.
+ *
+ * The broadest cell already holds every trial in its slice exactly once, which
+ * makes this correct for both serving views: the pooled hierarchy (up to four
+ * rows per arm, global wins) and the legacy marginal view (exactly one row per
+ * arm, which is therefore the broadest).
+ */
+export function broadestValueCell(rows: readonly ValueCellRow[]): { valueSum: number; valueCount: number } {
+  let best: ValueCellRow | null = null;
+  let bestRank = -1;
+  for (const row of rows) {
+    const segAll = row.segment === POOL_ALL;
+    const perAll = row.persona === POOL_ALL;
+    const rank = segAll && perAll ? 3 : segAll || perAll ? 2 : 1;
+    if (rank > bestRank) {
+      bestRank = rank;
+      best = row;
+    }
+  }
+  return { valueSum: best?.valueSum ?? 0, valueCount: best?.valueCount ?? 0 };
 }
 
 /**

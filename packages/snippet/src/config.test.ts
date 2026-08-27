@@ -83,3 +83,23 @@ describe('parseSnippetConfig', () => {
     expect(Object.keys(cfg.slots)).toEqual(['good']);
   });
 });
+
+
+describe('declared persona parsing', () => {
+  const base = { apiKey: 'pk_x', context: 'saas', slots: {} };
+
+  it('accepts a string persona', () => {
+    expect(parseSnippetConfig({ ...base, persona: 'admin' })?.persona).toBe('admin');
+  });
+
+  it('evaluates a function persona once at parse time', () => {
+    expect(parseSnippetConfig({ ...base, persona: () => 'evaluator' })?.persona).toBe('evaluator');
+  });
+
+  it('a throwing or non-string getter is a missing declaration, never an error', () => {
+    expect(parseSnippetConfig({ ...base, persona: () => { throw new Error('boom'); } })?.persona).toBeUndefined();
+    expect(parseSnippetConfig({ ...base, persona: () => 42 })?.persona).toBeUndefined();
+    expect(parseSnippetConfig({ ...base, persona: 7 })?.persona).toBeUndefined();
+    expect(parseSnippetConfig({ ...base, persona: '   ' })?.persona).toBeUndefined();
+  });
+});

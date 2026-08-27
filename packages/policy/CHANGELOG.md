@@ -1,5 +1,52 @@
 # @sentientui/policy
 
+## 0.6.0
+
+### Minor Changes
+
+- 2ef60e1: Declared personas: tell the engine the role your app already knows, and the layout/slot optimizer learns per role.
+
+  - **core**: `init({ persona: 'admin' })` — sent on the session upsert and every decide; SSR helpers (`preloadAssignments`/`preloadDecisions`) accept the same option. Declared personas are served at full confidence, overriding the inferred one; values not in the project's persona vocabulary are ignored server-side and surfaced in the dashboard.
+  - **react**: `persona` prop on `<AdaptiveProvider>`/`<AdaptiveRoot>`, forwarded through both SSR paths. Stable for the session (decisions are locked per visit); changing it after init warns in dev.
+  - **snippet**: `window.sentient.persona` — a vocabulary key string, or a function evaluated once at init (fail-safe: a throwing or non-string getter is treated as undeclared).
+  - **policy**: new `resolvePersona` (declared beats inferred), `decisionPersona`, `DEFAULT_PERSONA_VOCABULARY`, `PERSONA_KEY_RE`, `RESERVED_PERSONA_KEYS`; the layout heuristics accept any vocabulary persona (custom personas cold-start on the natural order, like `unknown`).
+
+## 0.5.0
+
+### Minor Changes
+
+- 5a2515f: Partial pooling shrinks toward the parent's MEAN, not its sample size.
+
+  `shrunkPosterior` added `w * pooled.alpha` with `w = m / (m + cell.exposures)`,
+  which folded the parent's counts into the child. Because the write path expands
+  every trial into the child, both marginals and the global row, the parent grows
+  with total project volume — so a cell needed roughly `sqrt(m * N_parent)`
+  exposures before its own rate mattered (~1,400 against a 100k-exposure parent,
+  not the ~20 `SHRINKAGE_M` advertises), and it inherited the parent's
+  _confidence_ along with its rate. A 20-exposure cell emerged with a posterior
+  standard deviation of 0.002 against the ~0.09 its evidence justifies, which
+  makes Thompson Sampling draws effectively deterministic and collapses
+  exploration in exactly the thin cells that need it.
+
+  The prior is now worth a fixed `m` pseudo-observations at the parent's rate,
+  itself damped by the parent's own mass so an uninformative parent barely shrinks
+  at all.
+
+  Also adds `broadestValueCell`. EV serving read the value posterior by summing a
+  variant's hierarchy rows, counting every real order 2–4× depending on the
+  persona mix. The average survived that, but the shrinkage weight detached at ~5
+  orders instead of `EV_SHRINK_K = 20`, by a factor that varied per arm.
+
+  **Minor rather than patch, deliberately.** Two reasons a patch would mislead
+  anyone pinned to `~0.4.0`:
+
+  - `shrunkPosterior`'s first argument no longer takes `exposures` — it is
+    `{ alpha, beta }`. The field only fed the removed weighting term, but an
+    object literal passing it is now a compile error.
+  - More importantly, the same inputs return **different numbers**. This changes
+    live serving behaviour, not just types. Validate with
+    `apps/api/scripts/replay-pooling.ts` and stage the rollout.
+
 ## 0.4.0
 
 ### Minor Changes

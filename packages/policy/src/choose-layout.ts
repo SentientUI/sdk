@@ -1,4 +1,3 @@
-import type { PersonaKey } from './personas';
 import { applyClusterHeuristic, candidateLayouts } from './layout-heuristics';
 import { sampleArm, type ArmPosterior } from './bandit';
 
@@ -18,7 +17,7 @@ export type LearnedLayout = { layoutHash: string; alpha: number; beta: number };
 export function chooseLayout(
   sections: string[],
   sectionTypes: Map<string, string>,
-  persona: PersonaKey,
+  persona: string,
   learned: Map<string, LearnedLayout>,
   rand: () => number = Math.random,
 ): string[] {

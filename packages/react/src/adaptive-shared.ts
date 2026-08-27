@@ -235,9 +235,7 @@ export function maybeDeclareFunnel(
   client.track({
     projectId: apiKey,
     componentId,
-    // 'funnel_declared' is server-accepted but not yet in core's EventType
-    // union — cast rather than touch core (its byte budget is exhausted).
-    eventType: 'funnel_declared' as Parameters<SentientClient['track']>[0]['eventType'],
+    eventType: 'funnel_declared',
     payload: withSteps
       ? {
           funnelId,

@@ -39,7 +39,8 @@ export function applySlotAttributes(
  * `data-sentient-arm` attribute on the declared target. The arm is validated
  * against the slot's declared `arms` list — an undeclared or unlisted arm is
  * never written. CSS (authored by the site owner) decides which prebuilt variant
- * the attribute reveals; the snippet never reorders or injects DOM.
+ * the attribute reveals; this path writes one attribute and nothing else — no
+ * markup injection, and no move (registry ops own the sibling-move rung).
  */
 export function applySlotArms(
   results: Record<string, SlotResult>,

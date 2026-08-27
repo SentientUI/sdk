@@ -1,4 +1,11 @@
 import { defineConfig } from 'tsup';
+import { createRequire } from 'node:module';
+
+// `--version` has to print the version that was actually published, and this
+// package is ESM with no JSON import assertion — so the value is inlined at
+// build time rather than read from disk at runtime (where the bin's relative
+// path to package.json depends on how the consumer installed it).
+const { version } = createRequire(import.meta.url)('./package.json') as { version: string };
 
 export default defineConfig({
   entry: ['src/index.ts'],
@@ -14,5 +21,6 @@ export default defineConfig({
   // what caused the MCP boot crash; keep it off so import.meta stays native
   // (with the es2022 target above, esbuild emits it verbatim).
   shims: false,
+  define: { __CLI_VERSION__: JSON.stringify(version) },
   banner: { js: '#!/usr/bin/env node' },
 });

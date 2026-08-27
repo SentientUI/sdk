@@ -18,18 +18,34 @@ npx @sentientui/cli init
 
 `init` **never edits your layout or any existing file.** Nothing adapts until you do the wrap-and-mount step it prints — add the provider snippet to your root layout and mount the example component yourself.
 
-## Flags
+## Commands and flags
+
+```bash
+npx @sentientui/cli init      # set up SentientUI in this app
+npx @sentientui/cli --help    # full usage
+npx @sentientui/cli --version # the installed version, on stdout
+```
 
 | Flag | Description |
 |------|-------------|
 | `--key pk_...` | Your public API key, written into `.env.local`. Omit it to leave the value empty — the SDK then runs in keyless local mode (decisions simulated on-device, nothing sent), so you can build and style before creating an account. |
 | `--yes` / `-y` | Accepted for npx muscle memory; `init` has no prompts, so this is already the default behavior. |
+| `--help` / `-h` | Print usage and exit 0. |
+| `--version` / `-v` | Print the version and exit 0. |
+
+`--help` and `--version` print to stdout and exit 0, so they are safe to pipe.
+An unknown command prints usage to stderr and exits 1.
 
 ## After init
 
 Run your dev server and preview personas locally with `?sentient_persona=buyer` (or `researcher` / `deal_seeker` / `browser`) — this override works in keyless local mode.
 
 Full component and hook reference: the [`@sentientui/react` README](https://www.npmjs.com/package/@sentientui/react).
+
+## More
+
+- [Developer resources](https://sentient-ui.com/docs/developers) — REST API, OpenAPI spec, MCP server, webhooks
+- [CLI reference](https://sentient-ui.com/docs/developers#cli)
 
 ## License
 

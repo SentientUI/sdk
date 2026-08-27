@@ -1,5 +1,7 @@
 /** Batched event queue with reliable transport (fetch + keepalive, localStorage retry). */
 
+import { backoffDelayMs, classifyResponse, drainBucket, purgeBucket, writeBucket } from './durable.js';
+
 export type EventType =
   | 'variant_assigned'
   | 'goal_achieved'
@@ -8,7 +10,14 @@ export type EventType =
   | 'cursor_signal'
   | 'component_visible'
   | 'component_exited'
-  | 'micro_signal';
+  | 'micro_signal'
+  // A funnel DECLARATION, not telemetry: the server upserts the funnel entity
+  // and never stores it in raw_events. Listed here so callers can express it
+  // without casting through the track() signature.
+  | 'funnel_declared'
+  // One per page load and per SPA route change, so a visit's journey through the
+  // site is reconstructable. Carries `path` and nothing else.
+  | 'pageview';
 
 export type SentientEvent = {
   id: string;
@@ -18,6 +27,14 @@ export type SentientEvent = {
   variantId?: string;
   eventType: EventType;
   goalType?: string;
+  /**
+   * Page path the event happened on, e.g. `/pricing`. Set automatically from
+   * `location.pathname` — deliberately NOT `location.href`, so query strings
+   * (which routinely carry emails, reset tokens and order ids) never leave the
+   * browser. The server re-strips them anyway; this is the first of two gates.
+   * Undefined outside a browser (SSR), where there is no page to name.
+   */
+  path?: string;
   payload: Record<string, unknown>;
   timestamp: number;
   timeInSession: number;
@@ -57,66 +74,6 @@ const SSR_QUEUE: EventQueue = {
   destroy: () => undefined,
 };
 
-function readRetryQueue(maxRetrySize: number, retryKey: string): SentientEvent[] {
-  try {
-    const raw = localStorage.getItem(retryKey);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as SentientEvent[];
-    if (!Array.isArray(parsed)) return [];
-    localStorage.removeItem(retryKey);
-    return parsed.slice(-maxRetrySize);
-  } catch {
-    return [];
-  }
-}
-
-function writeRetryQueue(events: SentientEvent[], maxRetrySize: number, retryKey: string): void {
-  try {
-    const existing = (() => {
-      try {
-        const raw = localStorage.getItem(retryKey);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw) as SentientEvent[];
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    })();
-    // De-dupe by event.id (last write wins) before the size cap. A batch that
-    // 5xx's repeatedly in-session hands the same ids to writeRetryQueue on every
-    // retry; without this, each retry appends another copy and slice(-maxRetrySize)
-    // evicts other distinct failed events to make room for the duplicates.
-    const byId = new Map<string, SentientEvent>();
-    for (const e of existing) byId.set(e.id, e);
-    for (const e of events) byId.set(e.id, e);
-    const merged = [...byId.values()].slice(-maxRetrySize);
-    localStorage.setItem(retryKey, JSON.stringify(merged));
-  } catch {
-    /* ignore */
-  }
-}
-
-/**
- * Removes the given event ids from the persisted retry bucket. Called once a
- * batch is acknowledged so a transient 5xx that was written to localStorage
- * isn't replayed on the next page load after the in-session retry succeeds.
- */
-function purgeFromRetryQueue(ids: string[], retryKey: string): void {
-  try {
-    const raw = localStorage.getItem(retryKey);
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as SentientEvent[];
-    if (!Array.isArray(parsed)) return;
-    const drop = new Set(ids);
-    const remaining = parsed.filter((e) => !drop.has(e.id));
-    if (remaining.length === parsed.length) return; // nothing to remove
-    if (remaining.length === 0) localStorage.removeItem(retryKey);
-    else localStorage.setItem(retryKey, JSON.stringify(remaining));
-  } catch {
-    /* ignore */
-  }
-}
-
 /**
  * Creates a batched event queue with periodic and lifecycle-triggered flushes.
  */
@@ -152,7 +109,7 @@ export function createEventQueue(config: QueueConfig): EventQueue {
     // unretryable), drop those ids from localStorage too — otherwise the next
     // page load would replay an already-handled event. `sentIds` is in-memory
     // only, so it can't suppress that cross-reload duplicate on its own.
-    purgeFromRetryQueue(ids, RETRY_KEY);
+    purgeBucket(ids, RETRY_KEY);
   };
 
   // Tracks IDs currently in `queue` or in flight (handed to transportBatch
@@ -181,7 +138,7 @@ export function createEventQueue(config: QueueConfig): EventQueue {
     }
   };
 
-  const retryEvents = readRetryQueue(maxRetrySize, RETRY_KEY);
+  const retryEvents = drainBucket<SentientEvent>(RETRY_KEY, maxRetrySize);
   for (const event of retryEvents) {
     enqueue(event);
   }
@@ -192,7 +149,7 @@ export function createEventQueue(config: QueueConfig): EventQueue {
 
   // Authenticated transport. keepalive: true gives unload-survival; we still await
   // the response so 5xx/429 actually surface and we can retry.
-  const transportBatch = (batch: SentientEvent[]): void => {
+  const transportBatch = (batch: SentientEvent[], salvage = true): void => {
     if (batch.length === 0) return;
     const body = JSON.stringify(batch);
     const ids = batch.map((e) => e.id);
@@ -210,16 +167,29 @@ export function createEventQueue(config: QueueConfig): EventQueue {
       });
     } catch {
       // Synchronous throw (typically jsdom in tests, or extreme browser failure).
-      writeRetryQueue(batch, maxRetrySize, RETRY_KEY);
+      writeBucket(batch, maxRetrySize, RETRY_KEY);
       requeueFailed(batch);
       consecutiveFailures++;
-      backoffUntil = Date.now() + Math.min(60_000, 1000 * 2 ** Math.min(consecutiveFailures, 6));
+      backoffUntil = Date.now() + backoffDelayMs(consecutiveFailures);
       return;
     }
 
     // fetch can sometimes return a value directly (tests using stubGlobal). Handle both.
     const handleResponse = (res: Response): void => {
-      if (res.ok || (res.status >= 400 && res.status < 500 && res.status !== 429)) {
+      if (classifyResponse(res) !== 'retry') {
+        // An API older than migration 108 400s the whole batch over the unknown
+        // 'pageview' type, and a 4xx is terminal — which silently dropped the
+        // co-batched exposures and goals too. Re-send once without the
+        // pageviews (valid on the old API); the pageviews themselves are
+        // unsendable there and are dropped as delivered.
+        if (!res.ok && salvage) {
+          const rest = batch.filter((e) => e.eventType !== 'pageview');
+          if (rest.length > 0 && rest.length < batch.length) {
+            markSent(batch.filter((e) => e.eventType === 'pageview').map((e) => e.id));
+            transportBatch(rest, false);
+            return;
+          }
+        }
         // 2xx = success. 4xx (except 429) will never succeed — drop them rather than loop.
         markSent(ids);
         consecutiveFailures = 0;
@@ -227,18 +197,18 @@ export function createEventQueue(config: QueueConfig): EventQueue {
         return;
       }
       // 5xx / 429 → retry with backoff.
-      writeRetryQueue(batch, maxRetrySize, RETRY_KEY);
+      writeBucket(batch, maxRetrySize, RETRY_KEY);
       requeueFailed(batch);
       consecutiveFailures++;
-      backoffUntil = Date.now() + Math.min(60_000, 1000 * 2 ** Math.min(consecutiveFailures, 6));
+      backoffUntil = Date.now() + backoffDelayMs(consecutiveFailures);
     };
 
     if (pending instanceof Promise) {
       pending.then(handleResponse).catch(() => {
-        writeRetryQueue(batch, maxRetrySize, RETRY_KEY);
+        writeBucket(batch, maxRetrySize, RETRY_KEY);
         requeueFailed(batch);
         consecutiveFailures++;
-        backoffUntil = Date.now() + Math.min(60_000, 1000 * 2 ** Math.min(consecutiveFailures, 6));
+        backoffUntil = Date.now() + backoffDelayMs(consecutiveFailures);
       });
     } else {
       handleResponse(pending);

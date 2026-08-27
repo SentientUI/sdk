@@ -3,10 +3,18 @@ import { resolveLocatorOne } from './locator';
 
 // Editor-defined goal wiring (Phase 3, §2.2). One delegated click listener and
 // one submit listener at the document root; url_reached checked on load + on
-// navigation. Each goal fires at most once per session (matching existing goal
-// semantics), through the client's goal()/componentGoal() paths so close-out
-// crediting is untouched. Never installed for a consent-gated client (caller's
-// responsibility — see run()).
+// navigation. Each goal fires at most once per SESSION, through the client's
+// goal()/componentGoal() paths so close-out crediting is untouched. Never
+// installed for a consent-gated client (caller's responsibility — see run()).
+//
+// "Once per session" needs sessionStorage, not a closure variable: the snippet
+// targets multi-page sites (Webflow, WordPress, Shopify themes) where every
+// navigation reloads the page and re-installs these listeners. An in-memory Set
+// resets with it, so a url_reached goal on /pricing fired on every visit to
+// /pricing. Nothing deduplicates it server-side either — /v1/goals dedupes only
+// on the client event id. Training was insulated (close-out caps per-goal credit
+// at min(1, Σ) and funnel reach counts DISTINCT session_id), but the Hits column
+// is a COUNT(*) and inflated without limit.
 
 type GoalClient = {
   goal(name: string, metadata?: Record<string, unknown>): void;
@@ -33,11 +41,35 @@ export function urlMatches(pattern: string, path: string): boolean {
   return path === p || path.startsWith(`${p}/`);
 }
 
+/** sessionStorage key holding the goal ids already fired this session. */
+export const FIRED_GOALS_KEY = '_snt_fired_goals';
+
+function readFired(win: Window | null): Set<string> {
+  try {
+    const raw = win?.sessionStorage.getItem(FIRED_GOALS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? new Set(parsed.filter((v): v is string => typeof v === 'string')) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function persistFired(win: Window | null, fired: Set<string>): void {
+  try {
+    win?.sessionStorage.setItem(FIRED_GOALS_KEY, JSON.stringify([...fired]));
+  } catch {
+    /* storage unavailable (private mode, blocked) — degrade to per-page dedupe */
+  }
+}
+
 export function installGoalListeners(goals: GoalDefinition[], client: GoalClient, doc: Document): GoalListeners {
-  const fired = new Set<string>();
+  const win = doc.defaultView ?? (typeof window !== 'undefined' ? window : null);
+  const fired = readFired(win);
   const fire = (g: GoalDefinition): void => {
     if (fired.has(g.goalId)) return;
     fired.add(g.goalId);
+    persistFired(win, fired);
     try {
       if (g.slotId) client.componentGoal(g.slotId, g.goalId);
       else client.goal(g.goalId);
@@ -78,6 +110,10 @@ export function installGoalListeners(goals: GoalDefinition[], client: GoalClient
     const d = doc.documentElement;
     const p = d.scrollHeight > 0 ? (d.scrollTop + d.clientHeight) / d.scrollHeight : 0;
     for (const g of scrollGoals) if (p >= (g.threshold ?? 0.75)) fire(g);
+    // Nothing left to watch for once they've all fired.
+    if (scrollGoals.every((g) => fired.has(g.goalId))) {
+      doc.removeEventListener('scroll', onScrollDepth);
+    }
   };
 
   doc.addEventListener('click', onClick, true);

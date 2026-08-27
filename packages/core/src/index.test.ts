@@ -885,6 +885,131 @@ describe('goal() options object (revenue values, spec §5)', () => {
     expect(bodies[0]).toMatchObject({ weight: 0.3, stepIndex: 1, metadata: { a: 1 } });
     client.destroy();
   });
+
+  // goal() used to be the only SDK call with no delivery guarantee: a bare
+  // fetch().catch() cannot see a resolved 429/5xx, so the conversion vanished.
+  it('retries a rate-limited conversion instead of losing it', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    let firstCall = true;
+    vi.stubGlobal('fetch', vi.fn((url: string, opts?: RequestInit) => {
+      if (String(url).includes('/goals') && opts?.body) {
+        bodies.push(JSON.parse(opts.body as string) as Record<string, unknown>);
+        if (firstCall) {
+          firstCall = false;
+          return Promise.resolve(new Response(null, { status: 429 }));
+        }
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+    }));
+
+    vi.useFakeTimers();
+    try {
+      const client = init({ ...BASE_CONFIG, apiKey: 'pk_goalretry_001' });
+      client.goal('purchase', { value: 99 });
+
+      await vi.advanceTimersByTimeAsync(0); // sessionReady microtask → first send → 429
+      expect(bodies).toHaveLength(1);
+
+      // Past the 2s backoff the 429 armed, onto the next 5s flush tick.
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(bodies).toHaveLength(2);
+      // Same goalId both times, so the server's ON CONFLICT dedupe makes the
+      // retry safe — one conversion recorded, not two.
+      expect(bodies[1]!.goalId).toBe(bodies[0]!.goalId);
+      expect(bodies[1]).toMatchObject({ name: 'purchase', value: 99 });
+      client.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// Nested <Adaptive> components each fire their declared goal on the same click,
+// so one action wrote two goal_events rows: close-out summed them (a 0.3-weight
+// step became 0.6) and the Goals page counted Hits twice.
+describe('goal() collapses one user action into one conversion record', () => {
+  function captureGoalBodies(): Array<Record<string, unknown>> {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn((url: string, opts?: RequestInit) => {
+      if (String(url).includes('/goals') && opts?.body) {
+        bodies.push(JSON.parse(opts.body as string) as Record<string, unknown>);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+    }));
+    return bodies;
+  }
+
+  it('two nested components firing the same goal on one click record it once', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_001' });
+    // Both handlers run inside a single event dispatch — same task.
+    client.goal('cta_click', { weight: 0.3, stepIndex: 1 });
+    client.goal('cta_click', { weight: 0.3, stepIndex: 1 });
+    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ name: 'cta_click', weight: 0.3 });
+    client.destroy();
+  });
+
+  it('a genuine repeat conversion in a later task still records', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_002' });
+    client.goal('purchase', { value: 50 });
+    await new Promise((r) => setTimeout(r, 0)); // next task = next user action
+    client.goal('purchase', { value: 70 });
+    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies.map((b) => b.value)).toEqual([50, 70]);
+    client.destroy();
+  });
+
+  it('distinct externalIds are never collapsed, even in one task', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_003' });
+    client.goal('purchase', { value: 50, externalId: 'order_1' });
+    client.goal('purchase', { value: 70, externalId: 'order_2' });
+    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies.map((b) => b.externalId)).toEqual(['order_1', 'order_2']);
+    client.destroy();
+  });
+
+  it('different goal names in one action both record', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_004' });
+    client.goal('saw_cta', { weight: 0.1 });
+    client.goal('clicked_cta', { weight: 1 });
+    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies.map((b) => b.name)).toEqual(['saw_cta', 'clicked_cta']);
+    client.destroy();
+  });
+
+  it('distinct funnel steps of one goal in one action are both kept', async () => {
+    // Funnel steps share a goal name and differ by stepIndex; collapsing them
+    // silently dropped a step. Only IDENTICAL calls are one record.
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_005' });
+    client.goal('checkout', { weight: 0.3, stepIndex: 1 });
+    client.goal('checkout', { weight: 0.6, stepIndex: 2 });
+    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies.map((b) => b.stepIndex)).toEqual([1, 2]);
+    client.destroy();
+  });
+
+  it('the dedupe window closes even when an integrator test mocks timers', async () => {
+    // setTimeout(0) as the window meant vi.useFakeTimers() froze the latch open
+    // and every later same-name conversion in the suite was silently swallowed —
+    // the exact setup sentientui-testing tells integrators to use.
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_006' });
+    vi.useFakeTimers();
+    client.goal('purchase', { value: 50 });
+    vi.useRealTimers();
+    await new Promise((r) => setTimeout(r, 10));
+    client.goal('purchase', { value: 70 });
+    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies.map((b) => b.value)).toEqual([50, 70]);
+    client.destroy();
+  });
 });
 
 describe('componentGoal() value passthrough (spec §5)', () => {

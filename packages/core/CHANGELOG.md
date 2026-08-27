@@ -1,5 +1,111 @@
 # @sentientui/core
 
+## 0.20.0
+
+### Minor Changes
+
+- 2ef60e1: Declared personas: tell the engine the role your app already knows, and the layout/slot optimizer learns per role.
+
+  - **core**: `init({ persona: 'admin' })` — sent on the session upsert and every decide; SSR helpers (`preloadAssignments`/`preloadDecisions`) accept the same option. Declared personas are served at full confidence, overriding the inferred one; values not in the project's persona vocabulary are ignored server-side and surfaced in the dashboard.
+  - **react**: `persona` prop on `<AdaptiveProvider>`/`<AdaptiveRoot>`, forwarded through both SSR paths. Stable for the session (decisions are locked per visit); changing it after init warns in dev.
+  - **snippet**: `window.sentient.persona` — a vocabulary key string, or a function evaluated once at init (fail-safe: a throwing or non-string getter is treated as undeclared).
+  - **policy**: new `resolvePersona` (declared beats inferred), `decisionPersona`, `DEFAULT_PERSONA_VOCABULARY`, `PERSONA_KEY_RE`, `RESERVED_PERSONA_KEYS`; the layout heuristics accept any vocabulary persona (custom personas cold-start on the natural order, like `unknown`).
+
+### Patch Changes
+
+- Updated dependencies [2ef60e1]
+  - @sentientui/policy@0.6.0
+
+## 0.19.1
+
+### Patch Changes
+
+- c8dd0d4: Fix pageview capture lifecycle and goal dedupe edge cases.
+
+  - Page-journey tracking now tears down with the client: `dispose()`/`destroy()`
+    remove the `popstate` listener and unhook the history patch (when still on
+    top). Previously every re-`init()` — consent changes, React StrictMode, HMR —
+    stacked another history wrapper, and disposed clients kept emitting, so a long
+    SPA session after a consent re-grant delivered duplicate pageviews.
+  - The landing pageview is recorded once per (project, path) per page lifetime,
+    marked only after the event reached a live queue — so consent re-mounts no
+    longer double-count the landing page, and StrictMode still delivers exactly one.
+  - A mixed event batch that an API older than the `pageview` event type rejects
+    with a 4xx is now re-sent once without the pageviews, so co-batched exposures
+    and goals survive against not-yet-upgraded self-hosted APIs. This corrects the
+    previous release note, which claimed older APIs accepted the events — they
+    rejected the whole batch.
+  - The goal dedupe key now includes `stepIndex` and `weight`, so distinct funnel
+    steps of one goal fired in the same handler are both kept; only identical
+    calls collapse to one record.
+  - The goal dedupe window is cleared via `MessageChannel` instead of
+    `setTimeout(0)`: mocked timers in integrator test suites froze the latch open
+    (swallowing every later same-name conversion), and background-tab timer
+    throttling stretched "one action" across genuinely separate ones.
+
+  Known limitation, unchanged: hash-based routers never change `location.pathname`
+  (the only part of the URL the SDK reads, by design), so such sites record a
+  single page.
+
+## 0.19.0
+
+### Minor Changes
+
+- 1ce4b77: Capture the page a visit is on. Every event now carries `path`, and a `pageview`
+  event fires on load and on each SPA route change (pushState/replaceState/popstate,
+  deduplicated by pathname so one navigation is one pageview).
+
+  Only `location.pathname` is sent — never `href` or the query string, so emails,
+  reset tokens and order ids that sites routinely put in URLs never leave the
+  browser. The server strips them again on ingest.
+
+  Nothing is required of integrators: the capture starts with `init()`. Requires
+  migration 108 on the API side; older SDKs keep working and their events simply
+  store no path.
+
+### Patch Changes
+
+- 1ce4b77: Record one conversion per user action, not one per listening component.
+
+  Every `<Adaptive>`/hook path fires `componentGoal()` **and** `goal()`, so two
+  nested components declaring the same goal label wrote two `goal_events` rows for
+  a single click. A weight-1.0 goal was hidden by the server's `min(1, …)` cap,
+  but a weighted composite step (say 0.3) was credited 0.6, and the Goals page's
+  Hits column — a `COUNT(*)` — double-counted regardless.
+
+  `goal()` now collapses repeat calls for the same goal name within one task, the
+  window in which a single event dispatch runs. Two real clicks are always
+  separate tasks, so genuine repeat conversions are unaffected, and calls carrying
+  distinct `externalId`s are never collapsed — those are distinct orders by
+  definition. A collapsed call is reported under `debug: true`.
+
+## 0.18.1
+
+### Patch Changes
+
+- 6cfe1c2: `client.goal()` now has a delivery guarantee.
+
+  It was the only call in the SDK that bypassed the durable event queue: a bare
+  `fetch(...).catch(() => {})` cannot observe a resolved error response, so a 429
+  (the API's per-IP limit is 100/min, which shared egress — corporate NAT, mobile
+  carriers, storefront proxies — hits routinely), a 5xx, or a 400
+  `session not found` all resolved and were discarded unread. The conversion was
+  gone with no retry and nothing surfaced to the developer.
+
+  Conversions now go through the same machinery as every other event: immediate
+  send, retry with backoff on 429/5xx, a localStorage bucket that survives reload,
+  and dedupe by id. This was always safe — `goalId` is a client-generated UUID the
+  server dedupes on — it simply wasn't attempted. A backlog drains at a paced rate
+  so recovering from a 429 cannot re-trigger it, and a goal dropped for a
+  non-retryable reason is now reported through `config.debug` with the likely
+  cause instead of vanishing silently.
+
+  `EventType` also gains `'funnel_declared'`, which the server has always
+  accepted. No API removals; existing code keeps working unchanged.
+
+- Updated dependencies [5a2515f]
+  - @sentientui/policy@0.5.0
+
 ## 0.18.0
 
 ### Minor Changes

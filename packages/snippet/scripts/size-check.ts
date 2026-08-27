@@ -14,7 +14,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 //   ?sentient_editor= mode (zero bytes on the normal path), so its budget is
 //   generous — it just guards against unbounded growth of the editor UI.
 const bundles: Array<{ name: string; file: string; limit: number }> = [
-  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 16 * 1024 },
+  // 18 KiB (was 16): the snippet bundles @sentientui/core, so it inherited the
+  // durable goal queue added in 6cfe1c2 (+836 gzip bytes) and went over. Same
+  // call as core's budget — the delivery guarantee is worth the bytes.
+  // Measured 17148.
+  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 18 * 1024 },
   { name: '@sentientui/snippet (editor overlay)', file: 'editor.global.js', limit: 12 * 1024 },
 ];
 

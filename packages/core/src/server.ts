@@ -41,6 +41,13 @@ export type ServerAssignConfig = {
    */
   doNotTrack?: boolean;
   /**
+   * Declared persona — the role your app already knows for this visitor
+   * (e.g. from your auth context during SSR). Same contract as the client
+   * option: must be a vocabulary key; unrecognized values are ignored
+   * server-side. Never a user id or email.
+   */
+  persona?: string;
+  /**
    * Milliseconds to wait for the API before returning default variants.
    * Prevents slow/cold API from blocking SSR. Defaults to 1000 — the hot path
    * is served from in-process caches and typically returns in well under
@@ -108,12 +115,15 @@ export async function preloadAssignments(
 
   // Session metadata must match the browser SDK so assign seeds variant_weights
   // under the same segment (not `unknown:unknown`).
-  const sessionBody = buildSessionUpsertPayload(sessionId, {
-    userAgent: config.userAgent,
-    referer: config.referer,
-    utmParams: config.utmParams,
-    appOrigin: config.origin,
-  });
+  const sessionBody = {
+    ...buildSessionUpsertPayload(sessionId, {
+      userAgent: config.userAgent,
+      referer: config.referer,
+      utmParams: config.utmParams,
+      appOrigin: config.origin,
+    }),
+    ...(config.persona ? { persona: config.persona } : {}),
+  };
 
   try {
     const res = await fetchWithTimeout(
@@ -214,12 +224,15 @@ export async function preloadDecisions(
   };
   if (config.origin) headers.Origin = config.origin;
 
-  const sessionBody = buildSessionUpsertPayload(sessionId, {
-    userAgent: config.userAgent,
-    referer: config.referer,
-    utmParams: config.utmParams,
-    appOrigin: config.origin,
-  });
+  const sessionBody = {
+    ...buildSessionUpsertPayload(sessionId, {
+      userAgent: config.userAgent,
+      referer: config.referer,
+      utmParams: config.utmParams,
+      appOrigin: config.origin,
+    }),
+    ...(config.persona ? { persona: config.persona } : {}),
+  };
 
   try {
     const sessionRes = await fetchWithTimeout(
@@ -246,6 +259,7 @@ export async function preloadDecisions(
           sections: (params.sections ?? []).map((id) => ({ id })),
           components: params.components,
           ...(declaredSlots.length > 0 ? { slots: declaredSlots.map(toWireSlot) } : {}),
+          ...(config.persona ? { persona: config.persona } : {}),
         }),
       },
       timeoutMs,

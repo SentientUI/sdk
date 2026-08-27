@@ -1,5 +1,59 @@
 # @sentientui/react
 
+## 0.24.0
+
+### Minor Changes
+
+- 2ef60e1: Declared personas: tell the engine the role your app already knows, and the layout/slot optimizer learns per role.
+
+  - **core**: `init({ persona: 'admin' })` — sent on the session upsert and every decide; SSR helpers (`preloadAssignments`/`preloadDecisions`) accept the same option. Declared personas are served at full confidence, overriding the inferred one; values not in the project's persona vocabulary are ignored server-side and surfaced in the dashboard.
+  - **react**: `persona` prop on `<AdaptiveProvider>`/`<AdaptiveRoot>`, forwarded through both SSR paths. Stable for the session (decisions are locked per visit); changing it after init warns in dev.
+  - **snippet**: `window.sentient.persona` — a vocabulary key string, or a function evaluated once at init (fail-safe: a throwing or non-string getter is treated as undeclared).
+  - **policy**: new `resolvePersona` (declared beats inferred), `decisionPersona`, `DEFAULT_PERSONA_VOCABULARY`, `PERSONA_KEY_RE`, `RESERVED_PERSONA_KEYS`; the layout heuristics accept any vocabulary persona (custom personas cold-start on the natural order, like `unknown`).
+
+### Patch Changes
+
+- Updated dependencies [2ef60e1]
+  - @sentientui/policy@0.6.0
+  - @sentientui/core@0.20.0
+
+## 0.23.1
+
+### Patch Changes
+
+- Updated dependencies [c8dd0d4]
+  - @sentientui/core@0.19.1
+
+## 0.23.0
+
+### Minor Changes
+
+- 1ce4b77: `<AdaptiveProvider>` now records which page each visit is on and emits a
+  `pageview` event on load and on every client-side route change, inherited from
+  `@sentientui/core`. Nothing is required of you — but you will see new `pageview`
+  entries in the network tab, so it is called out here rather than left as a
+  dependency bump.
+
+  Only `location.pathname` is sent, never the query string.
+
+### Patch Changes
+
+- Updated dependencies [1ce4b77]
+- Updated dependencies [1ce4b77]
+  - @sentientui/core@0.19.0
+
+## 0.22.2
+
+### Patch Changes
+
+- 6cfe1c2: Drop the cast that worked around `funnel_declared` being missing from
+  `@sentientui/core`'s `EventType` union. Internal tidy-up — no behaviour or API
+  change.
+- Updated dependencies [6cfe1c2]
+- Updated dependencies [5a2515f]
+  - @sentientui/core@0.18.1
+  - @sentientui/policy@0.5.0
+
 ## 0.22.1
 
 ### Patch Changes

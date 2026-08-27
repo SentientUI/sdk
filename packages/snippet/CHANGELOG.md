@@ -1,5 +1,86 @@
 # @sentientui/snippet
 
+## 0.16.0
+
+### Minor Changes
+
+- 2ef60e1: Declared personas: tell the engine the role your app already knows, and the layout/slot optimizer learns per role.
+
+  - **core**: `init({ persona: 'admin' })` — sent on the session upsert and every decide; SSR helpers (`preloadAssignments`/`preloadDecisions`) accept the same option. Declared personas are served at full confidence, overriding the inferred one; values not in the project's persona vocabulary are ignored server-side and surfaced in the dashboard.
+  - **react**: `persona` prop on `<AdaptiveProvider>`/`<AdaptiveRoot>`, forwarded through both SSR paths. Stable for the session (decisions are locked per visit); changing it after init warns in dev.
+  - **snippet**: `window.sentient.persona` — a vocabulary key string, or a function evaluated once at init (fail-safe: a throwing or non-string getter is treated as undeclared).
+  - **policy**: new `resolvePersona` (declared beats inferred), `decisionPersona`, `DEFAULT_PERSONA_VOCABULARY`, `PERSONA_KEY_RE`, `RESERVED_PERSONA_KEYS`; the layout heuristics accept any vocabulary persona (custom personas cold-start on the natural order, like `unknown`).
+
+## 0.15.1
+
+### Patch Changes
+
+- c8dd0d4: Fix pageview capture lifecycle and goal dedupe edge cases.
+
+  - Page-journey tracking now tears down with the client: `dispose()`/`destroy()`
+    remove the `popstate` listener and unhook the history patch (when still on
+    top). Previously every re-`init()` — consent changes, React StrictMode, HMR —
+    stacked another history wrapper, and disposed clients kept emitting, so a long
+    SPA session after a consent re-grant delivered duplicate pageviews.
+  - The landing pageview is recorded once per (project, path) per page lifetime,
+    marked only after the event reached a live queue — so consent re-mounts no
+    longer double-count the landing page, and StrictMode still delivers exactly one.
+  - A mixed event batch that an API older than the `pageview` event type rejects
+    with a 4xx is now re-sent once without the pageviews, so co-batched exposures
+    and goals survive against not-yet-upgraded self-hosted APIs. This corrects the
+    previous release note, which claimed older APIs accepted the events — they
+    rejected the whole batch.
+  - The goal dedupe key now includes `stepIndex` and `weight`, so distinct funnel
+    steps of one goal fired in the same handler are both kept; only identical
+    calls collapse to one record.
+  - The goal dedupe window is cleared via `MessageChannel` instead of
+    `setTimeout(0)`: mocked timers in integrator test suites froze the latch open
+    (swallowing every later same-name conversion), and background-tab timer
+    throttling stretched "one action" across genuinely separate ones.
+
+  Known limitation, unchanged: hash-based routers never change `location.pathname`
+  (the only part of the URL the SDK reads, by design), so such sites record a
+  single page.
+
+## 0.15.0
+
+### Minor Changes
+
+- 1ce4b77: The snippet now records which page each visit is on, and emits a `pageview` event
+  on load and on every SPA route change. This adds a small amount of network
+  traffic that was not there before.
+
+  Only `location.pathname` is sent — never the full URL or query string, so emails,
+  reset tokens and order ids that sites routinely put in URLs never leave the
+  browser.
+
+  This behaviour is inherited from the bundled `@sentientui/core`, which the
+  snippet compiles in rather than depending on at runtime — hence the explicit
+  version bump here, since a dependency bump alone would not have produced a
+  changelog entry for a visible change.
+
+  Requires migration 108 on the API side. Against an older API the events are
+  accepted and the path is simply not stored.
+
+## 0.14.1
+
+### Patch Changes
+
+- 6cfe1c2: No-code goals now dedupe once per SESSION, as documented, instead of once per
+  page load.
+
+  The guard was a `Set` held in a closure, which resets on every page load — and
+  the snippet targets multi-page sites (Webflow, WordPress, Shopify themes) where
+  every navigation reloads the page and reinstalls the listeners. A page-visit
+  goal on `/pricing` therefore fired on every visit to `/pricing`, and nothing
+  deduplicated it server-side either. Training was insulated (close-out caps
+  per-goal credit at `min(1, Σ)` and funnel reach counts distinct sessions), but
+  the Hits column is a `COUNT(*)` and inflated without limit.
+
+  Dedupe now lives in `sessionStorage`. It degrades to per-page dedupe when
+  storage is blocked and ignores a corrupt bucket rather than throwing. The scroll
+  listener also detaches once every scroll goal has fired.
+
 ## 0.14.0
 
 ### Minor Changes

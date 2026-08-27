@@ -584,7 +584,9 @@ function exposeGlobal(cfg: SnippetConfig): void {
  *  5. write the snapshot for the next visit,
  *  6. expose window.SentientSnippet (goal wiring, consent, reapply, getState).
  * Any error or timeout leaves the DOM exactly as it was (fail-safe). Never
- * reorders the DOM; never observes mutations.
+ * injects markup and never observes mutations; the only structural change is a
+ * registry move op relocating an element among its own siblings, on the
+ * post-decide pass only (pre-paint stays attributes-only — see apply.ts).
  */
 export async function run(): Promise<void> {
   try {
@@ -669,6 +671,8 @@ export async function run(): Promise<void> {
       consent: cfg.consent,
       preConsentBehavior: cfg.preConsentBehavior,
       debug: cfg.debug,
+      // Declared persona rides core's session upsert + decide bodies.
+      persona: cfg.persona,
     });
     activeClient = client;
     exposeGlobal(cfg);

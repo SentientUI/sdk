@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { installGoalListeners, urlMatches } from './goal-wiring';
+import { FIRED_GOALS_KEY, installGoalListeners, urlMatches } from './goal-wiring';
 import type { GoalDefinition } from '@sentientui/core';
 
 function mockClient() {
@@ -9,7 +9,9 @@ function click(el: Element) {
   el.dispatchEvent(new Event('click', { bubbles: true }));
 }
 
-beforeEach(() => { document.body.innerHTML = ''; });
+// Goals now dedupe through sessionStorage (once per SESSION, not per page
+// load), so a fired goal would otherwise leak into the next test.
+beforeEach(() => { document.body.innerHTML = ''; sessionStorage.clear(); });
 // Some tests navigate to non-root paths; restore "/" so path-sensitive tests below
 // (and the suite's default assumptions) stay isolated.
 afterEach(() => { window.history.pushState({}, '', '/'); });
@@ -151,5 +153,69 @@ describe('scroll_depth goals', () => {
     setScroll(document, 1500, 500, 2000);
     document.dispatchEvent(new Event('scroll'));
     expect(client.goal).not.toHaveBeenCalled();
+  });
+});
+
+// SNIP-01: the snippet targets multi-page sites, where every navigation
+// reloads the page and re-installs these listeners. Dedupe held in a closure
+// resets with it, so a page-visit goal re-fired on every visit and inflated the
+// Hits column without limit.
+describe('once-per-session dedupe survives a page load', () => {
+  const pageGoal: GoalDefinition[] = [{ goalId: 'saw_pricing', event: 'url_reached', urlPattern: '/pricing' }];
+
+  it('fires a url_reached goal once across repeated installs', () => {
+    window.history.pushState({}, '', '/pricing');
+    const client = mockClient();
+
+    const first = installGoalListeners(pageGoal, client, document);
+    expect(client.goal).toHaveBeenCalledTimes(1);
+    first.teardown();
+
+    // Same session, visitor navigates back to /pricing: fresh listeners, no refire.
+    const second = installGoalListeners(pageGoal, client, document);
+    expect(client.goal).toHaveBeenCalledTimes(1);
+    second.teardown();
+  });
+
+  it('records the fired id in sessionStorage', () => {
+    window.history.pushState({}, '', '/pricing');
+    installGoalListeners(pageGoal, mockClient(), document).teardown();
+    expect(JSON.parse(sessionStorage.getItem(FIRED_GOALS_KEY)!)).toContain('saw_pricing');
+  });
+
+  it('fires again in a new session', () => {
+    window.history.pushState({}, '', '/pricing');
+    const client = mockClient();
+    installGoalListeners(pageGoal, client, document).teardown();
+    sessionStorage.clear(); // a new session id / new browser session
+    installGoalListeners(pageGoal, client, document).teardown();
+    expect(client.goal).toHaveBeenCalledTimes(2);
+  });
+
+  it('still fires once when sessionStorage is unavailable', () => {
+    const original = Object.getOwnPropertyDescriptor(window, 'sessionStorage');
+    Object.defineProperty(window, 'sessionStorage', {
+      configurable: true,
+      get() { throw new Error('blocked'); },
+    });
+    try {
+      window.history.pushState({}, '', '/pricing');
+      const client = mockClient();
+      const l = installGoalListeners(pageGoal, client, document);
+      // Degrades to per-page dedupe rather than throwing or double-firing here.
+      l.checkUrl();
+      expect(client.goal).toHaveBeenCalledTimes(1);
+      l.teardown();
+    } finally {
+      if (original) Object.defineProperty(window, 'sessionStorage', original);
+    }
+  });
+
+  it('ignores a corrupt bucket instead of throwing', () => {
+    sessionStorage.setItem(FIRED_GOALS_KEY, 'not json');
+    window.history.pushState({}, '', '/pricing');
+    const client = mockClient();
+    expect(() => installGoalListeners(pageGoal, client, document).teardown()).not.toThrow();
+    expect(client.goal).toHaveBeenCalledTimes(1);
   });
 });

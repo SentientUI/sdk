@@ -2,7 +2,10 @@
 
 Style-rung [SentientUI](https://sentient-ui.com) for sites that are not built with React.
 One script tag: visitor-type attributes on `<html>` plus learned `data-*` style tokens on the
-elements you declare. Plain CSS does the rest. No DOM reordering, ever; if anything fails, your
+elements you declare. Plain CSS does the rest. No markup is ever injected — text is written as
+`textContent` and styles come from a bounded, validated set. The only structural change possible
+is moving a declared element among its own siblings (a registry `moveBefore`/`moveAfter` op,
+applied after the decision returns); a drifted anchor applies nothing. If anything fails, your
 page is left exactly as it was.
 
 ```html

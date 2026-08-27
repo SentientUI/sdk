@@ -157,6 +157,29 @@ describe('decide()', () => {
     client.destroy();
   });
 
+  it('sends the declared persona on both the session upsert and the decide body', async () => {
+    const calls = stubFetch({ ok: true, json: DECIDE_OK });
+    const client = init({ ...BASE_CONFIG, persona: 'admin' });
+    await client.decide({ slots: [{ id: 'hero', arms: ['a', 'b'] }] });
+
+    const sessionCall = calls.find((c) => c.url.endsWith('/sessions'));
+    expect((sessionCall!.body as Record<string, unknown>).persona).toBe('admin');
+    const decideCall = calls.find((c) => c.url.endsWith('/decide'));
+    expect((decideCall!.body as Record<string, unknown>).persona).toBe('admin');
+    client.destroy();
+  });
+
+  it('omits persona from the wire entirely when not configured', async () => {
+    const calls = stubFetch({ ok: true, json: DECIDE_OK });
+    const client = init({ ...BASE_CONFIG });
+    await client.decide({ slots: [{ id: 'hero', arms: ['a', 'b'] }] });
+
+    for (const c of calls) {
+      expect(c.body === null || !('persona' in (c.body as Record<string, unknown>))).toBe(true);
+    }
+    client.destroy();
+  });
+
   it('seeds returned assignments into the local cache (assign() cache-hits afterwards)', async () => {
     stubFetch({ ok: true, json: DECIDE_OK });
     const client = init({ ...BASE_CONFIG });

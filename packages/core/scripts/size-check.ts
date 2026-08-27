@@ -25,7 +25,22 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     entry: 'index.mjs',
     // chunk holds the lean core; no scanner or graph code present.
     // raised for keyless local-mode client (engine itself is condition-gated out)
-    limit: 10240,
+    // 11 KiB (was 10): the durable goal queue in 6cfe1c2 (durable.ts +
+    // goal-queue.ts — localStorage-backed retry so a conversion survives a page
+    // unload) added 757 gzip bytes, against 12 bytes of remaining headroom. The
+    // weight buys an at-least-once delivery guarantee for revenue events, so it
+    // stays; the budget moves one step and no further. Measured 10985.
+    //
+    // 12 KiB (was 11): page-journey capture (migration 108) — `path` on every
+    // event plus the pushState/replaceState/popstate watcher that emits a
+    // pageview per route change. 287 gzip bytes against 8 bytes of headroom, and
+    // it was already trimmed once (inlined the componentId sentinel, folded the
+    // two history patches into a loop) to get there. Before this, NO table
+    // recorded which page a visit was on, so "where do visits end" was
+    // unanswerable — the bytes buy a capability that did not exist rather than a
+    // refinement of one that did. Budget moves one step and no further.
+    // Measured 11272.
+    limit: 12 * 1024,
   },
   {
     name: '@sentientui/core/graph (additions only)',

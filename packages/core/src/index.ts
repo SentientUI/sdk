@@ -8,6 +8,11 @@ import {
   type SentientEvent,
 } from './queue';
 import {
+  createGoalQueue,
+  goalRetryStorageKey,
+  type GoalQueue,
+} from './goal-queue';
+import {
   createAssignmentCache,
   type Assignment,
 } from './cache';
@@ -107,6 +112,15 @@ export type SentientConfig = {
    */
   respectDoNotTrack?: boolean;
   userId?: string;
+  /**
+   * Declared persona — the role your app already knows for this visitor
+   * (e.g. 'admin', 'evaluator'). Must be a key in the project's persona
+   * vocabulary (dashboard → Settings → Personas); unrecognized values are
+   * ignored server-side and surfaced in the dashboard so you can add them.
+   * Declared personas are served at full confidence, overriding the inferred
+   * one. Keep it a low-cardinality role label — never a user id or email.
+   */
+  persona?: string;
   /**
    * Session ID generated server-side (from `loadAdaptiveAssignments` / `loadAdaptiveDecision`).
    * When provided, the client adopts this ID on first visit instead of generating a new one,
@@ -310,6 +324,126 @@ export type {
 
 function generateEventId(): string {
   return randomUuidV4();
+}
+
+/**
+ * The page an event happened on.
+ *
+ * `location.pathname` ONLY — never `href` or `search`. Query strings on real
+ * sites carry emails, reset tokens, order ids and session ids, and none of that
+ * should leave the browser for analytics. The server strips them again
+ * (domain/page-path.ts) because a hand-rolled integration can post whatever it
+ * likes; this is the first of the two gates, and the one that means the data
+ * never travels at all.
+ *
+ * Undefined outside a browser: during SSR there is no page to name, and an
+ * invented one would be wrong for every reader.
+ */
+function currentPath(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return window.location?.pathname || undefined;
+}
+
+/**
+ * Clears the goal-dedupe latch on the next macrotask. Not setTimeout(0): mocked
+ * timers in integrator test suites froze the latch open so every later
+ * same-name conversion was swallowed, and background tabs throttle timers to
+ * 1s+, stretching "one action" across genuinely separate ones. MessageChannel
+ * is neither mocked by fake-timer setups nor throttled.
+ */
+function clearNextTask(set: Set<string>): void {
+  if (typeof MessageChannel === 'function') {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => {
+      set.clear();
+      ch.port1.close();
+      ch.port2.close();
+    };
+    ch.port2.postMessage(0);
+  } else {
+    setTimeout(() => set.clear(), 0);
+  }
+}
+
+/**
+ * Emits one `pageview` per page load and per SPA route change.
+ *
+ * Patches pushState/replaceState rather than polling: a route change is a
+ * discrete event, and polling would either miss fast back-to-back navigations or
+ * burn a timer on every page for the entire session. popstate covers
+ * back/forward, which history patching does not see.
+ *
+ * Deduplicates on pathname, because frameworks routinely replaceState several
+ * times for one navigation (query/hash updates, scroll restoration) and each
+ * would otherwise look like another page in the visitor's journey.
+ */
+/** Pages already recorded this page lifetime, keyed project:path. dispose()
+ *  flushes, so without this a consent-change or StrictMode re-init delivered a
+ *  second landing pageview for a page the previous client already sent. */
+const emittedPages = new Set<string>();
+
+function startPageviewTracking(
+  client: SentientClient,
+  projectId: string,
+  // Called with the page key after emitting; the caller marks emittedPages only
+  // once the event reached a LIVE queue. Marking at emit time instead turned
+  // StrictMode's mount→dispose→mount into zero delivered landings: the first
+  // mount's event dies in the destroyed queue, and the mark suppressed the
+  // second mount's — the one that actually ships.
+  markDelivered: (key: string) => void,
+): () => void {
+  const h = typeof window === 'undefined' ? null : window.history;
+  if (!h) return () => undefined;
+
+  // The stop handle exists because init() runs again on every consent change,
+  // StrictMode double-invoke and HMR: without it each init wrapped history
+  // again and the old wrapper kept emitting through the DISPOSED client, so one
+  // navigation produced one pageview per init that ever happened.
+  let stopped = false;
+  let last: string | undefined;
+  const emit = (): void => {
+    if (stopped) return;
+    const path = currentPath();
+    if (!path || path === last) return;
+    last = path;
+    // '__page__' is a sentinel componentId: the ingest schema requires one, and
+    // every component reader filters on variant_id IS NOT NULL or a specific
+    // event_type, so it never surfaces as a component.
+    client.track({ projectId, componentId: '__page__', eventType: 'pageview', payload: {} });
+    markDelivered(`${projectId}:${path}`);
+  };
+
+  const installed: Array<['pushState' | 'replaceState', History['pushState'], History['pushState']]> = [];
+  for (const name of ['pushState', 'replaceState'] as const) {
+    const orig = h[name];
+    const wrapper = function (this: History, ...a: unknown[]) {
+      const r = (orig as (...x: unknown[]) => unknown).apply(this, a);
+      emit();
+      return r;
+    } as History[typeof name];
+    h[name] = wrapper;
+    installed.push([name, orig, wrapper]);
+  }
+  window.addEventListener('popstate', emit);
+
+  // The landing page itself — once per (project, path) per page lifetime. When
+  // it was already sent, `last` is still primed so the next real navigation
+  // emits exactly once.
+  const landing = currentPath();
+  if (landing && emittedPages.has(`${projectId}:${landing}`)) last = landing;
+  else emit();
+
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    window.removeEventListener('popstate', emit);
+    for (const [name, orig, wrapper] of installed) {
+      // Restore only while ours is still on top; if something wrapped over it,
+      // unhooking would sever their chain — the stopped flag already makes ours
+      // a passthrough.
+      if (h[name] === wrapper) h[name] = orig;
+    }
+  };
 }
 
 const SSR_CLIENT: SentientClient = {
@@ -569,6 +703,26 @@ export function init(config: SentientConfig): SentientClient {
     Authorization: `Bearer ${config.apiKey}`,
   } as const;
 
+  // Conversions get the same durable transport the event queue has always had:
+  // retry with backoff, a cross-reload bucket, dedupe on the server's goalId.
+  const goalQueue: GoalQueue = createGoalQueue({
+    url: `${baseUrl}/goals`,
+    apiKey: config.apiKey,
+    headers: authHeaders,
+    onDrop: (goal, status) => {
+      if (!config.debug) return;
+      console.warn(
+        `[sentient] goal dropped (HTTP ${status}) — this will not be retried. ` +
+          (status === 400
+            ? 'The session was not found: call init() and let the session upsert complete before firing goals.'
+            : status === 401 || status === 403
+              ? 'Check the API key and that this origin is on the project allowlist.'
+              : 'See the response status for the cause.'),
+        goal,
+      );
+    },
+  });
+
   const deviceClass = detectDeviceClass(navigator.userAgent ?? '');
   const appOrigin = typeof window !== 'undefined' ? window.location.origin : undefined;
   const trafficSource = detectTrafficSource(document.referrer ?? '', appOrigin);
@@ -662,6 +816,7 @@ export function init(config: SentientConfig): SentientClient {
         (typeof navigator !== 'undefined' && navigator.webdriver === true) ||
         uaTokenMatch(navigator.userAgent ?? ''),
       ...(config.userId ? { userId: config.userId } : {}),
+      ...(config.persona ? { persona: config.persona } : {}),
       ...(config.country ? { country: config.country } : {}),
     };
     try {
@@ -700,6 +855,26 @@ export function init(config: SentientConfig): SentientClient {
     };
   }
 
+  // One user action must record ONE session-level conversion per goal name.
+  // Nested components each fire their declared goal on the same click (every
+  // <Adaptive>/hook path calls componentGoal() AND goal()), so a hero nested
+  // inside a CTA wrapper wrote two goal_events rows for one click: harmless for
+  // a weight-1.0 goal (close-out clamps at 1) but a 0.3-weight step summed to
+  // 0.6, and the Goals page counts Hits as COUNT(*) either way.
+  //
+  // The window is one task, not one session: two handlers reacting to a single
+  // event dispatch run synchronously, while two real clicks are always separate
+  // tasks. A session-wide latch would swallow genuine repeat conversions (two
+  // purchases in one visit are two conversions). Calls carrying distinct
+  // externalIds are never collapsed — those are, by definition, distinct orders.
+  const firedThisTask = new Set<string>();
+
+  // Set once tracking starts; dispose() and destroy() call it so a replaced
+  // client stops watching history instead of emitting forever. The flag records
+  // teardown for the delivery-marking below, which runs on a later microtask.
+  let stopPageviews: (() => void) | null = null;
+  let pageviewsTornDown = false;
+
   const client: SentientClient = {
     goal(name: string, metadataOrOpts: Record<string, unknown> = {}, weight = 1.0, stepIndex = 0) {
       const sid = session.getSessionId();
@@ -707,6 +882,18 @@ export function init(config: SentientConfig): SentientClient {
       const opts: GoalOptions = isGoalOptions(metadataOrOpts)
         ? (metadataOrOpts as GoalOptions)
         : { metadata: metadataOrOpts };
+      // stepIndex and weight are part of the key: funnel steps share a goal
+      // name and differ by stepIndex, so collapsing on name alone dropped a
+      // step fired in the same handler. Only IDENTICAL calls are one action.
+      const dedupeKey = `${name} ${opts.externalId ?? ''} ${opts.stepIndex ?? stepIndex} ${opts.weight ?? weight}`;
+      if (firedThisTask.has(dedupeKey)) {
+        if (config.debug) {
+          console.log(`[sentient] goal("${name}") already recorded for this action — not sent twice`);
+        }
+        return;
+      }
+      firedThisTask.add(dedupeKey);
+      if (firedThisTask.size === 1) clearNextTask(firedThisTask);
       const goalId = generateEventId();
       // undefined values vanish at JSON.stringify time, so optional fields
       // need no conditional assembly.
@@ -721,14 +908,13 @@ export function init(config: SentientConfig): SentientClient {
         currency: opts.currency,
         externalId: opts.externalId,
       };
-      sessionReady.then(() => {
-        fetch(`${baseUrl}/goals`, {
-          method: 'POST',
-          keepalive: true,
-          body: JSON.stringify(body),
-          headers: authHeaders,
-        }).catch(() => undefined);
-      });
+      if (config.debug) {
+        console.log('[sentient] goal', body);
+      }
+      // Serialize once, here: the queued copy must replay byte-identically
+      // (same goalId) so a retry dedupes server-side instead of double-counting.
+      const payload = { id: goalId, body: JSON.stringify(body) };
+      sessionReady.then(() => goalQueue.send(payload));
     },
 
     componentGoal(componentId, goalType, opts) {
@@ -765,6 +951,7 @@ export function init(config: SentientConfig): SentientClient {
         },
         timestamp: Date.now(),
         timeInSession: Date.now() - sessionStart,
+        path: currentPath(),
       };
       if (config.debug) {
         console.log('[sentient] componentGoal', fullEvent);
@@ -790,6 +977,10 @@ export function init(config: SentientConfig): SentientClient {
       if (!sessionId) return;
 
       const fullEvent: SentientEvent = {
+        // `path` first so an explicit event.path from the caller wins over the
+        // ambient one — a server-side or replayed event knows its page better
+        // than location does.
+        path: currentPath(),
         ...event,
         id: generateEventId(),
         sessionId,
@@ -881,6 +1072,9 @@ export function init(config: SentientConfig): SentientClient {
         if (declared.length > 0) body.slots = declared.map(toWireSlot);
         if (input.slotsFrom === 'registry') body.slotsFrom = 'registry';
         if (input.v) body.v = input.v;
+        // Declared persona rides on decide too: SSR-first flows can race the
+        // session upsert, and the decide-body value wins for this decision.
+        if (config.persona) body.persona = config.persona;
 
         const res = await fetch(`${baseUrl}/decide`, {
           method: 'POST',
@@ -997,8 +1191,11 @@ export function init(config: SentientConfig): SentientClient {
 
     dispose() {
       // Stops the flush timer and unload listeners (with a final flush) but
-      // leaves identity, snapshot, and retry bucket for the next client.
+      // leaves identity, snapshot, and retry buckets for the next client.
+      stopPageviews?.();
+      pageviewsTornDown = true;
       eventQueue.destroy();
+      goalQueue.destroy();
       // Drop the registry entry so a later re-init doesn't try to dispose an
       // already-torn-down client (and so the map doesn't pin this closure).
       if (_clients.get(config.apiKey)?.dispose === client.dispose) {
@@ -1010,7 +1207,10 @@ export function init(config: SentientConfig): SentientClient {
     },
 
     destroy() {
+      stopPageviews?.();
+      pageviewsTornDown = true;
       eventQueue.destroy();
+      goalQueue.destroy();
       session.destroy();
       if (_clients.get(config.apiKey)?.dispose === client.dispose) {
         _clients.delete(config.apiKey);
@@ -1021,6 +1221,7 @@ export function init(config: SentientConfig): SentientClient {
       try {
         localStorage.removeItem(SNAPSHOT_STORAGE_KEY_PREFIX + config.apiKey);
         localStorage.removeItem(retryStorageKey(config.apiKey));
+        localStorage.removeItem(goalRetryStorageKey(config.apiKey));
       } catch {
         /* storage unavailable — nothing persisted to remove */
       }
@@ -1031,6 +1232,16 @@ export function init(config: SentientConfig): SentientClient {
   };
 
   _clients.set(config.apiKey, { config, upgrade: null, dispose: client.dispose });
+
+  stopPageviews = startPageviewTracking(client, config.apiKey, (key) => {
+    // track() defers its enqueue on sessionReady; chaining after it means this
+    // runs once the push has happened. If the client was torn down first, the
+    // event went into a destroyed queue and never ships — leave the page
+    // unmarked so the replacement client's emit is the one that counts.
+    void sessionReady.then(() => {
+      if (!pageviewsTornDown) emittedPages.add(key);
+    });
+  });
 
   if (config.debug) {
     const win = window as unknown as { __sentient?: { client: SentientClient } };

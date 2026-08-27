@@ -22,6 +22,11 @@ export type SnippetConfig = {
    *  default; set `false` to disable. Never runs for a DNT/GPC/consent-gated
    *  visitor. */
   sectionCapture?: boolean;
+  /** Declared persona: the role the site already knows for this visitor —
+   *  a vocabulary key string, or a function evaluated at init (e.g. reading
+   *  the site's own session state). Unrecognized values are ignored
+   *  server-side. Never a user id or email. */
+  persona?: string;
   slots: Record<string, SnippetSlotDecl>;
 };
 
@@ -45,6 +50,14 @@ function parseArms(raw: unknown): string[] | null {
   if (!Array.isArray(raw) || raw.length < 2 || raw.length > 12) return null;
   if (!raw.every((v) => typeof v === 'string')) return null;
   return raw as string[];
+}
+
+function safeCall(fn: () => unknown): unknown {
+  try {
+    return fn();
+  } catch {
+    return undefined;
+  }
 }
 
 /** Lenient, fail-safe parse of `window.sentient`. Returns null when unusable. */
@@ -90,6 +103,15 @@ export function parseSnippetConfig(raw: unknown): SnippetConfig | null {
   if (typeof r.editorSrc === 'string') cfg.editorSrc = r.editorSrc;
   if (typeof r.apiBase === 'string') cfg.apiBase = r.apiBase;
   if (typeof r.sectionCapture === 'boolean') cfg.sectionCapture = r.sectionCapture;
+  // Function form is evaluated ONCE here (fail-safe: a throwing or non-string
+  // getter is a missing declaration, never an error) so downstream only ever
+  // sees a plain string. Personas are locked per visit anyway — re-evaluating
+  // later could not change the decision.
+  const declaredPersona =
+    typeof r.persona === 'function' ? safeCall(r.persona as () => unknown) : r.persona;
+  if (typeof declaredPersona === 'string' && declaredPersona.trim() !== '') {
+    cfg.persona = declaredPersona;
+  }
 
   return cfg;
 }

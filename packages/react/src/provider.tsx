@@ -208,6 +208,16 @@ export type AdaptiveProviderProps = {
    */
   country?: string;
   /**
+   * Declared persona — the role your app already knows for this visitor
+   * (e.g. 'admin', 'evaluator'). Must be a key in the project's persona
+   * vocabulary (dashboard → Settings → Personas); unrecognized values are
+   * ignored server-side and surfaced in the dashboard. Served at full
+   * confidence, overriding the inferred persona. Stable for the session —
+   * like `country`, changing it after init is ignored (decisions are locked
+   * per visit); remount the provider to apply a new value.
+   */
+  persona?: string;
+  /**
    * Keyless local mode. 'auto' (default) simulates decisions on-device in
    * development builds when no valid API key is configured; `true` forces the
    * local engine; `false` restores the silent keyless no-op.
@@ -324,6 +334,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       respectDoNotTrack: props.respectDoNotTrack,
       ssrSessionId: props.ssrSessionId,
       country: props.country,
+      persona: props.persona,
       localMode: props.localMode,
       initialSlots: props.initialSlots,
       initialPersona: props.initialPersona,
@@ -438,22 +449,23 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
     apiKey: string;
     context: SentientConfig['context'];
     country: string | undefined;
+    persona: string | undefined;
     apiBaseUrl: string;
   } | null>(null);
   useEffect(() => {
     if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'production') return;
-    const current = { apiKey: props.apiKey, context: props.context, country: props.country, apiBaseUrl };
+    const current = { apiKey: props.apiKey, context: props.context, country: props.country, persona: props.persona, apiBaseUrl };
     const prev = frozenConfigRef.current;
     frozenConfigRef.current = current;
     if (prev === null) return; // first run: capture the frozen baseline, nothing to compare
-    for (const key of ['apiKey', 'context', 'country', 'apiBaseUrl'] as const) {
+    for (const key of ['apiKey', 'context', 'country', 'persona', 'apiBaseUrl'] as const) {
       if (!Object.is(prev[key], current[key])) {
         console.warn(
           `[sentient] AdaptiveProvider: \`${key}\` changed after initialisation, but the SDK client is stable for the session and only re-inits on \`consent\` — the new value is ignored. Remount the provider (e.g. via a changing \`key\` prop) to apply it.`,
         );
       }
     }
-  }, [props.apiKey, props.context, props.country, apiBaseUrl]);
+  }, [props.apiKey, props.context, props.country, props.persona, apiBaseUrl]);
 
   // Publish devtools config through window: the /devtools entry is a separate
   // bundle and cannot read this provider's context instance. Dev-only.
