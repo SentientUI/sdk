@@ -119,6 +119,66 @@ describe('AdaptiveProvider — consentFrom', () => {
     expect(mockedInit).toHaveBeenCalledTimes(1);
   });
 
+  // The gate must be symmetric: consent is not a one-way door. `granted` used
+  // to latch true, so a CMP decision event AFTER the user withdrew consent
+  // never re-gated the SDK — tracking continued against an explicit
+  // revocation for the rest of the visit.
+  it('tears the client down when the source reports consent withdrawn', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    renderProvider();
+    act(() => {
+      document.cookie = `${COOKIE}=accepted; Path=/`;
+      window.dispatchEvent(new CustomEvent(EVENT));
+    });
+    expect(mockedInit).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      document.cookie = `${COOKIE}=declined; Path=/`;
+      window.dispatchEvent(new CustomEvent(EVENT));
+    });
+    expect(client.destroy).toHaveBeenCalledTimes(1);
+    // Torn down, not re-initialised: init count is unchanged.
+    expect(mockedInit).toHaveBeenCalledTimes(1);
+  });
+
+  // The sharper version of the same bug: when the mount-time read already
+  // granted, the effect returned WITHOUT subscribing to the decision event at
+  // all, so a later revocation was invisible even in principle.
+  it('observes a revocation even when consent was granted at mount', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    document.cookie = `${COOKIE}=accepted; Path=/`;
+    renderProvider();
+    expect(mockedInit).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      document.cookie = `${COOKIE}=declined; Path=/`;
+      window.dispatchEvent(new CustomEvent(EVENT));
+    });
+    expect(client.destroy).toHaveBeenCalledTimes(1);
+    expect(mockedInit).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-grants after a revocation when the source grants again', () => {
+    renderProvider();
+    const grant = () =>
+      act(() => {
+        document.cookie = `${COOKIE}=accepted; Path=/`;
+        window.dispatchEvent(new CustomEvent(EVENT));
+      });
+    const revoke = () =>
+      act(() => {
+        document.cookie = `${COOKIE}=declined; Path=/`;
+        window.dispatchEvent(new CustomEvent(EVENT));
+      });
+    grant();
+    revoke();
+    grant();
+    // One init per grant — the cycle is symmetric in both directions.
+    expect(mockedInit).toHaveBeenCalledTimes(2);
+  });
+
   // AdaptiveRoot reads the cookie on the server and passes consent={true}, so a
   // returning visitor must not be gated waiting for a client-side re-read.
   it('honours a server-resolved consent={true} immediately', () => {

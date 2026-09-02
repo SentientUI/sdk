@@ -7,6 +7,21 @@ const BASE_CONFIG = {
   context: 'saas' as const,
 };
 
+/**
+ * Wait for `n` goal request bodies.
+ *
+ * The explicit timeout is the point. vi.waitFor defaults to 1s, but the goal
+ * queue's fallback flush interval is 5s (`flushIntervalMs` in goal-queue.ts):
+ * a goal normally goes out in ~10ms, and if it misses that, the next
+ * opportunity is a full tick away. A 1s budget therefore asserts a latency the
+ * queue never promised, and these tests are about WHICH goals record, not how
+ * fast. Under CI contention that read as "the repeat conversion was collapsed"
+ * when it had merely not been flushed yet.
+ */
+async function waitForBodies(bodies: unknown[], n: number): Promise<void> {
+  await vi.waitFor(() => expect(bodies).toHaveLength(n), { timeout: 10_000, interval: 10 });
+}
+
 beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
@@ -839,7 +854,7 @@ describe('goal() options object (revenue values, spec §5)', () => {
     const bodies = captureGoalBodies();
     const client = init({ ...BASE_CONFIG, apiKey: 'pk_goalopts_001' });
     client.goal('purchase', { value: 129.99, currency: 'EUR', externalId: 'order_1042' });
-    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    await waitForBodies(bodies, 1);
     expect(bodies[0]).toMatchObject({
       name: 'purchase', value: 129.99, currency: 'EUR', externalId: 'order_1042',
       weight: 1, stepIndex: 0, metadata: {},
@@ -851,7 +866,7 @@ describe('goal() options object (revenue values, spec §5)', () => {
     const bodies = captureGoalBodies();
     const client = init({ ...BASE_CONFIG, apiKey: 'pk_goalopts_002' });
     client.goal('signup', { plan: 'pro' });
-    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    await waitForBodies(bodies, 1);
     expect(bodies[0]!.metadata).toEqual({ plan: 'pro' });
     expect(bodies[0]!.value).toBeUndefined();
     client.destroy();
@@ -861,7 +876,7 @@ describe('goal() options object (revenue values, spec §5)', () => {
     const bodies = captureGoalBodies();
     const client = init({ ...BASE_CONFIG, apiKey: 'pk_goalopts_003' });
     client.goal('purchase', { value: 42 });
-    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    await waitForBodies(bodies, 1);
     expect(bodies[0]!.value).toBe(42);
     expect(bodies[0]!.metadata).toEqual({});
     client.destroy();
@@ -871,7 +886,7 @@ describe('goal() options object (revenue values, spec §5)', () => {
     const bodies = captureGoalBodies();
     const client = init({ ...BASE_CONFIG, apiKey: 'pk_goalopts_004' });
     client.goal('step', { foo: 1 }, 0.4, 2);
-    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    await waitForBodies(bodies, 1);
     expect(bodies[0]).toMatchObject({ weight: 0.4, stepIndex: 2, metadata: { foo: 1 } });
     expect(bodies[0]!.value).toBeUndefined();
     client.destroy();
@@ -881,7 +896,7 @@ describe('goal() options object (revenue values, spec §5)', () => {
     const bodies = captureGoalBodies();
     const client = init({ ...BASE_CONFIG, apiKey: 'pk_goalopts_005' });
     client.goal('step', { weight: 0.3, stepIndex: 1, metadata: { a: 1 } });
-    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    await waitForBodies(bodies, 1);
     expect(bodies[0]).toMatchObject({ weight: 0.3, stepIndex: 1, metadata: { a: 1 } });
     client.destroy();
   });
@@ -945,20 +960,270 @@ describe('goal() collapses one user action into one conversion record', () => {
     // Both handlers run inside a single event dispatch — same task.
     client.goal('cta_click', { weight: 0.3, stepIndex: 1 });
     client.goal('cta_click', { weight: 0.3, stepIndex: 1 });
-    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    await waitForBodies(bodies, 1);
     await new Promise((r) => setTimeout(r, 10));
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toMatchObject({ name: 'cta_click', weight: 0.3 });
     client.destroy();
   });
 
+  // Un-quarantined: the drop this found is fixed. It was never a flake. The
+  // dedupe latch decided "one action" with a clock, and the clock could be
+  // jumped — a macrotask scheduled to close the window runs after any timer
+  // already armed — so this second conversion landed in a window that should
+  // have shut and was swallowed before it ever reached the queue. The scope is
+  // now the event dispatch itself (createActionLatch), and value/currency key
+  // the payload, so what this asserts no longer depends on timing at all.
   it('a genuine repeat conversion in a later task still records', async () => {
     const bodies = captureGoalBodies();
     const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_002' });
     client.goal('purchase', { value: 50 });
     await new Promise((r) => setTimeout(r, 0)); // next task = next user action
     client.goal('purchase', { value: 70 });
-    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    await waitForBodies(bodies, 2);
+    expect(bodies.map((b) => b.value)).toEqual([50, 70]);
+    client.destroy();
+    // Explicit per-test timeout, ABOVE the queue's 5s flush interval
+    // (`flushIntervalMs`, goal-queue.ts). A goal usually leaves in ~10ms, but
+    // one that misses the immediate send waits for the next tick — and vitest's
+    // 5s default lands exactly on that boundary, so the test failed roughly one
+    // run in six with "collapsed" when the goal had only not been flushed yet.
+    // The claim here is that the second conversion RECORDS, not how fast.
+  }, 20_000);
+
+  // The timing-independent half of the repeat-conversion fix. The test above
+  // separates the two orders by a task and so can only ever be as reliable as
+  // the window's close; this one gives the latch every chance to collapse them
+  // — same task, same name, no externalId — and still demands both, because
+  // they are worth different amounts. If value ever leaves the dedupe key this
+  // fails on every run rather than one in eight.
+  it('two conversions of one goal worth different amounts both record', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_007' });
+    client.goal('purchase', { value: 50 });
+    client.goal('purchase', { value: 70 });
+    await waitForBodies(bodies, 2);
+    expect(bodies.map((b) => b.value)).toEqual([50, 70]);
+    client.destroy();
+  });
+
+  // A currency change is a different order too — 50 EUR is not 50 USD.
+  it('one goal converted in two currencies records both', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_008' });
+    client.goal('purchase', { value: 50, currency: 'USD' });
+    client.goal('purchase', { value: 50, currency: 'EUR' });
+    await waitForBodies(bodies, 2);
+    expect(bodies.map((b) => b.currency)).toEqual(['USD', 'EUR']);
+    client.destroy();
+  });
+
+  // The latch still has a job: the nested-component double-fire it exists for
+  // carries the SAME declared value on both calls (adaptive.tsx passes the goal
+  // config's value), so widening the key must not have reopened that.
+  it('nested components firing one valued goal on one click still record it once', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_009' });
+    client.goal('purchase', { value: 50, metadata: { componentId: 'hero' } });
+    client.goal('purchase', { value: 50, metadata: { componentId: 'wrapper' } });
+    await waitForBodies(bodies, 1);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(bodies).toHaveLength(1);
+    client.destroy();
+  });
+
+  // The case a time-boxed latch could never get right, and the reason this is
+  // keyed on the event instead. Two clicks, byte-identical payloads, nothing to
+  // tell them apart but the action each came from. Dispatched in ONE task, so
+  // no clock can separate them: a window keyed on time collapses these two
+  // orders into one by construction, not by bad luck. A double-click, or two
+  // taps coalesced into a single task, is exactly this.
+  it('two identical conversions from two separate clicks both record', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_010' });
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.addEventListener('click', () => client.goal('purchase', { value: 50 }));
+
+    button.click();
+    button.click(); // a second action, same task, nothing about it different
+
+    await waitForBodies(bodies, 2);
+    expect(bodies.map((b) => b.value)).toEqual([50, 50]);
+    button.remove();
+    client.destroy();
+  });
+
+  // The same guarantee when the page stalls between the two actions, with a
+  // timer armed BEFORE the second one — the ordering that used to jump the
+  // window and swallow the conversion outright.
+  it('a repeat conversion survives a stalled task boundary', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_014' });
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.addEventListener('click', () => client.goal('purchase', { value: 50 }));
+
+    button.click();
+    const armedFirst = new Promise((r) => setTimeout(r, 0));
+    const spin = Date.now() + 5;
+    while (Date.now() < spin) { /* the contention that used to lose an order */ }
+    await armedFirst;
+    button.click();
+
+    await waitForBodies(bodies, 2);
+    expect(bodies.map((b) => b.value)).toEqual([50, 50]);
+    button.remove();
+    client.destroy();
+  });
+
+  // Two listeners, one dispatch — the double-fire the collapse exists for.
+  // Identical payloads, so only the action identity separates this from the
+  // test above. It must still record once.
+  it('two listeners on one click record one conversion', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_011' });
+    const wrapper = document.createElement('div');
+    const button = document.createElement('button');
+    wrapper.appendChild(button);
+    document.body.appendChild(wrapper);
+    const fire = () => client.goal('purchase', { value: 50 });
+    button.addEventListener('click', fire);
+    wrapper.addEventListener('click', fire); // bubbles to the nested <Adaptive>
+
+    button.click();
+    await waitForBodies(bodies, 1);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(bodies).toHaveLength(1);
+    wrapper.remove();
+    client.destroy();
+  });
+
+  // Outside any dispatch there is no event to key on, so the scope is one
+  // synchronous flush. Anything separated by an await is a separate action.
+  it('identical conversions in separate microtasks outside a dispatch both record', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_012' });
+    client.goal('purchase', { value: 50 });
+    await Promise.resolve();
+    client.goal('purchase', { value: 50 });
+    await waitForBodies(bodies, 2);
+    expect(bodies.map((b) => b.value)).toEqual([50, 50]);
+    client.destroy();
+  });
+
+  // ...while a double-fire inside one synchronous flush is still one action.
+  it('identical conversions in one synchronous flush record once', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_013' });
+    client.goal('purchase', { value: 50 });
+    client.goal('purchase', { value: 50 });
+    await waitForBodies(bodies, 1);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(bodies).toHaveLength(1);
+    client.destroy();
+  });
+
+  // A host without Window.event keeps the old macrotask window. Looser than
+  // event identity, but the collapse it exists for must still hold there —
+  // erring toward the previous behaviour rather than toward double-counting.
+  it('a host without Window.event still collapses a one-click double-fire', async () => {
+    const desc = Object.getOwnPropertyDescriptor(window, 'event');
+    Reflect.deleteProperty(window, 'event');
+    try {
+      const bodies = captureGoalBodies();
+      // The capability check runs when the client is built, so init() must
+      // happen while Window.event is absent.
+      const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_015' });
+      const wrapper = document.createElement('div');
+      const button = document.createElement('button');
+      wrapper.appendChild(button);
+      document.body.appendChild(wrapper);
+      const fire = () => client.goal('purchase', { value: 50 });
+      button.addEventListener('click', fire);
+      wrapper.addEventListener('click', fire);
+
+      button.click();
+      await waitForBodies(bodies, 1);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(bodies).toHaveLength(1);
+      wrapper.remove();
+      client.destroy();
+    } finally {
+      if (desc) Object.defineProperty(window, 'event', desc);
+    }
+  });
+
+  // Window.event is [Replaceable]: a classic script doing `event = {...}` at
+  // top level shadows the accessor with a plain data property that never
+  // changes again. Trusting any object-valued window.event made that literal
+  // the "current action" forever — its WeakMap entry never died, so EVERY
+  // later same-key conversion was silently dropped for the whole session. The
+  // latch only trusts a real (same-realm) Event now; anything else falls back
+  // to the flush window.
+  it('a host-page global named `event` cannot freeze the action window', async () => {
+    const desc = Object.getOwnPropertyDescriptor(window, 'event');
+    Object.defineProperty(window, 'event', { value: { poisoned: true }, writable: true, configurable: true });
+    try {
+      const bodies = captureGoalBodies();
+      // Built while poisoned, like a real page whose global exists at load.
+      const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_016' });
+      client.goal('purchase', { value: 50 });
+      await new Promise((r) => setTimeout(r, 0)); // a later task = a separate action
+      client.goal('purchase', { value: 50 });
+      await waitForBodies(bodies, 2);
+      expect(bodies.map((b) => b.value)).toEqual([50, 50]);
+      client.destroy();
+    } finally {
+      Reflect.deleteProperty(window, 'event');
+      if (desc) Object.defineProperty(window, 'event', desc);
+    }
+  });
+
+  // Mixed valued/valueless nesting: an inner component declaring
+  // `goal: { type: 'click', value: 50 }` inside a wrapper with the same label
+  // and NO value. With value flattened into one dedupe key these were two keys
+  // — two rows for one click. The valued record must absorb the valueless
+  // re-fire of the same action. (Bubbling runs the inner listener first, so
+  // valued-before-valueless is the ordering real nesting produces.)
+  it('a valued fire absorbs a valueless double-fire of the same action', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_017' });
+    client.goal('purchase', { value: 50, metadata: { componentId: 'inner' } });
+    client.goal('purchase', { metadata: { componentId: 'wrapper' } });
+    await waitForBodies(bodies, 1);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ value: 50 });
+    client.destroy();
+  });
+
+  // The reverse ordering. The valueless row is already handed to the queue
+  // (often on the wire) when the valued fire arrives, so it cannot be
+  // retracted — but the money MUST still record; collapsing the valued fire
+  // onto the valueless record would lose the order's value outright. The cost
+  // is one extra Hit; close-out clamps the valueless row's credit at
+  // min(1, MAX weight), so revenue and training stay correct.
+  it('a valued fire is never collapsed by a preceding valueless one', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_018' });
+    client.goal('purchase', { metadata: { componentId: 'wrapper' } });
+    client.goal('purchase', { value: 50, metadata: { componentId: 'inner' } });
+    await waitForBodies(bodies, 2);
+    expect(bodies.map((b) => b.value)).toEqual([undefined, 50]);
+    client.destroy();
+  });
+
+  // Valueless-absorption must not blur DISTINCT values: $50 then a valueless
+  // re-fire then $70 is two orders and one duplicate, not one or three.
+  it('absorption keeps differently-valued orders apart', async () => {
+    const bodies = captureGoalBodies();
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_019' });
+    client.goal('purchase', { value: 50 });
+    client.goal('purchase', {}); // wrapper double-fire — absorbed
+    client.goal('purchase', { value: 70 }); // a second order — kept
+    await waitForBodies(bodies, 2);
+    await new Promise((r) => setTimeout(r, 10));
     expect(bodies.map((b) => b.value)).toEqual([50, 70]);
     client.destroy();
   });
@@ -968,7 +1233,7 @@ describe('goal() collapses one user action into one conversion record', () => {
     const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_003' });
     client.goal('purchase', { value: 50, externalId: 'order_1' });
     client.goal('purchase', { value: 70, externalId: 'order_2' });
-    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    await waitForBodies(bodies, 2);
     expect(bodies.map((b) => b.externalId)).toEqual(['order_1', 'order_2']);
     client.destroy();
   });
@@ -978,7 +1243,7 @@ describe('goal() collapses one user action into one conversion record', () => {
     const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_004' });
     client.goal('saw_cta', { weight: 0.1 });
     client.goal('clicked_cta', { weight: 1 });
-    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    await waitForBodies(bodies, 2);
     expect(bodies.map((b) => b.name)).toEqual(['saw_cta', 'clicked_cta']);
     client.destroy();
   });
@@ -990,7 +1255,7 @@ describe('goal() collapses one user action into one conversion record', () => {
     const client = init({ ...BASE_CONFIG, apiKey: 'pk_goaldedupe_005' });
     client.goal('checkout', { weight: 0.3, stepIndex: 1 });
     client.goal('checkout', { weight: 0.6, stepIndex: 2 });
-    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    await waitForBodies(bodies, 2);
     expect(bodies.map((b) => b.stepIndex)).toEqual([1, 2]);
     client.destroy();
   });
@@ -1006,7 +1271,7 @@ describe('goal() collapses one user action into one conversion record', () => {
     vi.useRealTimers();
     await new Promise((r) => setTimeout(r, 10));
     client.goal('purchase', { value: 70 });
-    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    await waitForBodies(bodies, 2);
     expect(bodies.map((b) => b.value)).toEqual([50, 70]);
     client.destroy();
   });

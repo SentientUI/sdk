@@ -1,6 +1,6 @@
 {
   "name": "@sentientui/snippet",
-  "version": "0.16.0",
+  "version": "0.17.2",
   "private": false,
   "description": "SentientUI Style-rung snippet for non-React sites — persona attributes and adaptive style tokens from one script tag",
   "license": "MIT",

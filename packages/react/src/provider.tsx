@@ -273,17 +273,21 @@ function useConsentSource(source: AdaptiveProviderProps['consentFrom']): boolean
       return document.cookie.split('; ').some((c) => c.trim() === want);
     };
 
-    if (read()) {
-      setGranted(true);
-      return;
-    }
+    // Symmetric, and never an early return on an initial grant: the old shape
+    // latched `granted` true and — when the mount-time read already granted —
+    // returned WITHOUT subscribing, so a CMP "withdrawn" decision later in the
+    // visit could never re-gate the SDK and tracking continued against the
+    // visitor's explicit revocation. Every decision event now re-reads the
+    // source both ways; a revocation sets granted back to false, which flows
+    // into `consent === false` below and tears the client down.
+    setGranted(read());
     if (!event) return;
 
     // Re-read rather than trusting the event payload, so this works with any
     // CMP's event shape (CookiebotOnAccept, OneTrustGroupsUpdated, …) and a
     // "declined" decision correctly leaves us gated.
     const onDecision = (): void => {
-      if (read()) setGranted(true);
+      setGranted(read());
     };
     window.addEventListener(event, onDecision);
     return () => window.removeEventListener(event, onDecision);

@@ -41,12 +41,35 @@ export function urlMatches(pattern: string, path: string): boolean {
   return path === p || path.startsWith(`${p}/`);
 }
 
-/** sessionStorage key holding the goal ids already fired this session. */
+/**
+ * sessionStorage key holding the goals already fired this session.
+ *
+ * Namespaced by apiKey like every other browser key we own
+ * (`_snt_retry_${apiKey.slice(0,12)}` and friends). This was the ONE key that
+ * wasn't, so two SentientUI projects on the same origin shared it and each
+ * one's `signup` goal suppressed the other's for the whole tab session.
+ */
+export function firedGoalsKey(apiKey?: string): string {
+  return apiKey ? `_snt_fired_goals_${apiKey.slice(0, 12)}` : '_snt_fired_goals';
+}
+
+/** @deprecated Use firedGoalsKey(apiKey) — kept for the teardown path. */
 export const FIRED_GOALS_KEY = '_snt_fired_goals';
 
-function readFired(win: Window | null): Set<string> {
+/**
+ * Dedupe identity for one wired goal.
+ *
+ * The goal id ALONE collided: the same id on two slots recorded once, and two
+ * definitions sharing an id but differing in trigger or element shadowed each
+ * other. Include everything that makes the wiring distinct.
+ */
+function firedKeyFor(g: GoalDefinition): string {
+  return [g.slotId ?? '', g.goalId, g.event, g.locator ? JSON.stringify(g.locator) : ''].join('|');
+}
+
+function readFired(win: Window | null, storageKey: string): Set<string> {
   try {
-    const raw = win?.sessionStorage.getItem(FIRED_GOALS_KEY);
+    const raw = win?.sessionStorage.getItem(storageKey);
     if (!raw) return new Set();
     const parsed = JSON.parse(raw) as unknown;
     return Array.isArray(parsed) ? new Set(parsed.filter((v): v is string => typeof v === 'string')) : new Set();
@@ -55,26 +78,36 @@ function readFired(win: Window | null): Set<string> {
   }
 }
 
-function persistFired(win: Window | null, fired: Set<string>): void {
+function persistFired(win: Window | null, storageKey: string, fired: Set<string>): void {
   try {
-    win?.sessionStorage.setItem(FIRED_GOALS_KEY, JSON.stringify([...fired]));
+    win?.sessionStorage.setItem(storageKey, JSON.stringify([...fired]));
   } catch {
     /* storage unavailable (private mode, blocked) — degrade to per-page dedupe */
   }
 }
 
-export function installGoalListeners(goals: GoalDefinition[], client: GoalClient, doc: Document): GoalListeners {
+export function installGoalListeners(
+  goals: GoalDefinition[],
+  client: GoalClient,
+  doc: Document,
+  apiKey?: string,
+): GoalListeners {
   const win = doc.defaultView ?? (typeof window !== 'undefined' ? window : null);
-  const fired = readFired(win);
+  const storageKey = firedGoalsKey(apiKey);
+  const fired = readFired(win, storageKey);
   const fire = (g: GoalDefinition): void => {
-    if (fired.has(g.goalId)) return;
-    fired.add(g.goalId);
-    persistFired(win, fired);
+    const key = firedKeyFor(g);
+    if (fired.has(key)) return;
     try {
       if (g.slotId) client.componentGoal(g.slotId, g.goalId);
       else client.goal(g.goalId);
+      // Latch AFTER the call, not before. client.goal can no-op (not yet
+      // initialized, consent withheld), and marking first meant a goal that
+      // never left the page was suppressed for the rest of the session.
+      fired.add(key);
+      persistFired(win, storageKey, fired);
     } catch {
-      /* fail-safe */
+      /* fail-safe — an unrecorded goal may retry on the next interaction */
     }
   };
 
@@ -110,8 +143,11 @@ export function installGoalListeners(goals: GoalDefinition[], client: GoalClient
     const d = doc.documentElement;
     const p = d.scrollHeight > 0 ? (d.scrollTop + d.clientHeight) / d.scrollHeight : 0;
     for (const g of scrollGoals) if (p >= (g.threshold ?? 0.75)) fire(g);
-    // Nothing left to watch for once they've all fired.
-    if (scrollGoals.every((g) => fired.has(g.goalId))) {
+    // Nothing left to watch for once they've all fired. Checked via
+    // firedKeyFor: `fired` holds COMPOSITE keys, so testing the bare goalId
+    // here was always false and the scroll handler ran on every scroll for
+    // the rest of the page's life.
+    if (scrollGoals.every((g) => fired.has(firedKeyFor(g)))) {
       doc.removeEventListener('scroll', onScrollDepth);
     }
   };

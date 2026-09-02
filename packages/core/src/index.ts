@@ -38,8 +38,14 @@ import { readSnapshot, writeSnapshot, SNAPSHOT_STORAGE_KEY_PREFIX, type SlotConf
 import { confidenceBand } from '@sentientui/policy';
 import { createLocalModeClient } from './local-mode.js';
 import { randomUuidV4 } from './uuid.js';
+import { backoffDelayMs, classifyResponse } from './durable.js';
 
 export { PROD_KEYLESS_ERROR, LOCAL_MODE_BANNER } from './local-mode.js';
+
+// The one source of truth for the session cookie's name — every out-of-package
+// reader (react devtools, integrator SSR code) must derive the name from this
+// instead of hard-coding `_snt_uid`, which is only the pre-namespacing fallback.
+export { sessionCookieName, LEGACY_SESSION_COOKIE_NAME } from './storage-key.js';
 
 export {
   detectDeviceClass,
@@ -167,6 +173,7 @@ export {
   renderPrePaintScript,
 } from './snapshot.js';
 export type { DecisionSnapshot, SlotConfigEntry, SlotOps, CompoundLocator } from './snapshot.js';
+export * from './blocks.js';
 
 /** An editor-defined goal delivered with a registry-mode decision, for the
  *  snippet to install delegated listeners from. */
@@ -202,6 +209,8 @@ export type DecideOutcome = {
   // Registry mode only: served section-classification map the snippet turns
   // into capture's `typeOf` hook.
   sectionMap?: SectionMapEntry[];
+  // Registry mode only: derived site palette for Composition Block rendering.
+  palette?: import('./blocks.js').SitePalette;
 };
 
 export type DecideInput = {
@@ -322,6 +331,9 @@ export type {
   GraphConfig,
 };
 
+/** Attempts after the first for the session upsert — see upsertSession. */
+const SESSION_UPSERT_RETRIES = 3;
+
 function generateEventId(): string {
   return randomUuidV4();
 }
@@ -345,24 +357,149 @@ function currentPath(): string | undefined {
 }
 
 /**
- * Clears the goal-dedupe latch on the next macrotask. Not setTimeout(0): mocked
- * timers in integrator test suites froze the latch open so every later
- * same-name conversion was swallowed, and background tabs throttle timers to
- * 1s+, stretching "one action" across genuinely separate ones. MessageChannel
- * is neither mocked by fake-timer setups nor throttled.
+ * Decides whether a goal() call belongs to a user action already recorded.
+ *
+ * This used to be a clock: a latch cleared on the next macrotask, so anything
+ * inside that window counted as "the same action". A clock cannot tell the two
+ * cases apart, and it got the expensive one wrong. The window can be JUMPED —
+ * a macrotask scheduled to close it runs after any timer already armed, which
+ * every real page and every sibling test in a worker has — so a genuinely
+ * separate conversion landed in a window that should have shut, and was
+ * swallowed rather than queued: gone, with no retry able to rescue it because
+ * nothing was ever handed to the queue.
+ *
+ * So ask the question the clock was approximating. Two nested components
+ * reacting to one click are, exactly, two listeners in one event DISPATCH, and
+ * the platform already hands us that identity: `window.event` is the same Event
+ * object for every listener of one dispatch, a different object for the next
+ * click, and undefined outside dispatch entirely. Keying on the event object
+ * makes "one action" a fact rather than a deadline — no timer to lose a race
+ * with, no fake-timer or background-throttle hazard, and no way for a second
+ * click to be mistaken for the first however long the page stalls between them.
+ *
+ * Goals fired outside any dispatch (an effect on mount, a page goal) have no
+ * event to key on, and fall back to one SYNCHRONOUS flush — closed on a
+ * microtask. That is exact too, and for the same reason the old macrotask
+ * window was not: microtasks always drain before the next macrotask, so no
+ * pending timer can jump this window. A user cannot perform two actions inside
+ * one synchronous block, so anything sharing it is a double-fire, not a repeat.
+ *
+ * A microtask is deliberately NOT used for the dispatch case: the HTML spec
+ * runs a microtask checkpoint between listeners once the JS stack empties, so
+ * it would split one click into two and double-count the revenue this collapse
+ * exists to protect. That is why the dispatch case keys on the event instead,
+ * and why a host without `window.event` keeps the old macrotask window — too
+ * loose, but erring toward the old behaviour rather than toward double-counting.
  */
-function clearNextTask(set: Set<string>): void {
-  if (typeof MessageChannel === 'function') {
-    const ch = new MessageChannel();
-    ch.port1.onmessage = () => {
-      set.clear();
-      ch.port1.close();
-      ch.port2.close();
+function createActionLatch(): { firedBefore(actionKey: string, valueKey: string | null): boolean } {
+  // Per window, per action key: the set of value identities already recorded.
+  // An entry with an empty set means a VALUELESS fire was recorded. The split
+  // exists because value cannot simply live inside one flat key: an inner
+  // component declaring `value: 50` nested in an outer wrapper with the same
+  // goal but NO value produced two distinct keys — two rows for one click.
+  // Within a window, a valueless fire is absorbed by ANY record of the same
+  // action (the valued row already carries the order, and a valueless
+  // duplicate would inflate Hits), while a valued fire is collapsed only by an
+  // IDENTICAL (value, currency) record — $50 and $70 stay two orders
+  // (CONTRACTS §1). A valued fire landing AFTER a valueless one still records:
+  // the valueless row has already been handed to the queue (often already on
+  // the wire) and cannot be retracted, and losing the money would be the worse
+  // error — server-side credit clamps the extra valueless hit at min(1, MAX
+  // weight), so the cost is one inflated Hit, not corrupted revenue. Listener
+  // order makes the benign ordering the common one: the inner (valued)
+  // component's listener runs before the wrapper's in a bubbling dispatch.
+  const byEvent = new WeakMap<object, Map<string, Set<string>>>();
+  const byFlush = new Map<string, Set<string>>();
+  let flushOpen = false;
+
+  const alreadyRecorded = (map: Map<string, Set<string>>, actionKey: string, valueKey: string | null): boolean => {
+    const values = map.get(actionKey);
+    if (valueKey === null) {
+      if (values) return true;
+      map.set(actionKey, new Set());
+      return false;
+    }
+    if (!values) {
+      map.set(actionKey, new Set([valueKey]));
+      return false;
+    }
+    if (values.has(valueKey)) return true;
+    values.add(valueKey);
+    return false;
+  };
+
+  // Standardised as Window.event and present in every current browser, but a
+  // capability check keeps exotic hosts on the path they have always had.
+  const hasWindowEvent = typeof window !== 'undefined' && 'event' in window;
+
+  const currentEvent = (): object | undefined => {
+    if (!hasWindowEvent) return undefined;
+    const ev = (window as unknown as { event?: unknown }).event;
+    // Must be a real same-realm Event, not merely an object. Window.event is
+    // [Replaceable]: a classic script doing `event = {...}` at top level (an
+    // implicit or sloppy global on plenty of host pages) permanently shadows
+    // the accessor with a data property. Accepting any object then returned
+    // that SAME object forever — its WeakMap entry never died, so every later
+    // conversion looked like a re-fire of the first action and ALL repeat
+    // conversions were silently dropped for the session. `instanceof Event`
+    // cannot be true for such a literal; a cross-realm Event (iframe) fails it
+    // too and merely falls back to the flush window, which is safe.
+    // (typeof guard: a host with `window` but no Event constructor must fall
+    // back, not throw a ReferenceError from inside goal().)
+    return typeof Event === 'function' && ev instanceof Event ? ev : undefined;
+  };
+
+  const closeFlushWindow = (): void => {
+    if (hasWindowEvent) {
+      // A promise microtask, not queueMicrotask: fake-timer setups can replace
+      // queueMicrotask, and this window closing is what keeps repeat
+      // conversions from being swallowed.
+      void Promise.resolve().then(() => {
+        flushOpen = false;
+        byFlush.clear();
+      });
+      return;
+    }
+    let done = false;
+    const clear = (): void => {
+      if (done) return;
+      done = true;
+      flushOpen = false;
+      byFlush.clear();
     };
-    ch.port2.postMessage(0);
-  } else {
-    setTimeout(() => set.clear(), 0);
-  }
+    setTimeout(clear, 0);
+    if (typeof MessageChannel === 'function') {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = () => {
+        ch.port1.close();
+        ch.port2.close();
+        clear();
+      };
+      ch.port2.postMessage(0);
+    }
+  };
+
+  return {
+    firedBefore(actionKey: string, valueKey: string | null): boolean {
+      const ev = currentEvent();
+      if (ev) {
+        let keys = byEvent.get(ev);
+        if (!keys) {
+          keys = new Map<string, Set<string>>();
+          // Keyed weakly: the Map dies with the Event object, so a long session
+          // of clicks accumulates nothing.
+          byEvent.set(ev, keys);
+        }
+        return alreadyRecorded(keys, actionKey, valueKey);
+      }
+      const collapsed = alreadyRecorded(byFlush, actionKey, valueKey);
+      if (!collapsed && !flushOpen) {
+        flushOpen = true;
+        closeFlushWindow();
+      }
+      return collapsed;
+    },
+  };
 }
 
 /**
@@ -705,12 +842,23 @@ export function init(config: SentientConfig): SentientClient {
 
   // Conversions get the same durable transport the event queue has always had:
   // retry with backoff, a cross-reload bucket, dedupe on the server's goalId.
+  // One warning per distinct drop status per page load (see onDrop below).
+  const warnedDropStatuses = new Set<number>();
   const goalQueue: GoalQueue = createGoalQueue({
     url: `${baseUrl}/goals`,
     apiKey: config.apiKey,
     headers: authHeaders,
     onDrop: (goal, status) => {
-      if (!config.debug) return;
+      // NOT debug-gated. CONTRACTS §7 says a dropped goal is reported to the
+      // developer and never swallowed, but this returned early unless debug was
+      // on — so in production a rate-limited or misconfigured project lost every
+      // conversion with no signal anywhere. Warn once per (status, page load):
+      // enough to be discoverable in a console or an error reporter, quiet
+      // enough that a broken integration cannot flood the page.
+      if (!config.debug) {
+        if (warnedDropStatuses.has(status)) return;
+        warnedDropStatuses.add(status);
+      }
       console.warn(
         `[sentient] goal dropped (HTTP ${status}) — this will not be retried. ` +
           (status === 400
@@ -819,22 +967,46 @@ export function init(config: SentientConfig): SentientClient {
       ...(config.persona ? { persona: config.persona } : {}),
       ...(config.country ? { country: config.country } : {}),
     };
-    try {
-      sessionReady = fetch(`${baseUrl}/sessions`, {
-        method: 'POST',
-        keepalive: true,
-        body: JSON.stringify(sessionBody),
-        headers: authHeaders,
-      })
-        .then((res) => {
+    // The session row is a PRECONDITION for every conversion: /v1/goals answers
+    // 400 session_not_found without it, and the durable queue classifies a 4xx
+    // as terminal — so a session upsert that fails silently turns every later
+    // conversion into a permanent drop. That is not hypothetical: /v1/sessions
+    // carries the same per-IP limiter as /v1/goals, so under shared egress
+    // (offices, mobile carriers, corporate NAT) the SESSION call 429s first and
+    // the goals that follow are dropped for good. Retry it, so a transient
+    // failure costs a moment rather than the visit's whole conversion history.
+    const upsertSession = async (): Promise<undefined> => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const res = await fetch(`${baseUrl}/sessions`, {
+            method: 'POST',
+            keepalive: true,
+            body: JSON.stringify(sessionBody),
+            headers: authHeaders,
+          });
           if (res.status === 402) {
             console.warn(
               '[SentientUI] Session limit exceeded for this project. The bandit will stop learning until the limit resets. Upgrade at sentient-ui.com/pricing',
             );
+            return undefined; // terminal: retrying a quota will not clear it
           }
+          if (res.ok || classifyResponse(res) === 'dropped') return undefined;
+        } catch {
+          /* network failure — same retry path as a 5xx */
+        }
+        if (attempt >= SESSION_UPSERT_RETRIES) {
+          // Say so once: from here every conversion this visit will 400, and
+          // that used to be entirely silent.
+          console.warn(
+            '[SentientUI] Could not register the session after retries. Conversions in this visit may not be recorded.',
+          );
           return undefined;
-        })
-        .catch(() => undefined);
+        }
+        await new Promise((r) => setTimeout(r, backoffDelayMs(attempt + 1)));
+      }
+    };
+    try {
+      sessionReady = upsertSession();
     } catch {
       /* never throw on init */
     }
@@ -862,12 +1034,13 @@ export function init(config: SentientConfig): SentientClient {
   // a weight-1.0 goal (close-out clamps at 1) but a 0.3-weight step summed to
   // 0.6, and the Goals page counts Hits as COUNT(*) either way.
   //
-  // The window is one task, not one session: two handlers reacting to a single
-  // event dispatch run synchronously, while two real clicks are always separate
-  // tasks. A session-wide latch would swallow genuine repeat conversions (two
-  // purchases in one visit are two conversions). Calls carrying distinct
-  // externalIds are never collapsed — those are, by definition, distinct orders.
-  const firedThisTask = new Set<string>();
+  // The scope is one event dispatch, not one session and no longer one task:
+  // see createActionLatch. A session-wide latch would swallow genuine repeat
+  // conversions (two purchases in one visit are two conversions), and a
+  // time-boxed one did exactly that whenever the box outlived the action.
+  // Calls carrying distinct externalIds are never collapsed — those are, by
+  // definition, distinct orders.
+  const firedThisAction = createActionLatch();
 
   // Set once tracking starts; dispose() and destroy() call it so a replaced
   // client stops watching history instead of emitting forever. The flag records
@@ -885,15 +1058,36 @@ export function init(config: SentientConfig): SentientClient {
       // stepIndex and weight are part of the key: funnel steps share a goal
       // name and differ by stepIndex, so collapsing on name alone dropped a
       // step fired in the same handler. Only IDENTICAL calls are one action.
-      const dedupeKey = `${name} ${opts.externalId ?? ''} ${opts.stepIndex ?? stepIndex} ${opts.weight ?? weight}`;
-      if (firedThisTask.has(dedupeKey)) {
+      //
+      // value and currency key the payload SEPARATELY (the latch's valueKey),
+      // not as more segments of the flat key, and for a costlier reason: they
+      // are the money. Flattened out of the key entirely, a $50 order and a
+      // $70 order landing in one window collapsed into a single $50 record —
+      // the client half of CONTRACTS §1 "two orders are worth two orders",
+      // which the server already honours (migration 119 records the repeat if
+      // it arrives; this is what stopped it arriving). But flattened INTO the
+      // key, a valued inner component nested in a valueless wrapper made two
+      // keys out of one click — two rows for one order. So the latch compares
+      // values only between valued fires ($50 vs $70 stays two records) and
+      // lets a valued record absorb a valueless re-fire of the same action
+      // (see createActionLatch for the one asymmetric case).
+      //
+      // NOT metadata: every nested <Adaptive>/hook path stamps its own
+      // componentId and variantId in there, so keying on it would make the
+      // duplicate this latch exists to collapse look distinct again.
+      const actionKey = [
+        name,
+        opts.externalId ?? '',
+        opts.stepIndex ?? stepIndex,
+        opts.weight ?? weight,
+      ].join('\0');
+      const valueKey = opts.value !== undefined ? `${opts.value}\0${opts.currency ?? ''}` : null;
+      if (firedThisAction.firedBefore(actionKey, valueKey)) {
         if (config.debug) {
           console.log(`[sentient] goal("${name}") already recorded for this action — not sent twice`);
         }
         return;
       }
-      firedThisTask.add(dedupeKey);
-      if (firedThisTask.size === 1) clearNextTask(firedThisTask);
       const goalId = generateEventId();
       // undefined values vanish at JSON.stringify time, so optional fields
       // need no conditional assembly.
@@ -1092,6 +1286,7 @@ export function init(config: SentientConfig): SentientClient {
           slotConfig?: Record<string, SlotConfigEntry>;
           goals?: GoalDefinition[];
           sectionMap?: SectionMapEntry[];
+          palette?: import('./blocks.js').SitePalette;
           persona?: string;
           confidence?: number;
         };
@@ -1143,6 +1338,7 @@ export function init(config: SentientConfig): SentientClient {
           layoutOrder: data.layoutOrder ?? null,
           savedAt: Date.now(),
           ...(data.slotConfig ? { slotConfig: data.slotConfig } : {}),
+          ...(data.palette ? { palette: data.palette } : {}),
         });
 
         return {
@@ -1154,6 +1350,7 @@ export function init(config: SentientConfig): SentientClient {
           ...(data.slotConfig ? { slotConfig: data.slotConfig } : {}),
           ...(data.goals ? { goals: data.goals } : {}),
           ...(data.sectionMap ? { sectionMap: data.sectionMap } : {}),
+          ...(data.palette ? { palette: data.palette } : {}),
         };
       } catch {
         seedSlotBaselines(declared);

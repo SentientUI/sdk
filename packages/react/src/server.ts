@@ -60,8 +60,11 @@ export async function loadAdaptiveAssignments(
   components: Array<{ id: string; variantIds: string[] }>,
   options: LoadAdaptiveAssignmentsOptions,
 ): Promise<LoadAdaptiveAssignmentsResult> {
+  // apiKey is not optional here: the client writes the per-project suffixed
+  // cookie, so an un-keyed read missed every returning visitor and minted a
+  // fresh orphan session per SSR request (see readSessionCookie in core).
   const sessionId =
-    readSessionCookie(options.cookies) ??
+    readSessionCookie(options.cookies, options.apiKey) ??
     options.createSessionId?.() ??
     defaultSessionId();
 
@@ -117,8 +120,11 @@ export async function loadAdaptiveDecision(
 ): Promise<LoadAdaptiveDecisionResult> {
   const { preloadDecisions, readSessionCookie } = await import('@sentientui/core/server');
 
+  // Keyed read — the client's cookie name is suffixed per project (see
+  // loadAdaptiveAssignments above). Works for keyless too: with no pk_ key the
+  // client writes the bare legacy name, which the un-suffixed read falls back to.
   const sessionId =
-    readSessionCookie(options.cookies) ??
+    readSessionCookie(options.cookies, options.apiKey) ??
     options.createSessionId?.() ??
     defaultSessionId();
 

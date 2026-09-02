@@ -5,11 +5,17 @@
 // webhook is the truth path; the external_id unique makes the pair converge
 // (whichever lands second no-ops).
 //
-// Origin note: web-pixel sandbox requests may carry a sandbox Origin. If the
-// dev-store verification finds the shop domain missing from the request
-// Origin, route these two calls through the app proxy (backend forwards with
-// sk_, which bypasses Origin by design) — do NOT weaken requireOrigin on the
-// API (plan Task 4).
+// Origin note (UNVERIFIED RISK — plan Task 4): the web-pixel sandbox is a
+// cross-origin worker/iframe, so its fetches likely carry a sandbox Origin
+// (or none), NOT the shop domain. Against a project with requireOrigin: true,
+// the API's auth middleware 403s any pk_ request whose Origin is missing or
+// not allow-listed (apps/api/src/auth/middleware.ts, origin_not_allowed) —
+// meaning EVERY call this pixel makes (/v1/goals, /v1/attributions) may be
+// dead on such projects: no funnel steps, no checkout-token attribution, no
+// purchase fast path (the orders/paid webhook still records the purchase via
+// sk_, which skips Origin checks). Needs dev-store verification; if confirmed,
+// route these calls through the app proxy (backend forwards with sk_, which
+// bypasses Origin by design) — do NOT weaken requireOrigin on the API.
 import { register } from '@shopify/web-pixels-extension';
 
 register(({ analytics, browser, settings }) => {
@@ -22,7 +28,14 @@ register(({ analytics, browser, settings }) => {
       keepalive: true,
     }).catch(() => undefined); // pixel must never break checkout
 
-  const sid = () => browser.cookie.get('_snt_uid');
+  // The snippet namespaces its visitor cookie per project — `_snt_uid` plus
+  // `_${apiKey.slice(0, 12)}` (core storage-key.ts) — so multiple projects on
+  // one origin can't share a session. Reproduce that name from the pixel's own
+  // publishableKey; fall back to the bare name (explicit cookieName installs).
+  const key = String(settings.publishableKey ?? '');
+  const sid = async () =>
+    (key ? await browser.cookie.get(`_snt_uid_${key.slice(0, 12)}`) : undefined) ||
+    (await browser.cookie.get('_snt_uid'));
   const goal = async (name: string, extra: Record<string, unknown> = {}) => {
     const sessionId = await sid();
     if (!sessionId) return;
@@ -39,15 +52,31 @@ register(({ analytics, browser, settings }) => {
     void goal('checkout_started');
   });
 
-  // Fast path: browser capture. The webhook is the truth path; the
-  // external_id unique makes the pair converge (whichever lands second no-ops).
+  // Fast path: browser capture. The webhook is the truth path; the pair only
+  // converges because dedupe is an EXACT string match on (project, goal,
+  // external_id), and the webhook side sends the numeric REST order id
+  // (orderPaidToConversion: String(order.id)). Two ways this used to diverge
+  // and double-count / drop:
+  //  - the pixel's order id can be gid-formatted ("gid://shopify/Order/123")
+  //    where the webhook sends "123" — normalize to the trailing digits;
+  //  - on wallet/deferred checkouts `checkout.order` is null here. Falling
+  //    back to the checkout token recorded the purchase under a key the
+  //    webhook never sends → the same order counted twice; and with token
+  //    also absent, externalId "" failed the API's min-length validation and
+  //    the goal was silently 400-dropped. In either case there is no id the
+  //    webhook will match, so SKIP the fast path and let the webhook be the
+  //    sole writer of the purchase goal.
   analytics.subscribe('checkout_completed', (event) => {
     const c = event.data.checkout;
     if (!c) return;
+    // Trailing digits of the id, ignoring any gid query string
+    // ("gid://shopify/Order/123?key=abc" → "123"; "123" → "123").
+    const orderId = c.order?.id == null ? undefined : /\d+$/.exec(String(c.order.id).split('?')[0])?.[0];
+    if (!orderId) return; // no real order id → webhook is the sole writer
     void goal('purchase', {
       value: Number(c.totalPrice?.amount ?? 0) || undefined,
       currency: c.currencyCode ?? undefined,
-      externalId: String(c.order?.id ?? c.token ?? ''),
+      externalId: orderId,
     });
   });
 });

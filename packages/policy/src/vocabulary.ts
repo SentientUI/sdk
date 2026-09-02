@@ -20,6 +20,29 @@ import { PERSONAS, PERSONA_DISPLAY, UNKNOWN_PERSONA, LEGACY_PERSONA_MAP, canonic
 export const PERSONA_KEY_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 /**
+ * Normalizes a persona value declared by the SDK, or returns null when it is
+ * not shaped like a persona key at all.
+ *
+ * The SDK docs all say "never a user id or email", and migration 113's CHECK
+ * keeps such a value out of `persona_set_members.key` — but the two ingest
+ * sinks added later (`sessions.declared_persona` and the unrecognized-value
+ * counter, which the Settings page renders verbatim) took whatever the browser
+ * sent. A customer wiring `persona={user.email}` therefore put real addresses
+ * in both, with no subject-erasure path out of the counter.
+ *
+ * Rejecting here loses nothing the nudge needs: a genuine typo like 'staff'
+ * still matches, so it is still counted and still offered as "add it?". Only
+ * values that could never BE a key — anything with '@', a space, uppercase, or
+ * over 32 characters — are refused.
+ */
+export function normalizeDeclaredPersona(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim().toLowerCase();
+  if (!value) return null;
+  return PERSONA_KEY_RE.test(value) ? value : null;
+}
+
+/**
  * Keys no vocabulary member may claim. 'unknown' and '__all__' are structural
  * in weightCellsFor / CONTRACTS §4; the plural forms are pre-069 legacy labels
  * that canonicalPersona still remaps, so a member claiming one would be

@@ -1,5 +1,30 @@
 # @sentientui/cli
 
+## 0.3.1
+
+### Patch Changes
+
+- 2f5d3ac: `init --key` can no longer claim a write it never made, and argument typos fail
+  loudly instead of silently changing what init does.
+
+  **The log said written; the file said local mode.** On an already-initialized
+  repo, `writeEnvFile` returned 'kept' for any existing assignment — including
+  the empty one a keyless `init` leaves — while init printed
+  `.env.local kept: VAR=pk_live_…` as though the key had been written. The
+  natural onboarding order (try local mode, then `init --key pk_…` with the real
+  key) therefore left the app silently keyless. An explicitly passed --key now
+  expresses intent: it overwrites a differing active assignment in place
+  ('updated'), returns 'kept' only when the value already matches, and the log
+  states what actually happened in every case. Without --key the
+  never-clobber behaviour is unchanged, and an explicit empty `--key=` never
+  blanks a configured key.
+
+  **parseArgs hazards.** `--key` swallowed whatever token came next, so
+  `init --key --yes` tried to use "--yes" as the API key; and unknown flags were
+  silently ignored, so `init --kye pk_x` ran a keyless init while the user
+  believed their key was configured. Option-shaped or missing --key values and
+  unrecognized flags now exit 1 with the usage text before anything runs.
+
 ## 0.3.0
 
 ### Minor Changes

@@ -1,7 +1,7 @@
 /** Manages anonymous session identity with cookie + localStorage layers. */
 
 import { randomUuidV4 } from './uuid.js';
-import { storageSuffix } from './storage-key.js';
+import { sessionCookieName, storageSuffix } from './storage-key.js';
 
 export type SessionConfig = {
   cookieName?: string;
@@ -141,9 +141,11 @@ export function initSession(config?: SessionConfig): SessionManager {
 
   // Namespace the visitor-id keys per project so multiple keys on one origin
   // don't share a `_snt_uid` (see storage-key.ts). An explicit cookieName still
-  // wins for callers that manage their own naming.
+  // wins for callers that manage their own naming. sessionCookieName is the
+  // shared writer/reader name — the SSR reader and graph sync derive the same
+  // string from it, so they can't drift back to the bare name.
   const suffix = storageSuffix(config?.apiKey);
-  const cookieName = config?.cookieName ?? `${DEFAULT_COOKIE_NAME}${suffix}`;
+  const cookieName = config?.cookieName ?? sessionCookieName(config?.apiKey);
   const storageKey = `${STORAGE_KEY}${suffix}`;
   const cookieTTLDays = config?.cookieTTLDays ?? DEFAULT_COOKIE_TTL_DAYS;
   const maxAgeSeconds = cookieTTLDays * 24 * 60 * 60;
@@ -157,10 +159,27 @@ export function initSession(config?: SessionConfig): SessionManager {
   const nonEmpty = (value: string | null | undefined): string | null =>
     value && value.length > 0 ? value : null;
 
+  // Legacy fallback: visitors identified BEFORE per-project namespacing carry
+  // their id under the bare `_snt_uid` names. Without this read, the rollout of
+  // the suffixed names reset every existing visitor's identity — a fresh session
+  // row per visitor, broken sticky assignments, persona continuity lost. The id
+  // is adopted (re-written under the suffixed names below) but the legacy keys
+  // are left in place: deleting them would reset the OTHER projects on a shared
+  // origin that haven't migrated it yet. Skipped when the caller manages its own
+  // cookieName — the bare `_snt_uid` was never theirs — and when there is no
+  // suffix (local mode still uses the bare names directly).
+  const readLegacy = (): string | null =>
+    suffix && !config?.cookieName
+      ? nonEmpty(readCookie(DEFAULT_COOKIE_NAME)) ??
+        nonEmpty(readLocalStorage(STORAGE_KEY)) ??
+        nonEmpty(readSessionStorage(STORAGE_KEY))
+      : null;
+
   let sessionId: string | null =
     nonEmpty(readCookie(cookieName)) ??
     nonEmpty(readLocalStorage(storageKey)) ??
     nonEmpty(readSessionStorage(storageKey)) ??
+    readLegacy() ??
     nonEmpty(config?.ssrSessionId) ??
     generateSessionId();
 

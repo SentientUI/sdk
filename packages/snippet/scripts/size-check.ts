@@ -14,11 +14,35 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 //   ?sentient_editor= mode (zero bytes on the normal path), so its budget is
 //   generous — it just guards against unbounded growth of the editor UI.
 const bundles: Array<{ name: string; file: string; limit: number }> = [
-  // 18 KiB (was 16): the snippet bundles @sentientui/core, so it inherited the
-  // durable goal queue added in 6cfe1c2 (+836 gzip bytes) and went over. Same
-  // call as core's budget — the delivery guarantee is worth the bytes.
-  // Measured 17148.
-  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 18 * 1024 },
+  // 21 KiB (was 20, 18, 16): re-baselined 2026-09-01 for the September audit
+  // bug-fix batch — measured 20746 (+677 on the 20069 baseline), all of it
+  // always-on correctness code that cannot be lazy: the consent
+  // revoke->grant re-init (a destroyed client silently dropped every event
+  // for the rest of the visit), exposing the page API in editor/preview
+  // modes (merchant page code threw on SentientSnippet.goal), and the core
+  // changes that ride this bundle — the namespaced-cookie legacy fallback
+  // (returning visitors' identity), the valued/valueless goal-key collapse
+  // and the instanceof-Event latch guard (repeat conversions, CONTRACTS §1).
+  // ~758 bytes of headroom left; the next addition needs a deliberate
+  // decision about this budget.
+  //
+  // Previous baseline note, kept for the accounting trail:
+  // 20 KiB (was 18, was 16): re-baselined 2026-08-28 (operator decision) for
+  // the Composition Block renderer (B2 Phase 1, +1236 gzip on an 18322
+  // baseline that already carried B1.1 section reordering at +453). The
+  // renderer must be always-on because Option B pre-renders arms at pre-paint
+  // (composition spec §6) — a lazy chunk would arrive after first paint and
+  // reintroduce the flash the design exists to prevent. Measured 20069 (the
+  // orphan-block teardown sweep added ~360: pre-paint hides the merchant's own
+  // content, so the code that puts it back has to be always-on too). ~400 bytes
+  // of headroom left for B2's remaining phases — the next addition needs a
+  // deliberate decision about this budget.
+  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 21 * 1024 },
+  // Measured 11628 (arrangement picker +521 on a palette-sampling 11107) —
+  // 660 bytes of margin. The composition spec expected this budget to need
+  // raising for the editor phase; it did NOT (the picker is forms — the server
+  // owns catalog data and all rendering/validation). The next overlay feature
+  // may still force that conversation; keep it deliberate.
   { name: '@sentientui/snippet (editor overlay)', file: 'editor.global.js', limit: 12 * 1024 },
 ];
 

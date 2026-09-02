@@ -2,6 +2,7 @@ import type { SlotConfigEntry } from '@sentientui/core';
 import type { SnippetSlotDecl } from './config';
 import { isUrlScopedOut, resolveLocatorOne } from './locator';
 import { applyOps } from './ops';
+import { applySlotBlocks, sweepOrphanBlocks } from './blocks';
 
 type SlotResult = string | Record<string, string>;
 
@@ -77,6 +78,7 @@ export function applyRegistrySlots(
     onApplied?: (slotId: string, arm: string, el: Element) => void;
   },
 ): string[] {
+  const blockContainers = new Set<Element>();
   // Pre-paint (before /v1/decide returns) must apply reversible attributes only:
   // writing textContent/ops from a possibly-stale cached snapshot would flash
   // wrong copy that is never reverted if the decide call times out. The post-
@@ -115,6 +117,21 @@ export function applyRegistrySlots(
           for (const [dim, value] of Object.entries(result)) el.setAttribute(`data-${dim}`, value);
         }
       }
+      // Composition Blocks apply on BOTH passes, pre-paint included: rendering
+      // every arm hidden and revealing by arm is precisely the reversible
+      // mechanism that makes structural variants pre-paint safe (Option B,
+      // composition spec §6) — a stale snapshot's reveal is corrected by the
+      // post-decide toggle, no re-render and no wrong-copy wedge.
+      // Belt and braces on the composition spec's §12 hard stop. The server
+      // already withholds `blocks` for automation-flagged sessions, but that
+      // flag is set at session ingest and a crawler that never got a session
+      // (or an SSR/snapshot path) could still reach here. Option B hides the
+      // merchant's own content behind hidden arms, which is a cloaking signal —
+      // so when the client can see it is automation, leave the page alone.
+      if (cfg.blocks && !isLikelyAutomation(doc)) {
+        applySlotBlocks(el, cfg.blocks, typeof result === 'string' ? result : undefined, doc);
+        blockContainers.add(el);
+      }
       if (!contentAndOps) continue;
       // Phase-2 content, then Phase-3 ops (ops.text wins if both set).
       if (typeof cfg.content === 'string') el.textContent = cfg.content;
@@ -124,5 +141,31 @@ export function applyRegistrySlots(
       }
     }
   }
+  // Anything we previously turned into a composition container but are no
+  // longer serving must be put back. Without this an archived slot left the
+  // merchant's own section hidden for the rest of the page view.
+  sweepOrphanBlocks(doc, blockContainers);
   return missed;
+}
+
+/**
+ * Cheap client-side automation check for the block path only.
+ *
+ * Deliberately narrow: `navigator.webdriver` plus the crawler UA tokens the
+ * server already classifies on. This is NOT the billing/training signal (the
+ * server owns that) — it exists so structural DOM changes that hide the
+ * merchant's own content never run for something that indexes pages.
+ */
+const AUTOMATION_UA_RE =
+  /bot|crawler|spider|crawling|googlebot|bingbot|duckduckbot|baiduspider|yandexbot|slurp|gptbot|claudebot|anthropic|perplexity|ccbot|applebot|headlesschrome/i;
+
+function isLikelyAutomation(doc: Document): boolean {
+  try {
+    const nav = (doc.defaultView ?? (typeof window !== 'undefined' ? window : undefined))?.navigator;
+    if (!nav) return false;
+    if (nav.webdriver === true) return true;
+    return AUTOMATION_UA_RE.test(nav.userAgent ?? '');
+  } catch {
+    return false; // never let the check itself break application
+  }
 }

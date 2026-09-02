@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { loadAdaptiveAssignments } from './server.js';
 import { preloadDecisions } from '@sentientui/core/server';
+import { sessionCookieName } from '@sentientui/core';
 
 const BASE_URL = 'https://api.example.com/v1';
 const API_KEY = 'pk_test';
@@ -39,6 +40,45 @@ describe('loadAdaptiveAssignments', () => {
       expect.objectContaining({
         body: JSON.stringify({
           sessionId: 'sess-1',
+          componentId: 'hero_cta',
+          variantIds: ['primary', 'accent'],
+        }),
+      }),
+    );
+  });
+
+  // The client writes the per-project SUFFIXED cookie (sessionCookieName).
+  // Reading only the bare `_snt_uid` missed it, so every SSR request for a
+  // returning visitor minted a fresh orphan session — quota inflation and
+  // broken sticky assignments. Pinned through sessionCookieName so this test
+  // follows the writer wherever the name goes.
+  it('finds the per-project suffixed cookie a returning visitor carries', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch
+      .mockResolvedValueOnce({ ok: true } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ variantId: 'primary', assignmentTtlMs: 3600000 }),
+      } as Response);
+
+    const cookies = {
+      get: (name: string) => (name === sessionCookieName(API_KEY) ? { value: 'sess-returning' } : undefined),
+    };
+    const createSessionId = vi.fn(() => 'should-not-be-used');
+
+    const result = await loadAdaptiveAssignments(
+      [{ id: 'hero_cta', variantIds: ['primary', 'accent'] }],
+      { cookies, apiKey: API_KEY, baseUrl: BASE_URL, createSessionId },
+    );
+
+    expect(result.sessionId).toBe('sess-returning');
+    expect(createSessionId).not.toHaveBeenCalled();
+    // The returning visitor's id — not a fresh orphan — reaches /assign.
+    expect(mockFetch).toHaveBeenCalledWith(
+      `${BASE_URL}/assign`,
+      expect.objectContaining({
+        body: JSON.stringify({
+          sessionId: 'sess-returning',
           componentId: 'hero_cta',
           variantIds: ['primary', 'accent'],
         }),

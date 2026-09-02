@@ -105,8 +105,14 @@ export function createGoalQueue(config: GoalQueueConfig): GoalQueue {
       pendingIds.add(goal.id);
       pending.push(goal);
     }
-    consecutiveFailures++;
-    backoffUntil = Date.now() + backoffDelayMs(consecutiveFailures);
+    // One failed ROUND counts once, however many goals were in flight. flush()
+    // launches up to maxPerFlush transports synchronously, so counting per goal
+    // turned a single bad tick into consecutiveFailures=5 and a 32s backoff
+    // where the first failure warrants 2s. queue.ts counts per batch; match it.
+    if (Date.now() >= backoffUntil) {
+      consecutiveFailures++;
+      backoffUntil = Date.now() + backoffDelayMs(consecutiveFailures);
+    }
   };
 
   const transport = (goal: PendingGoal): void => {
@@ -165,12 +171,18 @@ export function createGoalQueue(config: GoalQueueConfig): GoalQueue {
   // Replay anything a previous page load failed to deliver. Left for the first
   // interval tick rather than sent now, so a page that reloads under an ongoing
   // outage doesn't stampede the endpoint during init.
-  for (const goal of drainBucket<PendingGoal>(RETRY_KEY, maxRetrySize)) {
+  const restored = drainBucket<PendingGoal>(RETRY_KEY, maxRetrySize);
+  for (const goal of restored) {
     if (!pendingIds.has(goal.id)) {
       pendingIds.add(goal.id);
       pending.push(goal);
     }
   }
+  // drainBucket CLEARS storage as it reads, but only maxPerFlush goals leave per
+  // tick — so a 40-goal backlog moved to memory and the visitor navigating two
+  // seconds later lost the 35 that hadn't been sent yet. Put them straight back;
+  // markSent purges each id individually once it is actually acknowledged.
+  if (restored.length > 0) writeBucket(restored, maxRetrySize, RETRY_KEY);
 
   const intervalId = setInterval(flush, flushIntervalMs);
   const onVisibilityChange = (): void => {
@@ -187,6 +199,14 @@ export function createGoalQueue(config: GoalQueueConfig): GoalQueue {
       // A conversion goes out now — it is often the last thing that happens
       // before a redirect to a thank-you page. Only a failure makes it queued.
       if (Date.now() < backoffUntil) {
+        // Persist BEFORE parking it in memory. A goal only ever reached the
+        // cross-reload bucket via markFailed — i.e. only after a failed attempt
+        // — so a conversion queued during someone else's backoff lived in memory
+        // alone, and flush() early-returns while backoff is armed, so pagehide
+        // could not rescue it either. A purchase firing 300ms after a rate-limited
+        // add_to_cart was lost on the checkout redirect: exactly the outage this
+        // queue exists to survive.
+        writeBucket([goal], maxRetrySize, RETRY_KEY);
         pendingIds.add(goal.id);
         pending.push(goal);
         return;

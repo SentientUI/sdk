@@ -2,10 +2,16 @@
 
 Style-rung [SentientUI](https://sentient-ui.com) for sites that are not built with React.
 One script tag: visitor-type attributes on `<html>` plus learned `data-*` style tokens on the
-elements you declare. Plain CSS does the rest. No markup is ever injected — text is written as
-`textContent` and styles come from a bounded, validated set. The only structural change possible
-is moving a declared element among its own siblings (a registry `moveBefore`/`moveAfter` op,
-applied after the decision returns); a drifted anchor applies nothing. If anything fails, your
+elements you declare. Plain CSS does the rest. No HTML is ever accepted or injected — text is
+written as `textContent`, styles come from a bounded validated set, and dashboard-authored
+Composition Blocks are a typed, enumerated component tree rendered via `createElement` only
+(there is no sanitizer because there is no HTML to sanitize). The structural changes possible
+are: moving a declared element among its own siblings (a registry `moveBefore`/`moveAfter` op,
+applied after the decision returns; a drifted anchor applies nothing), reordering the sections
+you list in `sections` within their shared parent (never applied unless every selector still
+resolves and the served order is exactly a permutation of them), and revealing one published
+Composition-Block arm inside its slot (all arms render hidden up front; the served one is
+shown, and removing the arm restores your original markup exactly). If anything fails, your
 page is left exactly as it was.
 
 ```html
@@ -14,6 +20,10 @@ page is left exactly as it was.
     apiKey: 'pk_your_key',            // sentient-ui.com → Settings
     context: 'landing',               // 'landing' | 'ecommerce' | 'saas' | 'marketplace'
     personaAttributes: true,          // sets data-sentient-persona / -confidence on <html>
+    persona: () => window.myApp?.role, // optional: declare the role your site already knows
+                                       // (string or function; must be a key from Settings → Personas)
+    sections: ['#hero', '#pricing', '#faq'], // optional: sections eligible for reordering,
+                                             // CSS selectors in your theme's natural order
     slots: {
       hero: { dims: { tone: ['calm', 'urgent'] }, target: '#hero' },
     },
@@ -40,9 +50,21 @@ html[data-sentient-persona='deal_seeker'] .discount-banner { display: block; }
 The first value of each dim is your baseline (what you show today). Decisions are locked per
 session and learned per visitor type on the SentientUI API: Visit 1 learns, Visit 2 converts.
 
+`persona` declares the visitor type your site already knows (e.g. a role from your own
+session state) instead of waiting for it to be inferred. It must be a key in the project's
+persona vocabulary (dashboard → Settings → Personas); unrecognized values are ignored
+server-side and surfaced in the dashboard so you can add them. Keep it a low-cardinality
+role label — never a user id or email.
+
+`sections` lists the page sections the optimizer may reorder, as CSS selectors in the order
+your theme renders them (the first learned baseline). Each selector must match exactly one
+element and all of them must share one parent; anything else — a missing section, an ambiguous
+selector, a served order that isn't a permutation of your list — applies nothing. Return visits
+pre-paint the last served order from a local snapshot, so there is no natural-order flash.
+
 The snippet also captures per-section attention (visible time + scroll depth) and behavioral
 signals by default — that's what builds audience profiles with zero tagging. Add
 `sectionCapture: false` to `window.sentient` to turn it off; it never runs for a Do-Not-Track,
 Global Privacy Control, or consent-gated visitor.
 
-Bundle ≤ 15 KB gzip. MIT.
+Bundle ≤ 20 KiB gzip (CI-enforced). MIT.

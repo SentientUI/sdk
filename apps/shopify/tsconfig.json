@@ -1,12 +1,25 @@
 {
+  "include": ["env.d.ts", "**/*.ts", "**/*.tsx"],
+  // Extensions are BUILT by the Shopify CLI, but they typecheck here too now
+  // that @shopify/web-pixels-extension is a dev dep (the CLI's esbuild also
+  // needs it resolvable, which is why it's installed at all).
+  "exclude": ["node_modules", "build"],
   "compilerOptions": {
-    "target": "ES2022",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "allowSyntheticDefaultImports": true,
+    "removeComments": false,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "jsx": "react-jsx",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "types": []
-  },
-  "include": ["app/lib/**/*.ts"]
+    "target": "ES2022",
+    "baseUrl": ".",
+    "types": ["node"]
+  }
 }

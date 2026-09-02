@@ -21,11 +21,19 @@ export function envVarName(framework: Framework): string {
   }
 }
 
-export type EnvWriteResult = 'created' | 'appended' | 'kept';
+export type EnvWriteResult = 'created' | 'appended' | 'updated' | 'kept';
 
 /**
- * Creates or appends to .env.local. Never clobbers: an existing assignment of
- * the variable (even an empty one) leaves the file byte-for-byte untouched.
+ * Creates, appends to, or updates .env.local.
+ *
+ * Without an explicit key this never clobbers: an existing assignment of the
+ * variable (even an empty or commented one) leaves the file byte-for-byte
+ * untouched. An explicitly passed --key, though, expresses intent: this used
+ * to return 'kept' for it too, so `init --key pk_…` after a keyless init left
+ * the empty assignment in place — while init's log claimed the key was written
+ * — and the app silently stayed in local mode. Now an explicit key overwrites
+ * a differing active assignment in place ('updated'); 'kept' means the value
+ * already matches.
  */
 export function writeEnvFile(cwd: string, framework: Framework, key: string | undefined): EnvWriteResult {
   const varName = envVarName(framework);
@@ -41,14 +49,31 @@ export function writeEnvFile(cwd: string, framework: Framework, key: string | un
     return 'created';
   }
   const existing = readFileSync(file, 'utf-8');
-  // Detect an existing assignment whether it is active OR commented out
-  // (`# VAR=`). A commented assignment still "claims" the var — appending an
-  // active duplicate would be confusing and could shadow the user's intent — so
-  // we leave the file untouched and let them un-comment it themselves.
-  const assigned = existing
-    .split(/\r?\n/)
-    .some((line) => line.trim().replace(/^#+\s*/, '').startsWith(`${varName}=`));
-  if (assigned) return 'kept';
+  // varName is one of our fixed literals (envVarName), so it is regex-safe.
+  const activeRe = new RegExp(`^([\\t ]*${varName}=)([^\\r\\n]*)`, 'm');
+  const commentedRe = new RegExp(`^[\\t ]*#+\\s*${varName}=`, 'm');
+  const active = existing.match(activeRe);
+
+  // `--key=` (explicit empty) is local mode, same as no flag — it must not
+  // silently blank a key that is already configured.
+  if (!key) {
+    // A commented assignment still "claims" the var — appending an active
+    // duplicate would be confusing and could shadow the user's intent — so we
+    // leave the file untouched and let them un-comment it themselves.
+    if (active || commentedRe.test(existing)) return 'kept';
+    appendFileSync(file, block, 'utf-8');
+    return 'appended';
+  }
+
+  if (active) {
+    if (active[2]!.trim() === key) return 'kept';
+    // Replacer function, not a replacement string: a key containing `$` would
+    // otherwise be interpreted as a replacement pattern.
+    writeFileSync(file, existing.replace(activeRe, (_m, prefix: string) => `${prefix}${key}`), 'utf-8');
+    return 'updated';
+  }
+  // Only a commented-out assignment exists: append an active one rather than
+  // editing a line the user wrote themselves.
   appendFileSync(file, block, 'utf-8');
   return 'appended';
 }

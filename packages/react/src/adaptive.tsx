@@ -251,7 +251,7 @@ function AdaptiveImpl(props: AdaptiveProps): JSX.Element | null {
         });
         client.goal(name, { metadata: {}, weight, stepIndex });
       },
-    });
+    }, goalLabel);
   }, [client, variantId, apiKey, props.id, goal, goalLabel, isOverride]);
 
   // Decorative slots: empty in SSR HTML and until the client has mounted.

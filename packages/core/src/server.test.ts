@@ -252,14 +252,56 @@ describe('fetchWithTimeout behavior (via preloadAssignments)', () => {
 });
 
 describe('readSessionCookie', () => {
-  it('returns the session ID when the cookie is present', () => {
+  it('returns the session ID when the legacy bare cookie is present', () => {
     const cookies = { get: (name: string) => name === '_snt_uid' ? { value: 'sess-xyz' } : undefined };
     expect(readSessionCookie(cookies)).toBe('sess-xyz');
   });
 
   it('returns null when the cookie is absent', () => {
     const cookies = { get: () => undefined };
-    expect(readSessionCookie(cookies)).toBeNull();
+    expect(readSessionCookie(cookies, API_KEY)).toBeNull();
+  });
+
+  // The reader pinned against the WRITER, not against a string literal: the
+  // client's initSession writes the per-project suffixed cookie, and this
+  // reader once kept the pre-namespacing bare name — so every SSR request for
+  // a returning visitor missed the cookie and minted a fresh orphan session.
+  // Running the real writer here means the two can never drift apart again.
+  it('reads the exact cookie name the client session writer produces', async () => {
+    const { initSession } = await import('./session.js');
+    const apiKey = 'pk_ssr_pin_key_1234';
+    const manager = initSession({ apiKey });
+    const id = manager.getSessionId();
+    expect(id).toBeTruthy();
+    // Adapt the jsdom cookie jar to the Next.js cookies() shape.
+    const jar = new Map(
+      document.cookie
+        .split('; ')
+        .filter((c) => c.includes('='))
+        .map((c) => {
+          const i = c.indexOf('=');
+          return [c.slice(0, i), { value: decodeURIComponent(c.slice(i + 1)) }] as const;
+        }),
+    );
+    expect(readSessionCookie({ get: (n) => jar.get(n) }, apiKey)).toBe(id);
+    // Without the apiKey the suffixed cookie is invisible — the reason the
+    // helper takes the key at all.
+    expect(readSessionCookie({ get: (n) => jar.get(n) })).toBeNull();
+    manager.destroy();
+  });
+
+  it('prefers the suffixed cookie over a lingering legacy one', async () => {
+    const { sessionCookieName } = await import('./storage-key.js');
+    const jar: Record<string, string> = {
+      [sessionCookieName('pk_two_names')]: 'namespaced-id',
+      _snt_uid: 'legacy-id',
+    };
+    const cookies = { get: (n: string) => (jar[n] !== undefined ? { value: jar[n]! } : undefined) };
+    expect(readSessionCookie(cookies, 'pk_two_names')).toBe('namespaced-id');
+    // A keyed read still falls back to the legacy name when the suffixed
+    // cookie is missing (pre-namespacing visitors keep their identity).
+    delete jar[sessionCookieName('pk_two_names')];
+    expect(readSessionCookie(cookies, 'pk_two_names')).toBe('legacy-id');
   });
 });
 

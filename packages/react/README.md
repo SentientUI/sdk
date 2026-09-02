@@ -81,9 +81,14 @@ rung to climb next, with a copy-pasteable snippet.
 **1a. Persona attributes — zero declaration.** The SDK sets on `<html>`:
 
 ```
-data-sentient-persona   = buyer | researcher | deal_seeker | browser | unknown
+data-sentient-persona   = <vocabulary key> | unknown
 data-sentient-confidence = low | medium | high
 ```
+
+The persona value is a key from the project's persona vocabulary (dashboard → Settings →
+Personas) — declared by your app via the `persona` prop, or inferred from behavior. The
+default vocabulary is `buyer | researcher | deal_seeker | browser`. Renaming a persona in
+the dashboard keeps the old key resolving as an alias, so existing CSS stays intact.
 
 Write plain CSS against them (the canonical block — safe defaults for every persona):
 
@@ -187,6 +192,7 @@ Imported from `@sentientui/react/next`.
 | `apiKey` | `string` | `pk_…` key — used by both the browser SDK and server-side SSR requests. |
 | `appOrigin` | `string` *(default `http://localhost:3001`)* | Your app origin (e.g. `https://yourapp.com`). Must be on the project's allowed-origins list. Always set in production. |
 | `context` | `'landing' \| 'ecommerce' \| 'saas' \| 'marketplace'` | Type of product. Used for segment weighting and analytics grouping. |
+| `persona` | `string` *(optional)* | Declared persona — the role your app already knows for this visitor (e.g. from your auth context). Must be a key in the project's persona vocabulary (dashboard → Settings → Personas); unrecognized values are ignored server-side. Served at full confidence, overriding the inferred persona; forwarded through both SSR paths. Stable for the session — remount to apply a new value. Never a user id or email. |
 | `consent` | `boolean` *(default `true`)* | Set `false` to skip SDK init (no cookies, no events). Flip to `true` after the visitor accepts. |
 | `respectDoNotTrack` | `boolean` *(default `true`)* | Honor the browser's Do Not Track signal. When on and DNT is enabled, the SDK sets no cookies and sends no tracking data (overriding `consent: true`), and `grantConsent()` won't re-enable it. Set `false` to make your own consent gate authoritative. |
 | `ssrFallback` | `'first' \| 'none'` *(default `'first'`)* | What to render in SSR HTML for components not in `components`. `'first'` is safe for SEO. |
@@ -195,7 +201,7 @@ Imported from `@sentientui/react/next`.
 
 ### `<AdaptiveProvider>` (any React app)
 
-Accepts the same `apiKey`, `context`, `consent`, `ssrFallback`, `debug` props as `<AdaptiveRoot>`, plus `onAssignment` (not available on `<AdaptiveRoot>` — function props can't cross the RSC boundary) and:
+Accepts the same `apiKey`, `context`, `persona`, `consent`, `ssrFallback`, `debug` props as `<AdaptiveRoot>`, plus `onAssignment` (not available on `<AdaptiveRoot>` — function props can't cross the RSC boundary) and:
 
 | Prop | Type | Description |
 |------|------|-------------|

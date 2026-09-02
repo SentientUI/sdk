@@ -36,9 +36,32 @@ export type EngagementCaptureOptions = {
 
 const SECTION_SELECTOR = 'section, header, footer, nav, main > div, [data-sentient-section]';
 
-/** Skip a section nested inside another candidate section (avoid double count). */
-function isNested(el: Element): boolean {
-  return el.parentElement?.closest(SECTION_SELECTOR) != null;
+/** Bank cadence for visible dwell. Dwell used to leave the page only on
+ *  visibilitychange/pagehide, and in production that path delivered for ~5-8%
+ *  of sessions (Bodyshop audit 2026-08-30): a visitor who reads and closes the
+ *  tab races the unload pipeline, and mobile browsers can kill a page with no
+ *  lifecycle event at all. The heartbeat caps the loss at one interval. */
+const HEARTBEAT_MS = 20_000;
+
+/**
+ * Pick the elements to observe. Two rules, in order:
+ * 1. A candidate that CONTAINS two or more other candidates is a layout
+ *    wrapper, not a section — drop it. Pages built from bare divs match
+ *    `main > div` with their page-wide content wrapper; keeping that outer
+ *    match swallowed every real <section> inside it, collapsing the whole page
+ *    into one nc-generic component whose intersectionRatio could never exceed
+ *    viewport-height / page-height (a constant ~0.05 scroll_depth on the
+ *    audited site). A candidate with exactly one nested candidate (header >
+ *    nav) is NOT a wrapper — rule 2 keeps the outer one, as before.
+ * 2. Of what remains, skip a section nested inside another kept section
+ *    (avoid double count).
+ */
+function selectSections(doc: Document): Element[] {
+  const candidates = Array.from(doc.querySelectorAll(SECTION_SELECTOR));
+  const kept = candidates.filter(
+    (el) => candidates.filter((c) => c !== el && el.contains(c)).length < 2,
+  );
+  return kept.filter((el) => !kept.some((k) => k !== el && k.contains(el)));
 }
 
 function registerSections(
@@ -80,7 +103,7 @@ export function startEngagementCapture(
     .replace(/\/+$/, '')
     .replace(/\/v1$/, '');
 
-  const els = Array.from(doc.querySelectorAll(SECTION_SELECTOR)).filter((el) => !isNested(el));
+  const els = selectSections(doc);
   if (els.length === 0) return NOOP;
 
   // Collapse to one component per semantic type per page (the matrix aggregates
@@ -167,13 +190,47 @@ export function startEngagementCapture(
       for (const s of state.values()) if (s.intersecting) s.enterAt = now;
     }
   };
-  const onPageHide = (): void => {
-    emit();
+  // A page can be FROZEN into the bfcache rather than torn down. Timers keep
+  // firing on restore, and `intersecting` still holds whatever it held at
+  // pagehide — so without this the heartbeat kept banking dwell for sections the
+  // visitor had scrolled far past, forever, while the observer that could have
+  // corrected them had been disconnected. Freeze the clocks instead, and only
+  // tear down for real when the page is genuinely going away.
+  let frozen = false;
+  const onPageHide = (event?: { persisted?: boolean }): void => {
+    emit(); // bank whatever is measured either way
+    if (event?.persisted) {
+      frozen = true; // bfcache: keep the observer, stop counting
+      return;
+    }
     try { observer.disconnect(); } catch { /* ignore */ }
+  };
+  const onPageShow = (event?: { persisted?: boolean }): void => {
+    if (!event?.persisted || !frozen) return;
+    frozen = false;
+    // The observer stayed connected, so it will correct `intersecting` for
+    // anything that moved. Restart clocks only for what is on screen NOW.
+    const now = Date.now();
+    for (const s of state.values()) s.enterAt = s.intersecting && !doc.hidden ? now : null;
   };
   doc.addEventListener('visibilitychange', onVisibility);
   const win = doc.defaultView ?? (typeof window !== 'undefined' ? window : undefined);
   win?.addEventListener('pagehide', onPageHide);
+  win?.addEventListener('pageshow', onPageShow);
+
+  // See HEARTBEAT_MS: bank visible dwell periodically so a hard close (or a
+  // mobile page kill) loses at most one interval instead of the whole visit.
+  // Hidden tabs skip the emit — their clock is already paused, and an empty
+  // state map makes emit a no-op anyway.
+  const heartbeat = setInterval(() => {
+    if (doc.hidden || frozen) return;
+    emit();
+    // emit() pauses every running clock and only the tab-show handler restarts
+    // them — here the page never went hidden, so restart the clock ourselves
+    // or accumulation silently stops after the first heartbeat.
+    const now = Date.now();
+    for (const s of state.values()) if (s.intersecting) s.enterAt = now;
+  }, HEARTBEAT_MS);
 
   // Per-section micro-signal detectors (opt-in; see EngagementCaptureOptions).
   // Attributed to the section's nc-<type> id with no variant — they feed the
@@ -207,8 +264,10 @@ export function startEngagementCapture(
   // / consent re-init must not leak observers or listeners).
   return () => {
     emit();
+    clearInterval(heartbeat);
     doc.removeEventListener('visibilitychange', onVisibility);
     win?.removeEventListener('pagehide', onPageHide);
+    win?.removeEventListener('pageshow', onPageShow);
     for (const c of detectorCleanups) c();
     try { observer.disconnect(); } catch { /* ignore */ }
   };

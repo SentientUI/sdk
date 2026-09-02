@@ -1,5 +1,203 @@
 # @sentientui/snippet
 
+## 0.17.2
+
+### Patch Changes
+
+- 2f5d3ac: Editor and preview modes no longer strand the page's `SentientSnippet` API.
+  Those paths returned before the runtime global was exposed, leaving the
+  build-time module exports in its place — so merchant code calling
+  `SentientSnippet.goal(...)` threw, and conversions queued on a pre-boot stub
+  were never drained. The modes still suppress all tracking: the API they expose
+  now is a no-op surface (no client behind it), and the pre-boot queue drains
+  harmlessly into it instead of replaying into a later real visit.
+- 2f5d3ac: `revokeConsent()` followed by `grantConsent()` no longer kills tracking until a
+  reload. Revoke destroys the core client — which also deletes its registry
+  entry — but the snippet kept pointing at the dead client, so a later grant
+  warned "called before init()" and wired capture and the page API to a client
+  that records nothing, with no visible error. Grant after a revoke now
+  re-initialises a fresh, consented client and re-wires the visit's served goal
+  listeners to it. The fresh client deliberately means a fresh visitor identity:
+  revocation cleared the identity cookie because forgetting the visitor is the
+  point of revoking, so resuming must not resurrect the severed id.
+- 2f5d3ac: The scroll_depth goal listener now actually removes itself once every scroll
+  goal has fired. The self-removal check compared bare goal ids against a set
+  that only ever holds composite wiring keys, so the condition was always false
+  and the handler kept running on every scroll for the rest of the page's life.
+  Dedupe behaviour is unchanged — this only stops the leaked work.
+
+## 0.17.1
+
+### Patch Changes
+
+- 625aa97: Closes the remaining open items from the August audit.
+
+  **Crawlers no longer see the hidden-arm DOM.** Composition Blocks pre-render
+  every arm hidden in the container with the merchant's own children set to
+  `display:none` — hidden duplicate text over real content, on the customer's
+  domain. The automation flag has existed on `sessions` since the agentic layer
+  shipped but `/v1/decide` never consulted it; it does now, withholding block
+  trees entirely from automation sessions so a crawler indexes the merchant's own
+  markup. The snippet checks `navigator.webdriver` and the crawler UA tokens as
+  well, for the SSR and snapshot paths that never got a session. This is the
+  composition spec's §12 hard stop, which was documented as holding and did not.
+
+  **The SQL suite can now fail a release.** `*.integration.test.ts` files skip
+  silently without `TEST_PG_URL`, and the CI job that set it (`e2e`) is
+  deliberately not a deploy dependency — so the close-out worker, the strict-order
+  funnel logic and the window resolver were covered by tests that gated nothing. A
+  new `db-test` job runs migrations and the integration suites against a real
+  Postgres, `deploy-api` depends on it, and it asserts the suites actually exist so
+  an empty filter can never pass as green. `e2e` keeps its browser suite and stays
+  out of the deploy path.
+
+  **CONTRACTS.md's own promise is now true.** Its preamble says every constant in
+  it is asserted by a test; that was false for §5 and §6, whose serving TTLs and
+  winner-exposure floor were module-private. They are exported and pinned in
+  `contracts-pins.test.ts`. The persona vocabulary cache also drops from 60s to
+  10s, matching the promotion/exclusion caches — while it was stale, another
+  instance kept resolving a RETIRED key and writing decision rows under it, and
+  close-out trusts those verbatim.
+
+  **Late conversions credit the cells the trial was actually credited under**
+  (migration 118). The correction re-derived the persona from the session's
+  CURRENT state, but personas drift routinely between the two passes — so a
+  session closed as `unknown` could later read as `buyer` and push reward onto
+  cells other traffic had created. `updateOnly` prevented minting a cell, not
+  crediting an unrelated one (CONTRACTS §2). The slot path never had this bug
+  because `slot_decisions.persona` records the decision-time persona; this is the
+  variant path's equivalent.
+
+  **A visitor's second purchase records** (migration 119). A unique index keyed on
+  `(session, component, goal_type)` discarded it at ingest while still answering
+  202, so the SDK purged it from the retry bucket and funnels, revenue and lift
+  never saw it. The primary key on the client-generated event id already provides
+  exact retry dedupe, and close-out caps reward per session-arm, so this adds
+  reporting truth without touching optimizer credit (CONTRACTS §1).
+
+  **A failed session upsert no longer silently costs the whole visit.** The
+  session row is a precondition for every conversion — `/v1/goals` answers 400
+  without it, and the durable queue treats a 4xx as terminal. `/v1/sessions`
+  carries the same per-IP limiter, so under shared egress the session call 429s
+  first and every conversion after it was dropped for good. It now retries with
+  backoff and says so if it gives up.
+
+  **Discovered-audience assignment.** One `unnest` upsert per project instead of a
+  round trip per session under the global discovery lock (it re-assigned the same
+  48h window hourly). Assignment confidence is rescaled from its natural [0.5, 1]
+  margin onto [0, 1], so the `>= 0.3` personalization gate — calibrated for
+  reliability score — actually bites instead of passing everything. Assignments
+  are cleared when a shadow set is refit in place or rolled back, because
+  migration 116's assumption that `set_id` distinguishes fits does not hold.
+
+  **Also:** presets clamp to the plan's retention and say so via
+  `clampedToRetention`, instead of reporting a 90-day window over 30 days of
+  surviving data; a slot save that omits `goal` keeps the existing binding rather
+  than silently clearing it; the arrangement picker suffixes a colliding slot id
+  instead of overwriting the existing component; and the core bundle budget moves
+  one step to 13 KiB for the delivery-guarantee fixes, with the reasoning recorded
+  in `size-check.ts`.
+
+- 625aa97: Second pass over the August audit — the abuse, availability and
+  silently-wrong-surface findings.
+
+  **A deleted composition slot left the merchant's own section hidden.** Blocks
+  apply pre-paint from the snapshot, which hides the container's real children,
+  but the only code that un-hid them ran inside the apply path — reached only
+  while the decide response still carried `blocks` for that slot. Archiving a
+  composition slot therefore showed a returning visitor the deleted experiment's
+  arrangement with the merchant's hero `display:none` for the whole page view,
+  self-healing only on the next visit; a decide timeout wedged it the same way.
+  Containers we are no longer serving are now swept back by attribute, including
+  when the response carries no slot config at all.
+
+  **A back-navigation invented dwell forever.** `pagehide` disconnected the
+  IntersectionObserver regardless of `event.persisted` and nothing re-observed on
+  restore, while the heartbeat kept firing — so after a bfcache restore every
+  section kept the `intersecting` it held at freeze and banked dwell indefinitely
+  for content the visitor had scrolled far past, with the observer that could have
+  corrected it already gone. The page now freezes its clocks and resumes on
+  `pageshow`.
+
+  **One tenant could spray persona values and serialize the database.** Each
+  distinct declared value became its own awaited upsert carrying an `EXISTS` and a
+  `COUNT(DISTINCT)` subquery, so one cheap public request mapped to roughly one
+  serialized write; the buffer cap was global, so a single noisy project silently
+  evicted everyone else's counts. Flushes are now one statement per project, the
+  distinct cap is enforced in-process as well as in SQL, and the cap is per
+  project.
+
+  **Declared personas are validated at ingest.** `sessions.declared_persona` and
+  the unrecognized-value counter (rendered verbatim in Settings) stored whatever
+  the browser sent, so a customer wiring `persona={user.email}` filed real
+  addresses in both with no erasure path. Values that could not BE a key are now
+  refused; a plain typo still counts, so the "add it?" nudge is unaffected.
+
+  **A single authenticated GET could OOM the API.** Nothing clamped a custom
+  window's end, and `/agent-activity/summary` had no validation, no retention
+  check and closed `BETWEEN` bounds while stepping a per-day `generate_series` —
+  `to=9999-12-31` asked Postgres for millions of rows. Window ends are clamped to
+  today (so retention already bounds every span), and that endpoint now uses the
+  shared resolver like every other reporting surface.
+
+  **`slot-trends` silently ignored the window it was handed.** The proxy was
+  taught to forward `range`/`from`/`to` into a handler that had no querystring and
+  hardcoded 7/14 days, so picking 90d showed 14 days labelled 90d. Momentum is now
+  this window versus the equal window before it, bucketed in the project's
+  timezone, with a `window` echo.
+
+  **Prompt injection reachable with a publishable key.** `variant_id` arrives on
+  the public ingest path unvalidated and was interpolated raw into the narrator
+  prompt, whose output reaches operators via the API and MCP — and the job now
+  runs unattended rather than on a click. Identifiers are sanitized and the lists
+  capped.
+
+  **Also:** the snippet's goal-dedupe key is namespaced per project (it was the
+  one browser key that wasn't, so two projects on one origin suppressed each
+  other's goals) and keyed on the full wiring rather than the goal id alone;
+  a dropped goal is reported in production, not only under `debug`; `/v1/goals`
+  clamps an out-of-range weight instead of 400ing it, matching `/v1/events` (a
+  4xx is terminal to the durable queue); the declare-winner pin is written with
+  `jsonb_set` so concurrent pins stop clobbering each other; `declare_winner`
+  appears in the performance timeline and reads as a sentence in slot history;
+  A/B mode is refused on dimension slots, where the readout is structurally always
+  empty; an A/B slot without a readout says so instead of borrowing the bandit's
+  confidence copy; the persona member cap can no longer be walked past by
+  reactivating retired members; MCP labels windows in the project's timezone,
+  forwards a `to`-only window, and explains 403 plan gates as plan limits rather
+  than access problems; the date picker caps at today in the project's timezone
+  and every picker now gets the retention floor from the shared provider rather
+  than losing it on the first failed request; and the components stream stops
+  reconnecting forever after a rejected window.
+
+## 0.17.0
+
+### Minor Changes
+
+- 28352a0: Composition Blocks, Phase 1 (Track B2 — spec 2026-08-20 §4/§6).
+
+  Core exports the Composition Block schema: a bounded, typed component tree (`stack`, `grid`, `text`, `heading`, `button`, `link`, `image`, `badge`, `spacer`) whose every prop is an enumerated token — never HTML, never raw CSS. Registry arms may carry a `blocks` tree in `published_config`; the server total-validates each tree at publish (node vocabulary, tokens, https-only URLs, required alt text, depth/node/children caps, ≤ 4 arms with blocks per slot) and serves ALL arms' trees in `slotConfig.blocks` — holdout sessions receive the baseline arm's tree only.
+
+  The snippet renders trees via `createElement` exclusively (no sanitizer because no HTML is ever accepted) using Option B: every arm pre-renders hidden inside the slot container, the served arm is revealed by arm id, and the container's original children are stashed/restored exactly — so structural variants are pre-paint safe and a stale snapshot's reveal is corrected by a toggle, not a re-render. Always-on bundle re-baselined 18 → 20 KiB gzip for the renderer (measured 19,558; documented in size-check.ts).
+
+  Grids render responsive by construction: `auto-fit` columns with an exact cap at the declared count, collapsing on narrow screens — arrangements never author breakpoints.
+
+  No editor yet — arms are authored via the slot-definitions API (the v1 arrangement catalog ships server-side: list + instantiate under mgmt `composition-arrangements`).
+
+  Palette derivation ("derived, not chosen"): the on-site editor overlay samples the site's dominant button look (background, text color, radius) on each open and stores it server-side; registry decisions carrying blocks serve it back, the snapshot caches it, and the renderer brands `emphasis: 'primary'` buttons and corner radius from it — neutral inherit-first defaults when no palette is stored.
+
+- 47584a5: Snippet section reordering (Track B1.1) and vocabulary-validated persona preview (B1.2).
+
+  `window.sentient.sections: ['#hero', '#pricing', '#faq']` declares the page sections eligible for adaptive reordering, as CSS selectors in the theme's natural order — mirroring the React `sections` prop. Selectors that resolve on the page ride the existing decide call, and the served `layoutOrder` is applied only under fail-safe bounds: every id must resolve to exactly one element, all elements must share one parent, and the order must be a permutation of what can move — anything else applies nothing, silently. Return visits pre-paint the last served order from the local snapshot (bounded against the current DOM), so a learned layout doesn't flash natural-order first.
+
+  The `?sentient_persona=` preview banner now trusts the server's vocabulary echo: a recognized key shows its display name; an unrecognized value says "isn't in your personas — showing the default experience" instead of claiming a persona `/v1/explain` never simulated.
+
+## 0.16.1
+
+### Patch Changes
+
+- 5bae186: Document the declared-persona surface shipped in the previous release: `init({ persona })`, the `persona` prop on `<AdaptiveRoot>`/`<AdaptiveProvider>`, and `window.sentient.persona` (string or function form) now appear in each package README, and the MCP integration guide explains per-project persona vocabularies and declaration instead of the old fixed four-persona list.
+
 ## 0.16.0
 
 ### Minor Changes

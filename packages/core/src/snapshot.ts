@@ -4,6 +4,7 @@
  * framework code runs) and by init() to seed slot/persona state.
  */
 import type { SlotResult } from './slots.js';
+import type { BlockNode, SitePalette } from './blocks.js';
 
 export const SNAPSHOT_STORAGE_KEY_PREFIX = '_snt_snap:';
 
@@ -44,6 +45,11 @@ export type SlotConfigEntry = {
   locator?: CompoundLocator;
   content?: string;
   ops?: SlotOps;
+  /** Composition Blocks per arm — ALL arms, not just the served one, because
+   *  Option-B rendering pre-paints every arm hidden and reveals the served one
+   *  (spec §6). Holdout sessions receive the baseline arm's tree only, so the
+   *  control group's DOM stays meaningful. Absent for non-composition slots. */
+  blocks?: Record<string, BlockNode>;
 };
 
 export type DecisionSnapshot = {
@@ -57,6 +63,10 @@ export type DecisionSnapshot = {
   // would flush every returning visitor's snapshot and flash the baseline once).
   // Present only for registry-mode (no-code) installs.
   slotConfig?: Record<string, SlotConfigEntry>;
+  /** Derived site palette for Composition Block rendering — cached so the
+   *  pre-paint render already looks native (a palette that pops in post-decide
+   *  would be its own flash). */
+  palette?: SitePalette;
 };
 
 const BANDS = ['low', 'medium', 'high'];

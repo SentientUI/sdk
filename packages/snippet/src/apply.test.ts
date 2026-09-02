@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { applyPersonaAttributes, applySlotAttributes, applySlotArms, applyRegistrySlots } from './apply';
 import { resetOpsSheet } from './ops';
 
@@ -266,5 +266,38 @@ describe('applyRegistrySlots onApplied (per-option behavior signals)', () => {
       { onApplied: (slotId) => applied.push(slotId) },
     );
     expect(applied).toEqual([]);
+  });
+});
+
+describe('crawlers never see the hidden-arm DOM (composition spec §12)', () => {
+  // Option B pre-renders every arm hidden and sets the merchant's own children
+  // to display:none. Indexed by a JS-rendering crawler that is hidden duplicate
+  // text over real content — a cloaking signal on the CUSTOMER's domain.
+  const BLOCKS_CFG = {
+    hero: {
+      kind: 'arms' as const,
+      target: '#hero',
+      blocks: { a: { type: 'stack' as const, direction: 'column' as const, children: [{ type: 'heading' as const, level: 2 as const, value: 'Variant' }] } },
+    },
+  };
+
+  afterEach(() => {
+    Object.defineProperty(window.navigator, 'webdriver', { value: undefined, configurable: true });
+  });
+
+  it('applies blocks for an ordinary visitor', () => {
+    document.body.innerHTML = '<section id="hero"><h1 id="real">Real</h1></section>';
+    applyRegistrySlots({ hero: 'a' }, BLOCKS_CFG, document);
+    expect(document.querySelector('[data-sentient-block-arm]')).toBeTruthy();
+    expect((document.getElementById('real') as HTMLElement).style.display).toBe('none');
+  });
+
+  it('leaves the page untouched when navigator.webdriver is set', () => {
+    document.body.innerHTML = '<section id="hero"><h1 id="real">Real</h1></section>';
+    Object.defineProperty(window.navigator, 'webdriver', { value: true, configurable: true });
+    applyRegistrySlots({ hero: 'a' }, BLOCKS_CFG, document);
+    expect(document.querySelector('[data-sentient-block-arm]')).toBeNull();
+    // The merchant's own content is what gets indexed.
+    expect((document.getElementById('real') as HTMLElement).style.display).toBe('');
   });
 });

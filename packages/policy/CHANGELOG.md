@@ -1,5 +1,91 @@
 # @sentientui/policy
 
+## 0.6.2
+
+### Patch Changes
+
+- 625aa97: Second pass over the August audit — the abuse, availability and
+  silently-wrong-surface findings.
+
+  **A deleted composition slot left the merchant's own section hidden.** Blocks
+  apply pre-paint from the snapshot, which hides the container's real children,
+  but the only code that un-hid them ran inside the apply path — reached only
+  while the decide response still carried `blocks` for that slot. Archiving a
+  composition slot therefore showed a returning visitor the deleted experiment's
+  arrangement with the merchant's hero `display:none` for the whole page view,
+  self-healing only on the next visit; a decide timeout wedged it the same way.
+  Containers we are no longer serving are now swept back by attribute, including
+  when the response carries no slot config at all.
+
+  **A back-navigation invented dwell forever.** `pagehide` disconnected the
+  IntersectionObserver regardless of `event.persisted` and nothing re-observed on
+  restore, while the heartbeat kept firing — so after a bfcache restore every
+  section kept the `intersecting` it held at freeze and banked dwell indefinitely
+  for content the visitor had scrolled far past, with the observer that could have
+  corrected it already gone. The page now freezes its clocks and resumes on
+  `pageshow`.
+
+  **One tenant could spray persona values and serialize the database.** Each
+  distinct declared value became its own awaited upsert carrying an `EXISTS` and a
+  `COUNT(DISTINCT)` subquery, so one cheap public request mapped to roughly one
+  serialized write; the buffer cap was global, so a single noisy project silently
+  evicted everyone else's counts. Flushes are now one statement per project, the
+  distinct cap is enforced in-process as well as in SQL, and the cap is per
+  project.
+
+  **Declared personas are validated at ingest.** `sessions.declared_persona` and
+  the unrecognized-value counter (rendered verbatim in Settings) stored whatever
+  the browser sent, so a customer wiring `persona={user.email}` filed real
+  addresses in both with no erasure path. Values that could not BE a key are now
+  refused; a plain typo still counts, so the "add it?" nudge is unaffected.
+
+  **A single authenticated GET could OOM the API.** Nothing clamped a custom
+  window's end, and `/agent-activity/summary` had no validation, no retention
+  check and closed `BETWEEN` bounds while stepping a per-day `generate_series` —
+  `to=9999-12-31` asked Postgres for millions of rows. Window ends are clamped to
+  today (so retention already bounds every span), and that endpoint now uses the
+  shared resolver like every other reporting surface.
+
+  **`slot-trends` silently ignored the window it was handed.** The proxy was
+  taught to forward `range`/`from`/`to` into a handler that had no querystring and
+  hardcoded 7/14 days, so picking 90d showed 14 days labelled 90d. Momentum is now
+  this window versus the equal window before it, bucketed in the project's
+  timezone, with a `window` echo.
+
+  **Prompt injection reachable with a publishable key.** `variant_id` arrives on
+  the public ingest path unvalidated and was interpolated raw into the narrator
+  prompt, whose output reaches operators via the API and MCP — and the job now
+  runs unattended rather than on a click. Identifiers are sanitized and the lists
+  capped.
+
+  **Also:** the snippet's goal-dedupe key is namespaced per project (it was the
+  one browser key that wasn't, so two projects on one origin suppressed each
+  other's goals) and keyed on the full wiring rather than the goal id alone;
+  a dropped goal is reported in production, not only under `debug`; `/v1/goals`
+  clamps an out-of-range weight instead of 400ing it, matching `/v1/events` (a
+  4xx is terminal to the durable queue); the declare-winner pin is written with
+  `jsonb_set` so concurrent pins stop clobbering each other; `declare_winner`
+  appears in the performance timeline and reads as a sentence in slot history;
+  A/B mode is refused on dimension slots, where the readout is structurally always
+  empty; an A/B slot without a readout says so instead of borrowing the bandit's
+  confidence copy; the persona member cap can no longer be walked past by
+  reactivating retired members; MCP labels windows in the project's timezone,
+  forwards a `to`-only window, and explains 403 plan gates as plan limits rather
+  than access problems; the date picker caps at today in the project's timezone
+  and every picker now gets the retention floor from the shared provider rather
+  than losing it on the first failed request; and the components stream stops
+  reconnecting forever after a rejected window.
+
+## 0.6.1
+
+### Patch Changes
+
+- 47584a5: Snippet section reordering (Track B1.1) and vocabulary-validated persona preview (B1.2).
+
+  `window.sentient.sections: ['#hero', '#pricing', '#faq']` declares the page sections eligible for adaptive reordering, as CSS selectors in the theme's natural order — mirroring the React `sections` prop. Selectors that resolve on the page ride the existing decide call, and the served `layoutOrder` is applied only under fail-safe bounds: every id must resolve to exactly one element, all elements must share one parent, and the order must be a permutation of what can move — anything else applies nothing, silently. Return visits pre-paint the last served order from the local snapshot (bounded against the current DOM), so a learned layout doesn't flash natural-order first.
+
+  The `?sentient_persona=` preview banner now trusts the server's vocabulary echo: a recognized key shows its display name; an unrecognized value says "isn't in your personas — showing the default experience" instead of claiming a persona `/v1/explain` never simulated.
+
 ## 0.6.0
 
 ### Minor Changes

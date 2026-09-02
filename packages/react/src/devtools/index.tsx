@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useReducer, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { PERSONAS, PERSONA_DISPLAY, confidenceBand } from '@sentientui/policy';
-import { SNAPSHOT_STORAGE_KEY_PREFIX } from '@sentientui/core';
+import { LEGACY_SESSION_COOKIE_NAME, SNAPSHOT_STORAGE_KEY_PREFIX, sessionCookieName } from '@sentientui/core';
 import {
   getRegistered,
   getRegisteredSlots,
@@ -88,14 +88,20 @@ function applyOutcome(result: OutcomeToApply): void {
   notifyOverridesChanged(); // re-render layout/slot consumers
 }
 
-function readSessionId(): string {
-  try {
-    const match = document.cookie.match(/(?:^|; )_snt_uid=([^;]*)/);
-    if (match) return decodeURIComponent(match[1]);
-  } catch {
-    /* ignore */
-  }
-  return 'devtools-preview';
+// Reads the SDK's own session cookie — the per-project SUFFIXED name first
+// (that is what the client writes since namespacing; the bare `_snt_uid` this
+// used to read is only written in keyless/local mode), then the bare name as
+// the legacy/local fallback.
+function readSessionId(apiKey?: string): string {
+  const read = (name: string): string | null => {
+    try {
+      const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+      return match ? decodeURIComponent(match[1]!) : null;
+    } catch {
+      return null;
+    }
+  };
+  return (apiKey ? read(sessionCookieName(apiKey)) : null) ?? read(LEGACY_SESSION_COOKIE_NAME) ?? 'devtools-preview';
 }
 
 function slotDecls(): Array<{ id: string; arms?: string[]; dims?: RegisteredSlot['dims'] }> {
@@ -127,11 +133,11 @@ async function forcePersonaKeyed(apiKey: string, apiBaseUrl: string, persona: st
 }
 
 /** Local mode: simulate via the deterministic local engine — zero network. */
-async function forcePersonaLocal(persona: string): Promise<void> {
+async function forcePersonaLocal(persona: string, apiKey?: string): Promise<void> {
   const mod = await import('@sentientui/core/local');
   if (!mod.LOCAL_ENGINE_AVAILABLE) return;
   const outcome = mod
-    .createLocalEngine({ sessionId: readSessionId(), forcedPersona: persona })
+    .createLocalEngine({ sessionId: readSessionId(apiKey), forcedPersona: persona })
     .decide({
       sections: getRegisteredSections(),
       components: getRegistered().map((c) => ({ id: c.id, variantIds: c.variantIds })),
@@ -299,7 +305,7 @@ export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Elem
   function choosePersona(persona: string): void {
     setActivePersona(persona);
     const apply = useLocalEngine
-      ? forcePersonaLocal(persona)
+      ? forcePersonaLocal(persona, config.apiKey)
       : forcePersonaKeyed(config.apiKey, config.apiBaseUrl, persona);
     void apply.then(force);
   }

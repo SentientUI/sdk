@@ -49,6 +49,7 @@ export type {
 export { sanitizePageUrl } from './graph.js';
 
 import { init as initLean, isDoNotTrackEnabled, type SentientConfig, type SentientClient } from './index.js';
+import { LEGACY_SESSION_COOKIE_NAME, sessionCookieName } from './storage-key.js';
 
 const DEFAULT_INGEST_URL = 'https://api.sentient-ui.com/v1/events';
 import { createDOMScanner } from './scanner.js';
@@ -69,13 +70,22 @@ export type GraphSentientConfig = SentientConfig & {
   captureDomText?: boolean;
 };
 
-function readSntUid(): string | undefined {
-  try {
-    const m = document.cookie.match(/(?:^|; )_snt_uid=([^;]*)/);
-    return m ? decodeURIComponent(m[1]) : undefined;
-  } catch {
-    return undefined;
-  }
+// The client writes the per-project SUFFIXED cookie (sessionCookieName in
+// storage-key.ts). This reader kept the bare `_snt_uid` after namespacing
+// landed, so graph sync sent `sessionId: undefined` for every keyed project.
+// The bare name stays as a fallback for pre-namespacing identities.
+function readSntUid(apiKey?: string): string | undefined {
+  const read = (name: string): string | undefined => {
+    try {
+      // Cookie names are `_snt_uid` + `_` + a pk_ key prefix — no regex
+      // metacharacters, so interpolation is safe (same pattern as session.ts).
+      const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+      return m ? decodeURIComponent(m[1]!) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  return (apiKey ? read(sessionCookieName(apiKey)) : undefined) ?? read(LEGACY_SESSION_COOKIE_NAME);
 }
 
 /**
@@ -125,7 +135,7 @@ export function init(config: GraphSentientConfig): SentientClient {
     syncUrl: resolvedIngestUrl.replace(/\/events\/?$/, '/graph/sync'),
     apiKey: config.apiKey,
     projectId: config.apiKey,
-    sessionId: readSntUid(),
+    sessionId: readSntUid(config.apiKey),
   });
 
   // Persisted page-node state from a previous page load is restored by the graph

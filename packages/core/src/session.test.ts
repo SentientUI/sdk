@@ -39,6 +39,12 @@ describe('initSession', () => {
   });
 
   it('namespaces the visitor id per project so two keys on one origin do not collide', () => {
+    // Clear any bare legacy identity first: keyed init deliberately ADOPTS a
+    // pre-namespacing `_snt_uid` (rollout continuity — see initSession), and a
+    // leftover cookie from an earlier unkeyed test would make both projects
+    // adopt the same id, which is not what this asserts.
+    document.cookie = '_snt_uid=; max-age=0; path=/';
+    sessionStorage.clear();
     // apiKeys < 12 chars so slice(0,12) is the whole key (stable assertion).
     const a = initSession({ apiKey: 'pk_projectA' }).getSessionId();
     const b = initSession({ apiKey: 'pk_projectB' }).getSessionId();
@@ -50,6 +56,50 @@ describe('initSession', () => {
     expect(localStorage.getItem('_snt_uid')).toBeNull();
     // Re-init for the same project restores the same id.
     expect(initSession({ apiKey: 'pk_projectA' }).getSessionId()).toBe(a);
+  });
+
+  // The namespacing rollout must not reset existing visitors: an identity
+  // minted under the bare pre-namespacing names is adopted into the suffixed
+  // ones, or every returning visitor would look brand new (fresh session rows,
+  // sticky assignments and persona continuity lost) the day the SDK updated.
+  it('adopts a pre-namespacing bare identity into the suffixed keys', () => {
+    document.cookie = '_snt_uid=; max-age=0; path=/';
+    sessionStorage.clear();
+    document.cookie = '_snt_uid=legacy-visitor-id; path=/';
+    localStorage.setItem('_snt_uid', 'legacy-visitor-id');
+
+    const manager = initSession({ apiKey: 'pk_migrate' });
+    expect(manager.getSessionId()).toBe('legacy-visitor-id');
+    // Re-written under the project's own keys so the next visit reads them
+    // directly...
+    expect(localStorage.getItem('_snt_uid_pk_migrate')).toBe('legacy-visitor-id');
+    expect(document.cookie).toContain('_snt_uid_pk_migrate=legacy-visitor-id');
+    // ...but the legacy keys are left standing: deleting them would reset any
+    // OTHER project on this origin that hasn't migrated the id yet.
+    expect(localStorage.getItem('_snt_uid')).toBe('legacy-visitor-id');
+    manager.destroy();
+    document.cookie = '_snt_uid=; max-age=0; path=/';
+    localStorage.clear();
+  });
+
+  it('a suffixed identity beats the legacy one when both exist', () => {
+    document.cookie = '_snt_uid=stale-legacy-id; path=/';
+    document.cookie = '_snt_uid_pk_both=own-id; path=/';
+    const manager = initSession({ apiKey: 'pk_both' });
+    expect(manager.getSessionId()).toBe('own-id');
+    manager.destroy();
+    document.cookie = '_snt_uid=; max-age=0; path=/';
+  });
+
+  it('an explicit cookieName never falls back to the bare legacy name', () => {
+    // The bare `_snt_uid` was never the custom-named caller's cookie, so
+    // adopting it would steal another integration's identity.
+    document.cookie = '_snt_uid=not-yours; path=/';
+    const manager = initSession({ apiKey: 'pk_custom', cookieName: 'my_uid' });
+    expect(manager.getSessionId()).not.toBe('not-yours');
+    manager.destroy();
+    document.cookie = '_snt_uid=; max-age=0; path=/';
+    document.cookie = 'my_uid=; max-age=0; path=/';
   });
 
   it('generates a valid RFC4122 v4 session ID when crypto.randomUUID is unavailable', () => {

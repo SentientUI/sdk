@@ -27,6 +27,12 @@ export type SnippetConfig = {
    *  the site's own session state). Unrecognized values are ignored
    *  server-side. Never a user id or email. */
   persona?: string;
+  /** Page sections eligible for adaptive reordering: CSS selectors listed in
+   *  the theme's natural order (mirrors the React `sections` prop). Selectors
+   *  that don't resolve are dropped from the decide request, not errored; the
+   *  returned order is applied only under the fail-safe bounds in index.ts
+   *  (applyLayoutOrder). */
+  sections?: string[];
   slots: Record<string, SnippetSlotDecl>;
 };
 
@@ -111,6 +117,15 @@ export function parseSnippetConfig(raw: unknown): SnippetConfig | null {
     typeof r.persona === 'function' ? safeCall(r.persona as () => unknown) : r.persona;
   if (typeof declaredPersona === 'string' && declaredPersona.trim() !== '') {
     cfg.persona = declaredPersona;
+  }
+  // Sections: non-empty selector strings only; fewer than two can't reorder,
+  // so a single entry is treated as undeclared. Capped at 50 like the server's
+  // decide schema, so an oversized list degrades instead of 400ing the decide.
+  if (Array.isArray(r.sections)) {
+    const sections = (r.sections as unknown[])
+      .filter((s): s is string => typeof s === 'string' && s.trim() !== '')
+      .slice(0, 50);
+    if (sections.length >= 2) cfg.sections = sections;
   }
 
   return cfg;

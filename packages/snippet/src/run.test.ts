@@ -387,6 +387,195 @@ describe('run — persona preview', () => {
       window.history.pushState({}, '', '/');
     }
   });
+
+  // Vocabulary echo (B1.2): the banner must never claim a persona the server
+  // didn't actually simulate — /v1/explain now resolves against the project
+  // vocabulary and echoes { personaDisplay, recognized }.
+  it('says so (and shows the typed value) when the server flags the persona as unrecognized', async () => {
+    window.history.pushState({}, '', '/?sentient_persona=staff');
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        slots: {},
+        persona: 'unknown',
+        recognized: false,
+        personaAttributes: { persona: 'unknown', confidence: 'low' },
+      }),
+    });
+    const origFetch = global.fetch;
+    global.fetch = fetchMock as never;
+    try {
+      (window as Window).sentient = CONFIG;
+      mockInit.mockReturnValue({ decide: vi.fn(), getPersona: vi.fn() } as never);
+
+      await run();
+
+      const banner = document.getElementById('sentient-persona-preview-banner');
+      expect(banner).not.toBeNull();
+      // Quotes what was TYPED (the fix target: previously showed a cosmetic
+      // "Staff" while simulating 'unknown'), and says the page is the default.
+      expect(banner!.textContent).toContain('staff');
+      expect(banner!.textContent).toContain('isn’t in your personas');
+      expect(banner!.textContent).not.toContain('Previewing as');
+      // The default experience the server simulated is still applied.
+      expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('unknown');
+    } finally {
+      global.fetch = origFetch;
+      window.history.pushState({}, '', '/');
+    }
+  });
+
+  it('prefers the server display name for a recognized persona', async () => {
+    window.history.pushState({}, '', '/?sentient_persona=admin');
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        slots: {},
+        persona: 'admin',
+        personaDisplay: 'Admin Team',
+        recognized: true,
+        personaAttributes: { persona: 'admin', confidence: 'high' },
+      }),
+    });
+    const origFetch = global.fetch;
+    global.fetch = fetchMock as never;
+    try {
+      (window as Window).sentient = CONFIG;
+      mockInit.mockReturnValue({ decide: vi.fn(), getPersona: vi.fn() } as never);
+
+      await run();
+
+      const banner = document.getElementById('sentient-persona-preview-banner');
+      expect(banner!.textContent).toContain('Previewing as Admin Team');
+    } finally {
+      global.fetch = origFetch;
+      window.history.pushState({}, '', '/');
+    }
+  });
+});
+
+describe('run — section reordering (B1.1)', () => {
+  const SECTIONS = ['#s1', '#s2', '#s3'];
+
+  function sectionsDom(): void {
+    document.body.innerHTML =
+      '<main><section id="s1"></section><section id="s2"></section><section id="s3"></section></main>';
+  }
+  function order(): string[] {
+    return Array.from(document.querySelectorAll('section')).map((el) => el.id);
+  }
+  function client(layoutOrder: string[] | null) {
+    return {
+      decide: vi.fn().mockResolvedValue({
+        layoutOrder, assignments: {}, slots: {}, persona: 'buyer', confidence: 0.8,
+      }),
+      getPersona: vi.fn().mockReturnValue({ persona: 'buyer', confidence: 0.8, band: 'high' }),
+      goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(),
+    };
+  }
+
+  it('sends the resolved sections on decide and applies the returned order', async () => {
+    sectionsDom();
+    (window as Window).sentient = { apiKey: 'pk_test', registry: false, sections: SECTIONS };
+    const cl = client(['#s3', '#s1', '#s2']);
+    mockInit.mockReturnValue(cl as never);
+
+    await run();
+
+    expect(cl.decide).toHaveBeenCalledWith(expect.objectContaining({ sections: SECTIONS }));
+    expect(order()).toEqual(['s3', 's1', 's2']);
+    // The order is persisted for the next visit's pre-paint (the field is live now).
+    expect(readSnapshot('pk_test')!.layoutOrder).toEqual(['#s3', '#s1', '#s2']);
+  });
+
+  it('drops missing and ambiguous selectors; fewer than two left → no sections sent', async () => {
+    document.body.innerHTML =
+      '<main><section id="s1"></section><div class="dup"></div><div class="dup"></div></main>';
+    (window as Window).sentient = {
+      apiKey: 'pk_test', registry: false, sections: ['#s1', '.dup', '#missing'],
+      slots: { hero: { dims: { tone: ['calm', 'urgent'] } } },
+    };
+    const cl = client(null);
+    mockInit.mockReturnValue(cl as never);
+
+    await run();
+
+    expect((cl.decide.mock.calls[0]![0] as { sections?: string[] }).sections).toBeUndefined();
+  });
+
+  it('applies nothing when the returned order is not a permutation of the resolvable set', async () => {
+    sectionsDom();
+    (window as Window).sentient = { apiKey: 'pk_test', registry: false, sections: SECTIONS };
+    const cl = client(['#s3', '#s1']); // one section short — drifted server state
+    mockInit.mockReturnValue(cl as never);
+
+    await run();
+
+    expect(order()).toEqual(['s1', 's2', 's3']); // natural order stands
+  });
+
+  it('applies nothing when the sections do not share one parent', async () => {
+    document.body.innerHTML =
+      '<main><section id="s1"></section><section id="s2"></section></main>' +
+      '<aside><section id="s3"></section></aside>';
+    (window as Window).sentient = { apiKey: 'pk_test', registry: false, sections: SECTIONS };
+    const cl = client(['#s3', '#s2', '#s1']);
+    mockInit.mockReturnValue(cl as never);
+
+    await run();
+
+    expect(order()).toEqual(['s1', 's2', 's3']);
+  });
+
+  it('pre-paints the cached snapshot order even when decide never confirms it', async () => {
+    sectionsDom();
+    writeSnapshot('pk_test', {
+      v: 1, persona: 'buyer', band: 'high', slots: {},
+      layoutOrder: ['#s2', '#s3', '#s1'], savedAt: Date.now(),
+    } as never);
+    (window as Window).sentient = { apiKey: 'pk_test', registry: false, sections: SECTIONS };
+    mockInit.mockReturnValue({
+      decide: vi.fn().mockRejectedValue(new Error('decide offline')),
+      getPersona: vi.fn().mockReturnValue(null),
+      goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(),
+    } as never);
+
+    await run();
+
+    expect(order()).toEqual(['s2', 's3', 's1']); // no natural-order flash on return visits
+  });
+
+  it('a cached order that no longer matches the page/config applies nothing', async () => {
+    sectionsDom();
+    writeSnapshot('pk_test', {
+      v: 1, persona: 'buyer', band: 'high', slots: {},
+      layoutOrder: ['#s2', '#gone', '#s1'], savedAt: Date.now(),
+    } as never);
+    (window as Window).sentient = { apiKey: 'pk_test', registry: false, sections: SECTIONS };
+    mockInit.mockReturnValue({
+      decide: vi.fn().mockRejectedValue(new Error('decide offline')),
+      getPersona: vi.fn().mockReturnValue(null),
+      goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(),
+    } as never);
+
+    await run();
+
+    expect(order()).toEqual(['s1', 's2', 's3']);
+  });
+
+  it('reapply() restores the served order after a hydration wipe', async () => {
+    sectionsDom();
+    (window as Window).sentient = { apiKey: 'pk_test', registry: false, sections: SECTIONS };
+    const cl = client(['#s2', '#s1', '#s3']);
+    mockInit.mockReturnValue(cl as never);
+
+    await run();
+    expect(order()).toEqual(['s2', 's1', 's3']);
+
+    sectionsDom(); // hydration rebuilds the DOM in natural order
+    reapply();
+    expect(order()).toEqual(['s2', 's1', 's3']);
+  });
 });
 
 describe('parsePreview', () => {
@@ -616,5 +805,109 @@ describe('run — snapshot round-trip (pre-paint on return visit)', () => {
     expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('deal_seeker');
     expect(document.documentElement.getAttribute('data-sentient-confidence')).toBe('medium');
     expect(document.getElementById('hero')!.getAttribute('data-tone')).toBe('calm');
+  });
+});
+
+describe('run — revokeConsent then grantConsent resumes tracking', () => {
+  // revokeConsent() destroys the core client, which deletes its registry
+  // entry; the snippet then kept pointing capture and the page API at the dead
+  // client, so grantConsent() warned "called before init()" and recorded zero
+  // events with no visible error until a full reload. Grant after revoke must
+  // re-init a FRESH consented client (revoke deliberately forgot the visitor,
+  // so a new identity is minted — that severing is the point of revocation).
+  it('re-inits a fresh consented client and goals record again', async () => {
+    (window as Window).sentient = { apiKey: 'pk_test' }; // registry mode
+    document.body.innerHTML = '<a id="cta">Book</a>';
+    const firstGoal = vi.fn();
+    const destroy = vi.fn();
+    mockInit.mockReturnValueOnce({
+      decide: vi.fn().mockResolvedValue({
+        layoutOrder: null, assignments: {}, slots: {}, persona: 'unknown', confidence: 0,
+        goals: [{ goalId: 'demo', event: 'click', locator: { id: 'cta' } }],
+      }),
+      getPersona: vi.fn().mockReturnValue(null),
+      goal: firstGoal, componentGoal: vi.fn(), destroy,
+    } as never);
+    const secondGoal = vi.fn();
+    mockInit.mockReturnValueOnce({
+      decide: vi.fn(), getPersona: vi.fn().mockReturnValue(null),
+      goal: secondGoal, componentGoal: vi.fn(), destroy: vi.fn(),
+    } as never);
+
+    await run();
+    const api = (window as unknown as {
+      SentientSnippet: { revokeConsent(): void; grantConsent(): void; goal(n: string): void };
+    }).SentientSnippet;
+
+    api.revokeConsent();
+    expect(destroy).toHaveBeenCalledTimes(1);
+
+    api.grantConsent();
+    // A fresh init with consent granted — not an upgrade of the dead client.
+    expect(mockInit).toHaveBeenCalledTimes(2);
+    expect(mockInit.mock.calls[1]![0]).toMatchObject({ apiKey: 'pk_test', consent: true });
+
+    // The page API records through the NEW client…
+    api.goal('purchase');
+    expect(secondGoal).toHaveBeenCalledWith('purchase', undefined);
+    expect(firstGoal).not.toHaveBeenCalled();
+
+    // …and the editor-defined goal listeners are re-wired to it too (they were
+    // torn down by revoke; the served decision is re-used, never re-decided).
+    document.getElementById('cta')!.dispatchEvent(new Event('click', { bubbles: true }));
+    expect(secondGoal).toHaveBeenCalledWith('demo');
+  });
+
+  it('grantConsent never mints a tracking client when none was ever created', async () => {
+    // Preview mode exposes the API with no client. grant there must stay a
+    // no-op (those modes promise zero tracking), not re-init.
+    window.history.pushState({}, '', '/?sentient_preview=hero:tone=urgent');
+    try {
+      await run();
+      const api = (window as unknown as { SentientSnippet: { grantConsent(): void } }).SentientSnippet;
+      api.grantConsent();
+      expect(mockInit).not.toHaveBeenCalled();
+    } finally {
+      window.history.pushState({}, '', '/');
+    }
+  });
+});
+
+describe('run — editor/preview modes still expose the page API (stranded global)', () => {
+  // Those paths returned before exposeGlobal(), leaving the build-time module
+  // exports as the global: merchant code calling SentientSnippet.goal(...)
+  // threw, and the pre-boot stub queue was never drained. The modes suppress
+  // tracking, so the exposed API is a no-op surface — but it must EXIST.
+  it('editor mode exposes a callable no-op SentientSnippet', async () => {
+    window.history.pushState({}, '', '/?sentient_editor=tok123');
+    try {
+      (window as Window).sentient = { apiKey: 'pk_test' };
+      await run();
+      expect(mockInit).not.toHaveBeenCalled();
+      const api = (window as unknown as {
+        SentientSnippet: { goal(n: string, o?: unknown): void; getState(): { apiKey: string } };
+      }).SentientSnippet;
+      expect(typeof api.goal).toBe('function');
+      expect(() => api.goal('purchase', { value: 10 })).not.toThrow();
+      expect(api.getState().apiKey).toBe('pk_test');
+    } finally {
+      sessionStorage.clear(); // drop the cached editor token for later tests
+      window.history.pushState({}, '', '/');
+    }
+  });
+
+  it('preview mode exposes a callable no-op SentientSnippet', async () => {
+    window.history.pushState({}, '', '/?sentient_preview=hero:tone=urgent');
+    try {
+      await run();
+      expect(mockInit).not.toHaveBeenCalled();
+      const api = (window as unknown as {
+        SentientSnippet: { goal(n: string): void };
+      }).SentientSnippet;
+      expect(typeof api.goal).toBe('function');
+      expect(() => api.goal('purchase')).not.toThrow();
+    } finally {
+      window.history.pushState({}, '', '/');
+    }
   });
 });

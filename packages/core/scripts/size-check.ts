@@ -40,7 +40,24 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // unanswerable — the bytes buy a capability that did not exist rather than a
     // refinement of one that did. Budget moves one step and no further.
     // Measured 11272.
-    limit: 12 * 1024,
+    //
+    // 13 KiB (was 12): the August audit fixes, 174 gzip bytes against 18 bytes
+    // of remaining headroom. Every one of them closes a path that silently LOST
+    // data rather than adding a capability:
+    //   - a conversion queued while backoff was armed never reached the durable
+    //     bucket, so a purchase firing moments after a rate-limited event died
+    //     on the checkout redirect (goal-queue.ts);
+    //   - drainBucket cleared storage before the send was acknowledged, so a
+    //     backlog larger than one flush was lost on the next unload;
+    //   - a bfcache restore kept banking dwell for sections the visitor had
+    //     scrolled past, with the observer that could correct it disconnected
+    //     (engagement/capture.ts);
+    //   - a failed session upsert made every later conversion 400, which the
+    //     queue treats as terminal — silently, and with no retry (index.ts).
+    // The same reasoning as the durable goal queue applies: the weight buys a
+    // delivery guarantee for revenue events, so it stays. Budget moves one step
+    // and no further. Measured 12270.
+    limit: 13 * 1024,
   },
   {
     name: '@sentientui/core/graph (additions only)',

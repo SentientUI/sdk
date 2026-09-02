@@ -1,7 +1,8 @@
-import { init, grantConsent as coreGrantConsent, isDoNotTrackEnabled, readSnapshot, writeSnapshot, type CompoundLocator, type SentientClient, type SlotConfigEntry } from '@sentientui/core';
+import { init, grantConsent as coreGrantConsent, isDoNotTrackEnabled, readSnapshot, writeSnapshot, type CompoundLocator, type GoalDefinition, type SentientClient, type SlotConfigEntry } from '@sentientui/core';
 import { startEngagementCapture, type SemanticType } from '@sentientui/core/engagement';
 import { parseSnippetConfig, type SnippetConfig } from './config';
 import { applyPersonaAttributes, applySlotAttributes, applySlotArms, applyRegistrySlots } from './apply';
+import { setBlockPalette, sweepOrphanBlocks } from './blocks';
 import { attachSlotSignals, type AppliedSlot } from './slot-signals';
 import { installGoalListeners, type GoalListeners } from './goal-wiring';
 import { resolveLocatorOne } from './locator';
@@ -48,9 +49,18 @@ let activeClient: SentientClient | null = null;
 let activeSlots: SlotResults = {};
 let activeSlotConfig: Record<string, SlotConfigEntry> | null = null;
 let goalListeners: GoalListeners | null = null;
+// The editor-defined goals served with this visit's decision. Kept so a
+// revoke→grant cycle can re-install the listeners it tore down — the decision
+// is locked for the visit, so re-wiring from this state is correct and a new
+// decide is not.
+let activeGoals: GoalDefinition[] | null = null;
 let slotSignalsCleanup: (() => void) | null = null;
 let sectionCaptureCleanup: (() => void) | null = null;
 let activePersona: { persona: string; band: Band } | null = null;
+// Served section order for this visit (config `sections`, B1.1). Seeded from
+// the snapshot pre-paint, overwritten by the authoritative decide; reapply()
+// re-applies it (bounded) after hydration wipes / SPA re-renders.
+let activeLayoutOrder: string[] | null = null;
 let spaHooksInstalled = false;
 let reapplyTimer: ReturnType<typeof setTimeout> | null = null;
 // Served, route-scoped section map (persona-coverage classification). Kept at
@@ -70,6 +80,11 @@ let decided = false;
 // flag lets the capture gate re-open the moment consent arrives, without a reload
 // (audit: grantConsent never started capture for consent-after-load visitors).
 let consentGranted = false;
+// True only between revokeConsent() and the next grantConsent()/run(). It is
+// what distinguishes "client destroyed by revocation, grant should re-init"
+// from "client never existed" (editor/preview modes expose the API with no
+// client, and grant must NOT mint a tracking client there).
+let consentRevoked = false;
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
   return Promise.race([p, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))]);
@@ -91,7 +106,70 @@ function applyAll(
   applySlotArms(activeSlots, activeCfg.slots, doc);
   // Registry-mode slots carry their own target/content (no page-declared decl).
   // Returns the slot ids whose locator found nothing (a health signal).
-  return activeSlotConfig ? applyRegistrySlots(activeSlots, activeSlotConfig, doc, opts) : [];
+  if (activeSlotConfig) return applyRegistrySlots(activeSlots, activeSlotConfig, doc, opts);
+  // No registry config at all: the project reverted to code-declared slots, or
+  // decide answered without one. A pre-paint pass may still have applied blocks
+  // from the snapshot and hidden the merchant's own content, and nothing else
+  // would ever put it back — applyRegistrySlots owns the only restore path.
+  sweepOrphanBlocks(doc, new Set());
+  return [];
+}
+
+/** Resolve the configured section selectors against the current document.
+ *  A selector matching zero elements is dropped (that page variant simply
+ *  doesn't have it — not an error); one matching MORE than one is dropped too,
+ *  because reordering an ambiguous match could move the wrong element (the
+ *  registry-locator "no guess" rule). Keyed by selector string = the wire id. */
+function resolveSections(doc: Document): Map<string, Element> {
+  const out = new Map<string, Element>();
+  for (const sel of activeCfg?.sections ?? []) {
+    try {
+      const els = doc.querySelectorAll(sel);
+      if (els.length === 1) out.set(sel, els[0]!);
+    } catch {
+      /* invalid selector — dropped */
+    }
+  }
+  return out;
+}
+
+/** Bounded section reorder (B1.1): apply a served order only when (a) every id
+ *  resolves right now, (b) all resolved elements share one parent, and (c) the
+ *  order is exactly a permutation of the currently-resolvable section set. Any
+ *  mismatch applies nothing, silently — the registry-move rule (a drifted
+ *  anchor applies nothing) extended to whole-page order, so a stale snapshot or
+ *  an edited `sections` config can never wedge a half-reordered page. */
+function applyLayoutOrder(order: string[] | null | undefined, doc: Document): void {
+  try {
+    if (!order || order.length < 2) return;
+    if (new Set(order).size !== order.length) return;
+    const resolved = resolveSections(doc);
+    if (resolved.size !== order.length) return;
+    const els: Element[] = [];
+    for (const id of order) {
+      const el = resolved.get(id);
+      if (!el) return;
+      els.push(el);
+    }
+    const parent = els[0]!.parentNode;
+    if (!parent || !els.every((el) => el.parentNode === parent)) return;
+    // Successive insertBefore within the shared parent — the registry move-op
+    // primitive. domOrder tracks the sections' current relative order; step i
+    // places the wanted element into the i-th section position, so already-
+    // ordered prefixes are never touched (idempotent on reapply).
+    const domOrder = els
+      .slice()
+      .sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    for (let i = 0; i < els.length; i++) {
+      const want = els[i]!;
+      if (domOrder[i] === want) continue;
+      parent.insertBefore(want, domOrder[i]!);
+      domOrder.splice(domOrder.indexOf(want), 1);
+      domOrder.splice(i, 0, want);
+    }
+  } catch {
+    /* fail-safe */
+  }
 }
 
 /** Best-effort beacon of locator misses so the worker can suspend broken slots. */
@@ -193,6 +271,10 @@ export function reapply(): void {
       contentAndOps: decided,
       onApplied: (slotId, arm, el) => appliedSlots.push({ slotId, arm, el }),
     });
+    // Restore the served section order after a hydration wipe / SPA re-render.
+    // Bounded, so a route without the configured sections applies nothing; the
+    // pre-decide value is the snapshot's, the same trust level as pre-paint.
+    applyLayoutOrder(activeLayoutOrder, document);
     if (appliedSlots.length > 0 && sectionCaptureAllowed()) {
       try {
         slotSignalsCleanup = attachSlotSignals(activeClient!, activeCfg!.apiKey, appliedSlots);
@@ -396,8 +478,11 @@ export function parsePersonaPreview(search: string): string | null {
 const PREVIEW_BANNER_ID = 'sentient-persona-preview-banner';
 
 /** Fixed "Previewing as X · Exit preview" affordance so an operator always knows
- *  the page is simulated, and can leave (strips the param + reloads). */
-function showPreviewBanner(persona: string): void {
+ *  the page is simulated, and can leave (strips the param + reloads). With
+ *  `unrecognized`, says so instead — the typed value isn't in the project's
+ *  persona vocabulary, so the page is showing the default experience, and the
+ *  banner must not claim otherwise (B1.2). */
+function showPreviewBanner(persona: string, unrecognized?: boolean): void {
   try {
     if (typeof document === 'undefined' || document.getElementById(PREVIEW_BANNER_ID)) return;
     const label = persona.charAt(0).toUpperCase() + persona.slice(1).replace(/[_-]+/g, ' ');
@@ -412,7 +497,9 @@ function showPreviewBanner(persona: string): void {
       border: '1px solid rgba(255,255,255,0.14)',
     } as Partial<CSSStyleDeclaration>);
     const text = document.createElement('span');
-    text.textContent = `Previewing as ${label}`;
+    text.textContent = unrecognized
+      ? `“${persona}” isn’t in your personas — showing the default experience`
+      : `Previewing as ${label}`;
     const exit = document.createElement('button');
     exit.type = 'button';
     exit.textContent = 'Exit preview';
@@ -461,6 +548,10 @@ async function previewPersona(cfg: SnippetConfig, persona: string): Promise<void
     DECIDE_TIMEOUT_MS,
   );
   if (!outcome) {
+    // The page API must exist on the failure path too (same reason as editor/
+    // preview modes in run(): page code calling SentientSnippet.goal() must
+    // not throw), and with no activeClient it is a no-op surface.
+    exposeGlobal(cfg);
     dbg(cfg, 'persona preview: explain unavailable — page left as-is');
     return;
   }
@@ -469,10 +560,15 @@ async function previewPersona(cfg: SnippetConfig, persona: string): Promise<void
     slots?: SlotResults;
     slotConfig?: Record<string, SlotConfigEntry>;
     persona?: string;
+    personaDisplay?: string;
+    recognized?: boolean;
     personaAttributes?: { persona?: string; confidence?: string };
   };
   activeSlots = data.slots ?? {};
   activeSlotConfig = data.slotConfig ?? null;
+  // Palette parity with live serving: block arms in a preview render in the
+  // site's colors too (the explain response mirrors decide's palette field).
+  setBlockPalette((data as { palette?: import('@sentientui/core').SitePalette }).palette);
   const shown = data.personaAttributes?.persona ?? data.persona ?? persona;
   const band = (data.personaAttributes?.confidence as Band) ?? 'high';
   activePersona = { persona: shown, band };
@@ -483,7 +579,13 @@ async function previewPersona(cfg: SnippetConfig, persona: string): Promise<void
   // restamp copy/ops (not just reversible attributes).
   decided = true;
   exposeGlobal(cfg);
-  showPreviewBanner(shown);
+  // Vocabulary echo (B1.2): only an explicit `recognized: false` shows the
+  // "not one of your personas" banner — an older API omits the field, and the
+  // legacy claim beats wrongly contradicting a valid key. Recognized previews
+  // prefer the server's display name over the cosmetic capitalization, and the
+  // unrecognized banner quotes what was TYPED, not the folded 'unknown'.
+  if (data.recognized === false) showPreviewBanner(persona, true);
+  else showPreviewBanner(data.personaDisplay ?? shown);
 }
 
 function exposeGlobal(cfg: SnippetConfig): void {
@@ -506,10 +608,39 @@ function exposeGlobal(cfg: SnippetConfig): void {
       }
     },
     grantConsent(): void {
-      // Flush core's queued events. Kept in its own try so a core flush error
-      // never blocks starting capture below.
+      // Kept in its own try so an init/flush error never blocks starting
+      // capture below.
       try {
-        coreGrantConsent(cfg.apiKey);
+        if (!activeClient && consentRevoked) {
+          // A prior revokeConsent() destroyed the client — core deleted its
+          // registry entry, so coreGrantConsent() would warn "called before
+          // init()" and every later goal()/track() would silently hit a dead
+          // client until a full reload. Resuming means a FRESH init with
+          // consent granted: revoke deliberately forgot the visitor (destroy
+          // cleared the identity cookie/storage), so this mints a new identity
+          // rather than resurrecting the severed one — that forgetting is the
+          // point of revocation, not a bug to undo. init() itself still honors
+          // DNT/GPC, so a global opt-out cannot be overridden here.
+          activeClient = init({
+            apiKey: cfg.apiKey,
+            context: cfg.context,
+            consent: true,
+            preConsentBehavior: cfg.preConsentBehavior,
+            debug: cfg.debug,
+            persona: cfg.persona,
+          });
+          // Re-install the editor-defined goal listeners revoke tore down —
+          // from the visit's served decision, never a new decide.
+          if (activeGoals && activeGoals.length > 0) {
+            goalListeners?.teardown();
+            goalListeners = installGoalListeners(activeGoals, activeClient, document, cfg.apiKey);
+          }
+        } else {
+          // Normal path: the client is a live pre-consent proxy — upgrade it in
+          // place and flush core's queued events.
+          coreGrantConsent(cfg.apiKey);
+        }
+        consentRevoked = false;
       } catch {
         /* fail-safe */
       }
@@ -539,7 +670,14 @@ function exposeGlobal(cfg: SnippetConfig): void {
         goalListeners?.teardown();
         goalListeners = null;
         consentGranted = false;
+        consentRevoked = true;
         activeClient?.destroy();
+        // Null the reference: the destroyed client is not just inert, it is
+        // gone from core's registry, so keeping it wired left grantConsent()
+        // warning "called before init()" and capture recording into a dead
+        // client — revoke→grant permanently killed tracking until reload.
+        // grantConsent() above treats null as "re-init fresh".
+        activeClient = null;
       } catch {
         /* fail-safe */
       }
@@ -584,9 +722,14 @@ function exposeGlobal(cfg: SnippetConfig): void {
  *  5. write the snapshot for the next visit,
  *  6. expose window.SentientSnippet (goal wiring, consent, reapply, getState).
  * Any error or timeout leaves the DOM exactly as it was (fail-safe). Never
- * injects markup and never observes mutations; the only structural change is a
- * registry move op relocating an element among its own siblings, on the
- * post-decide pass only (pre-paint stays attributes-only — see apply.ts).
+ * accepts HTML and never observes mutations; the structural changes are:
+ * a registry move op relocating an element among its own siblings (post-decide
+ * pass only — pre-paint stays attributes-only, see apply.ts), the bounded
+ * section reorder for config `sections` (applyLayoutOrder — the cached order
+ * IS applied pre-paint, because a reorder is exactly what must not flash, and
+ * its bounds re-verify against the current DOM), and Composition Block arms
+ * (blocks.ts — a typed enumerated tree rendered via createElement, every arm
+ * pre-rendered hidden and revealed by arm id, both passes).
  */
 export async function run(): Promise<void> {
   try {
@@ -596,8 +739,12 @@ export async function run(): Promise<void> {
     // Fresh visit decision: withhold content restamping from reapply() until this
     // run's /v1/decide confirms it (see the `decided` declaration).
     decided = false;
+    activeLayoutOrder = null;
+    setBlockPalette(null);
     // Reset live-consent for this visit; only a later grantConsent() re-opens it.
     consentGranted = false;
+    consentRevoked = false;
+    activeGoals = null;
 
     // Editor mode (?sentient_editor=<token>) — load the on-site editor overlay
     // and stop. No decide, events, snapshot, or slot apply (the editor suppresses
@@ -623,6 +770,13 @@ export async function run(): Promise<void> {
     const editorToken = urlEditorToken ?? readCachedEditorToken();
     if (editorToken) {
       loadEditor(cfg, editorToken);
+      // Expose the page API even though tracking is suppressed: merchant code
+      // calling SentientSnippet.goal(...) otherwise THROWS in this mode (the
+      // build-time global has no goal method), and the pre-boot stub queue is
+      // stranded. With no activeClient every method is a harmless no-op —
+      // exactly the tracking suppression editor mode promises — and the queue
+      // drains into those no-ops instead of replaying on a later real visit.
+      exposeGlobal(cfg);
       dbg(cfg, 'editor mode');
       return;
     }
@@ -634,6 +788,9 @@ export async function run(): Promise<void> {
       activePersona = null;
       applyAll(document);
       installSpaHooks();
+      // Same as editor mode above: the API must exist (no-op without a client)
+      // so page code calling SentientSnippet.goal(...) doesn't throw.
+      exposeGlobal(cfg);
       dbg(cfg, 'preview mode', preview);
       return;
     }
@@ -658,11 +815,22 @@ export async function run(): Promise<void> {
       activePersona = { persona: snap.persona, band: snap.band };
       activeSlots = snap.slots;
       if (snap.slotConfig) activeSlotConfig = snap.slotConfig;
+      // Palette BEFORE the pre-paint apply: cached block arms must render in
+      // the site's colors from the first paint, not flip from neutral.
+      if (snap.palette) setBlockPalette(snap.palette);
       // Pre-paint applies only reversible attributes (persona/arm/dims) from the
       // cached snapshot. Copy/ops are withheld until /v1/decide confirms them —
       // a stale snapshot must never flash wrong content that a decide timeout
       // would leave stuck on screen.
       applyAll(document, { contentAndOps: false });
+      // The cached section order, by contrast, IS applied pre-paint: a late
+      // reorder is exactly the flash to avoid, and the bounded apply re-verifies
+      // against the CURRENT DOM (a stale/foreign order applies nothing). The
+      // post-decide apply below then corrects any drift authoritatively.
+      if (snap.layoutOrder) {
+        activeLayoutOrder = snap.layoutOrder;
+        applyLayoutOrder(activeLayoutOrder, document);
+      }
     }
 
     const client = init({
@@ -686,8 +854,18 @@ export async function run(): Promise<void> {
     // in non-tsup builds) passes the server's semver check and would be persisted
     // as the project's snippet_version, permanently reading as "behind" (audit M12).
     const reportVersion = version !== '0.0.0-dev' ? { v: version } : {};
+    // Configured sections that resolve on THIS page right now (missing ones are
+    // dropped, not errored — the request describes what can actually move).
+    // Fewer than two left → nothing to reorder, so the field is omitted and the
+    // server's layout machinery never engages.
+    const sectionIds = Array.from(resolveSections(document).keys());
     const outcome = await withTimeout(
-      client.decide({ slots, ...reportVersion, ...(registryMode ? { slotsFrom: 'registry' as const } : {}) }),
+      client.decide({
+        slots,
+        ...reportVersion,
+        ...(sectionIds.length >= 2 ? { sections: sectionIds } : {}),
+        ...(registryMode ? { slotsFrom: 'registry' as const } : {}),
+      }),
       DECIDE_TIMEOUT_MS,
     );
     if (!outcome) {
@@ -706,6 +884,10 @@ export async function run(): Promise<void> {
     // server slotConfig, so only overwrite when present.
     if (registryMode) activeSlotConfig = outcome.slotConfig ?? null;
     else if (outcome.slotConfig) activeSlotConfig = outcome.slotConfig;
+    // Served palette wins over the snapshot's; an absent one leaves the cached
+    // palette standing for this view (same one-visit-drift rule as layoutOrder
+    // — the snapshot write below persists only what the server said).
+    if (outcome.palette) setBlockPalette(outcome.palette);
     // Post-decide apply is authoritative — report any locator misses (not from
     // pre-paint or reapply, which would be noisy/premature). Collect the applied
     // (slot, arm, element) triples for per-option behavior signals below.
@@ -713,16 +895,25 @@ export async function run(): Promise<void> {
     reportLocatorMisses(cfg, applyAll(document, {
       onApplied: (slotId, arm, el) => appliedSlots.push({ slotId, arm, el }),
     }));
+    // Authoritative section order for this visit — corrects a pre-paint from a
+    // stale snapshot (bounded apply is idempotent, so agreeing orders no-op).
+    // An absent/empty layoutOrder deliberately leaves the pre-paint order
+    // standing for this view, same as a decide timeout would; the snapshot
+    // write below persists the server's answer, so it lasts one visit at most.
+    activeLayoutOrder = outcome.layoutOrder ?? activeLayoutOrder;
+    applyLayoutOrder(activeLayoutOrder, document);
     // From here copy/ops are confirmed by the server — a subsequent reapply()
     // (SPA nav / hydration) may safely restamp content, not just attributes.
     decided = true;
 
     // Install editor-defined goal listeners (registry mode). Never for a
     // consent-off client; a DNT/consent-gated core client no-ops goal() anyway.
+    // Saved at module scope so grantConsent() after a revoke can re-wire them.
+    activeGoals = outcome.goals ?? null;
     if (outcome.goals && outcome.goals.length > 0 && cfg.consent !== false && activeClient) {
       try {
         goalListeners?.teardown();
-        goalListeners = installGoalListeners(outcome.goals, activeClient, document);
+        goalListeners = installGoalListeners(outcome.goals, activeClient, document, cfg.apiKey);
       } catch { /* fail-safe */ }
     }
 
@@ -757,9 +948,13 @@ export async function run(): Promise<void> {
       persona: activePersona?.persona ?? outcome.persona,
       band: activePersona?.band ?? 'low',
       slots: outcome.slots,
+      // Live since B1.1: the next visit's pre-paint applies this order (bounded)
+      // before decide returns, so a learned layout doesn't flash natural-order
+      // first. null (no sections sent / older server) clears the cache.
       layoutOrder: outcome.layoutOrder,
       savedAt: Date.now(),
       ...(activeSlotConfig ? { slotConfig: activeSlotConfig } : {}),
+      ...(outcome.palette ? { palette: outcome.palette } : {}),
     });
   } catch {
     // fail-safe: never break the host page

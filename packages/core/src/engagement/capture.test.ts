@@ -242,4 +242,175 @@ describe('startEngagementCapture', () => {
       }
     });
   });
+
+  it('drops a layout wrapper containing 2+ candidate sections and observes the sections inside it', () => {
+    // A div-built landing page: `main > div` matches the page-wide wrapper.
+    // Keeping the wrapper used to swallow every real <section> inside it —
+    // one nc-generic component for the whole page, scroll_depth pinned at
+    // viewport/page-height.
+    document.body.innerHTML =
+      '<main><div id="wrapper">' +
+      '<section data-sentient-type="pricing"><h2>Pricing</h2></section>' +
+      '<section data-sentient-type="faq"><h2>FAQ</h2></section>' +
+      '</div></main>';
+    vi.spyOn(core, 'isDoNotTrackEnabled').mockReturnValue(false);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue({ ok: true } as never);
+    const observed: Element[] = [];
+    (globalThis as Record<string, unknown>)['IntersectionObserver'] = class {
+      observe(el: Element) { observed.push(el); }
+      disconnect() { /* noop */ }
+    };
+
+    startEngagementCapture({ track: vi.fn() }, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+
+    expect(observed.map((el) => el.tagName)).toEqual(['SECTION', 'SECTION']);
+    const body = JSON.parse((fetchSpy.mock.calls[0] as unknown as [string, { body: string }])[1].body) as {
+      sections: Array<{ componentId: string }>;
+    };
+    expect(body.sections.map((s) => s.componentId).sort()).toEqual(['nc-faq', 'nc-pricing']);
+  });
+
+  it('keeps a candidate with exactly ONE nested candidate (header > nav attributes to the header, as before)', () => {
+    document.body.innerHTML = '<header id="h"><nav>links</nav><h1>Hero</h1></header>';
+    vi.spyOn(core, 'isDoNotTrackEnabled').mockReturnValue(false);
+    vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue({ ok: true } as never);
+    const observed: Element[] = [];
+    (globalThis as Record<string, unknown>)['IntersectionObserver'] = class {
+      observe(el: Element) { observed.push(el); }
+      disconnect() { /* noop */ }
+    };
+
+    startEngagementCapture({ track: vi.fn() }, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+
+    expect(observed.map((el) => el.tagName)).toEqual(['HEADER']);
+  });
+
+  it('heartbeat banks visible dwell without any visibility flip, so a hard tab close loses at most one interval', () => {
+    document.body.innerHTML = '<section data-sentient-type="pricing"><h2>Pricing</h2></section>';
+    vi.spyOn(core, 'isDoNotTrackEnabled').mockReturnValue(false);
+    vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue({ ok: true } as never);
+
+    let ioCallback: ((entries: Array<{ target: Element; isIntersecting: boolean; intersectionRatio: number }>) => void) | null = null;
+    (globalThis as Record<string, unknown>)['IntersectionObserver'] = class {
+      constructor(cb: typeof ioCallback) { ioCallback = cb; }
+      observe() { /* driven via the callback below */ }
+      disconnect() { /* noop */ }
+    };
+
+    vi.useFakeTimers();
+    try {
+      const client = { track: vi.fn() };
+      const stop = startEngagementCapture(client, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+
+      const section = document.querySelector('section')!;
+      ioCallback!([{ target: section, isIntersecting: true, intersectionRatio: 0.5 }]);
+      vi.advanceTimersByTime(20_000); // first heartbeat
+
+      const dwell = client.track.mock.calls.filter(([e]) => e.eventType === 'dwell');
+      expect(dwell).toHaveLength(1);
+      expect(dwell[0]![0].payload.dwell_time).toBe(20_000);
+
+      // Accumulators reset on bank: the next heartbeat reports only the NEW
+      // 20s, not a double-counted 40s.
+      vi.advanceTimersByTime(20_000);
+      const dwell2 = client.track.mock.calls.filter(([e]) => e.eventType === 'dwell');
+      expect(dwell2).toHaveLength(2);
+      expect(dwell2[1]![0].payload.dwell_time).toBe(20_000);
+
+      // Cleanup stops the heartbeat.
+      stop();
+      const afterStop = client.track.mock.calls.filter(([e]) => e.eventType === 'dwell').length;
+      vi.advanceTimersByTime(60_000);
+      expect(client.track.mock.calls.filter(([e]) => e.eventType === 'dwell')).toHaveLength(afterStop);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// A page can be frozen into the bfcache instead of torn down. Timers keep
+// firing on restore and `intersecting` still holds whatever it held at
+// pagehide, so before this the heartbeat banked dwell forever for sections the
+// visitor had already scrolled past — with the observer disconnected, nothing
+// could ever correct them.
+describe('bfcache restore', () => {
+  it('stops counting while frozen and does not invent dwell for a stale section', () => {
+    document.body.innerHTML = '<section data-sentient-type="pricing"><h2>Pricing</h2></section>';
+    vi.spyOn(core, 'isDoNotTrackEnabled').mockReturnValue(false);
+    vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue({ ok: true } as never);
+
+    let ioCallback: ((entries: Array<{ target: Element; isIntersecting: boolean; intersectionRatio: number }>) => void) | null = null;
+    (globalThis as Record<string, unknown>)['IntersectionObserver'] = class {
+      constructor(cb: typeof ioCallback) { ioCallback = cb; }
+      observe() { /* driven via the callback below */ }
+      disconnect() { /* noop */ }
+    };
+
+    vi.useFakeTimers();
+    try {
+      const client = { track: vi.fn() };
+      const stop = startEngagementCapture(client, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+      const section = document.querySelector('section')!;
+      ioCallback!([{ target: section, isIntersecting: true, intersectionRatio: 0.5 }]);
+      vi.advanceTimersByTime(20_000);
+
+      const before = client.track.mock.calls.filter(([e]) => e.eventType === 'dwell').length;
+
+      // Visitor reads five more seconds, then taps a link: the page is frozen,
+      // not unloaded.
+      vi.advanceTimersByTime(5_000);
+      window.dispatchEvent(Object.assign(new Event('pagehide'), { persisted: true }));
+      vi.advanceTimersByTime(120_000); // six heartbeats' worth of "away" time
+
+      const afterFreeze = client.track.mock.calls.filter(([e]) => e.eventType === 'dwell');
+      // pagehide banked exactly the 5s that was measured, and the two frozen
+      // minutes added nothing at all.
+      expect(afterFreeze.length).toBe(before + 1);
+      expect(afterFreeze[afterFreeze.length - 1]![0].payload.dwell_time).toBe(5_000);
+
+      // Back button: the section has scrolled out of view during restore.
+      window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+      ioCallback!([{ target: section, isIntersecting: false, intersectionRatio: 0 }]);
+      vi.advanceTimersByTime(60_000);
+      expect(client.track.mock.calls.filter(([e]) => e.eventType === 'dwell')).toHaveLength(afterFreeze.length);
+
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resumes measuring a section that is still on screen after restore', () => {
+    document.body.innerHTML = '<section data-sentient-type="pricing"><h2>Pricing</h2></section>';
+    vi.spyOn(core, 'isDoNotTrackEnabled').mockReturnValue(false);
+    vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue({ ok: true } as never);
+
+    let ioCallback: ((entries: Array<{ target: Element; isIntersecting: boolean; intersectionRatio: number }>) => void) | null = null;
+    (globalThis as Record<string, unknown>)['IntersectionObserver'] = class {
+      constructor(cb: typeof ioCallback) { ioCallback = cb; }
+      observe() { /* driven via the callback below */ }
+      disconnect() { /* noop */ }
+    };
+
+    vi.useFakeTimers();
+    try {
+      const client = { track: vi.fn() };
+      const stop = startEngagementCapture(client, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+      const section = document.querySelector('section')!;
+      ioCallback!([{ target: section, isIntersecting: true, intersectionRatio: 0.5 }]);
+
+      window.dispatchEvent(Object.assign(new Event('pagehide'), { persisted: true }));
+      const banked = client.track.mock.calls.filter(([e]) => e.eventType === 'dwell').length;
+      window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+
+      vi.advanceTimersByTime(20_000);
+      const dwell = client.track.mock.calls.filter(([e]) => e.eventType === 'dwell');
+      expect(dwell).toHaveLength(banked + 1);
+      // Exactly the post-restore time, not the frozen interval as well.
+      expect(dwell[dwell.length - 1]![0].payload.dwell_time).toBe(20_000);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

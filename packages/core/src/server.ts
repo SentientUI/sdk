@@ -3,6 +3,7 @@
  * Pure fetch — no DOM APIs. Safe in Node.js, Edge, and Deno runtimes.
  */
 import { buildSessionUpsertPayload } from './session-meta.js';
+import { LEGACY_SESSION_COOKIE_NAME, sessionCookieName } from './storage-key.js';
 import {
   toWireSlot,
   baselineResultFor,
@@ -173,11 +174,23 @@ export async function preloadAssignments(
  * Reads the Sentient session cookie from a Next.js `ReadonlyRequestCookies` object
  * (the return value of `cookies()` from `next/headers`), or any object with a
  * `get(name: string)` method. Returns null if the cookie is absent.
+ *
+ * Pass the project's `apiKey`: the client writes the per-project SUFFIXED name
+ * (`sessionCookieName` — see storage-key.ts), so reading only the bare
+ * `_snt_uid` missed the cookie on every SSR request for a returning visitor and
+ * minted a fresh orphan session each page view (quota inflation, broken sticky
+ * assignments and persona continuity). The bare name is still read as a
+ * fallback for identities minted before namespacing.
  */
 export function readSessionCookie(
   cookies: { get(name: string): { value: string } | undefined },
+  apiKey?: string,
 ): string | null {
-  return cookies.get('_snt_uid')?.value ?? null;
+  return (
+    (apiKey ? cookies.get(sessionCookieName(apiKey))?.value : undefined) ??
+    cookies.get(LEGACY_SESSION_COOKIE_NAME)?.value ??
+    null
+  );
 }
 
 export type DecideResult = {

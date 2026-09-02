@@ -50,6 +50,7 @@ client.goal('trial_started', { plan: 'pro' });
 | `sessionSegment` | `string` | Segment from SSR (`device:source`). Must match the value used in `preloadAssignments`. |
 | `ssrSessionId` | `string` | Session ID minted during SSR (from `readSessionCookie`) so server and client share one session. |
 | `userId` | `string` | Optional cross-session identity. Persists portraits across sessions for the same user. |
+| `persona` | `string` | Declared persona — the role your app already knows for this visitor (e.g. `'admin'`, `'evaluator'`). Must be a key in the project's persona vocabulary (dashboard → Settings → Personas); unrecognized values are ignored server-side and surfaced in the dashboard so you can add them. Served at full confidence, overriding the inferred persona. Keep it a low-cardinality role label — never a user id or email. |
 | `country` | `string` | ISO 3166-1 alpha-2 country code, if you already know it server-side. |
 | `debug` | `boolean` | Logs events to the console and exposes `window.__sentient`. |
 | `localMode` | `'auto' \| boolean` | Keyless local engine. `'auto'` (default) enables it only under the `development` export condition; production builds without a key short-circuit to defaults with one `console.error`. |

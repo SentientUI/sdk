@@ -41,6 +41,8 @@ export function parseArgs(argv: string[]): {
   key?: string;
   help?: boolean;
   version?: boolean;
+  /** Fatal usage problem; main() prints it to stderr and exits 1. */
+  error?: string;
 } {
   const args = [...argv];
   const command = args.shift();
@@ -49,11 +51,20 @@ export function parseArgs(argv: string[]): {
   // the one thing every user and every agent tries first exits non-zero.
   let help = command === '--help' || command === '-h';
   let version = command === '--version' || command === '-v';
+  let error: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     // Support both the space-separated (--key pk_...) and inline (--key=pk_...) forms.
     if (arg === '--key') {
-      key = args[i + 1];
+      const next = args[i + 1];
+      // `--key` used to swallow whatever token came next, so `init --key --yes`
+      // silently tried to use "--yes" as the API key. Option-shaped or missing
+      // values are a usage error, not a key.
+      if (next === undefined || next.startsWith('-')) {
+        error = '--key requires a value (e.g. --key pk_live_...)';
+        break;
+      }
+      key = next;
       i++;
     } else if (arg.startsWith('--key=')) {
       key = arg.slice('--key='.length);
@@ -61,15 +72,29 @@ export function parseArgs(argv: string[]): {
       help = true;
     } else if (arg === '--version' || arg === '-v') {
       version = true;
+    } else if (arg === '--yes' || arg === '-y') {
+      // Accepted for npx muscle memory; v1 has no prompts, so it is also the
+      // default behavior (YAGNI: no prompt library).
+    } else if (arg.startsWith('-')) {
+      // A typo'd flag (`--kye pk_x`) used to be silently ignored, so init ran
+      // keyless and the user thought their key was configured.
+      error = `unknown option: ${arg}`;
+      break;
     }
-    // --yes / -y accepted for npx muscle memory; v1 has no prompts, so it is
-    // also the default behavior (YAGNI: no prompt library).
   }
-  return { command, key, help, version };
+  return { command, key, help, version, error };
 }
 
 export function main(argv: string[]): void {
-  const { command, key, help, version } = parseArgs(argv);
+  const { command, key, help, version, error } = parseArgs(argv);
+
+  // A bad flag must fail loudly BEFORE anything runs: acting on half-parsed
+  // options is how `init --kye pk_x` ended up doing a silent keyless init.
+  if (error) {
+    console.error(`[sentientui] ${error}\n`);
+    console.error(USAGE);
+    process.exit(1);
+  }
 
   // Both are successful requests for information, so both exit 0 and print to
   // stdout — a script that pipes `--version` must not have to read stderr.

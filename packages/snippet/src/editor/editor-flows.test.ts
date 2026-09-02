@@ -180,3 +180,82 @@ describe('no native prompts', () => {
     expect(promptSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('arrangement flow (Track B B3 — catalog picker)', () => {
+  const CATALOG = {
+    arrangements: [{
+      id: 'cta-centered', sectionType: 'cta_band', name: 'Centered call to action',
+      description: 'A short pitch and one button.',
+      fields: [
+        { id: 'headline', label: 'Headline', kind: 'text', default: 'Ready when you are' },
+        { id: 'cta_href', label: 'Button link', kind: 'href' },
+      ],
+    }],
+  };
+  const BLOCKS = { type: 'stack', direction: 'column', children: [] };
+
+  function fetchImpl(url: unknown): Response {
+    const u = String(url);
+    if (u.includes('/v1/editor/arrangements') && !u.includes('instantiate')) {
+      return new Response(JSON.stringify(CATALOG), { status: 200 });
+    }
+    if (u.includes('/instantiate')) return new Response(JSON.stringify({ blocks: BLOCKS }), { status: 200 });
+    return new Response('{}', { status: 200 });
+  }
+
+  it('lists the catalog, fills fields, and saves a blocks draft tested against the original', async () => {
+    document.body.innerHTML = '<section id="hero"><h1>Now</h1></section>';
+    const fetchMock = vi.fn(async (...a: unknown[]) => fetchImpl(a[0]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    mount({ token: 'tok', apiBase: 'https://api.example.com' });
+    selectByClick(document.getElementById('hero')!);
+    clickBtn('Try a different arrangement');
+
+    // The chooser is fetched and rendered; pick the arrangement.
+    await vi.waitFor(() => panelButton('Centered call to actionA short pitch and one button.'));
+    clickBtn('Centered call to actionA short pitch and one button.');
+
+    // Field form: headline prefilled with its default, link empty and required.
+    const headline = document.querySelector('#sentient-editor-panel input[data-field="headline"]') as HTMLInputElement;
+    expect(headline.value).toBe('Ready when you are');
+    const href = document.querySelector('#sentient-editor-panel input[data-field="cta_href"]') as HTMLInputElement;
+    href.value = 'https://example.com/go';
+    clickBtn('Save draft');
+
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/v1/editor/slots/'))).toBe(true));
+    const inst = fetchMock.mock.calls.find((c) => String(c[0]).includes('/instantiate'));
+    expect(JSON.parse((inst![1] as RequestInit).body as string).fields.cta_href).toBe('https://example.com/go');
+
+    const slot = fetchMock.mock.calls.find((c) => String(c[0]).includes('/v1/editor/slots/'));
+    expect(String(slot![0])).toMatch(/\/v1\/editor\/slots\/arrange-/);
+    const body = JSON.parse((slot![1] as RequestInit).body as string);
+    expect(body.kind).toBe('arms');
+    expect(body.draftConfig.baseline).toBe('original');
+    expect(body.draftConfig.arms[0]).toEqual({ id: 'original', displayName: 'Your page today' });
+    expect(body.draftConfig.arms[1]).toEqual({ id: 'cta-centered', displayName: 'Centered call to action', blocks: BLOCKS });
+  });
+
+  it('surfaces an instantiate rejection verbatim and saves no slot', async () => {
+    document.body.innerHTML = '<section id="hero"><h1>Now</h1></section>';
+    const fetchMock = vi.fn(async (...a: unknown[]) => {
+      const u = String(a[0]);
+      if (u.includes('/instantiate')) {
+        return new Response(JSON.stringify({ error: 'invalid_fields', reason: '"Button link" is required' }), { status: 400 });
+      }
+      return fetchImpl(a[0]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    mount({ token: 'tok', apiBase: 'https://api.example.com' });
+    selectByClick(document.getElementById('hero')!);
+    clickBtn('Try a different arrangement');
+    await vi.waitFor(() => panelButton('Centered call to actionA short pitch and one button.'));
+    clickBtn('Centered call to actionA short pitch and one button.');
+    clickBtn('Save draft');
+
+    await vi.waitFor(() =>
+      expect(document.querySelector('#sentient-editor-panel')!.textContent).toContain('"Button link" is required'));
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/v1/editor/slots/'))).toBe(false);
+  });
+});

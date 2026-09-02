@@ -14,6 +14,23 @@
 <script>
   window.sentient = { apiKey: {{ block.settings.publishable_key | json }} };
 </script>
+{%- if customer and app.metafields['config']['persona_tags'].value -%}
+<script>
+  // Customer-tag → persona (B4.4): the mapping lives in an app-owned shop
+  // metafield written by the app's settings screen; it declares the persona
+  // through the snippet's standard `persona` config. Unrecognized keys are
+  // ignored server-side and surface in the dashboard's Personas nudge, so a
+  // typo self-diagnoses. Logged-out visitors have no tags → no declaration.
+  (function () {
+    var tags = {{ customer.tags | json }};
+    var map = {{ app.metafields['config']['persona_tags'].value | json }};
+    if (!tags || !map) return;
+    for (var i = 0; i < tags.length; i++) {
+      if (map[tags[i]]) { window.sentient.persona = map[tags[i]]; return; }
+    }
+  })();
+</script>
+{%- endif -%}
 <script src="https://unpkg.com/@sentientui/snippet/dist/snippet.global.js" crossorigin="anonymous" defer></script>
 {% endif %}
 

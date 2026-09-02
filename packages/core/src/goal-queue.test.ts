@@ -162,6 +162,73 @@ describe('createGoalQueue', () => {
     q.destroy();
   });
 
+  it('persists a conversion queued while backoff is armed', async () => {
+    vi.useFakeTimers();
+    // g1 fails and arms a 2s backoff. g2 — the valuable one — is sent inside
+    // that window, so it never reaches transport and never fails, which used to
+    // mean it never reached the durable bucket either. The tab then goes away.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 429 }))
+      .mockResolvedValue(new Response(null, { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const q = make({ flushIntervalMs: 60_000 });
+    q.send(goal('g1'));
+    await vi.advanceTimersByTimeAsync(0);
+    q.send(goal('g2'));
+
+    const stored = JSON.parse(localStorage.getItem(goalRetryStorageKey(KEY)) ?? '[]') as Array<{ id: string }>;
+    expect(stored.map((g) => g.id)).toContain('g2');
+    q.destroy();
+  });
+
+  it('keeps an undrained backlog in storage until each goal is acknowledged', async () => {
+    vi.useFakeTimers();
+    // drainBucket clears storage as it reads. With maxPerFlush=5, a 12-goal
+    // backlog used to sit entirely in memory after init, so an unload before the
+    // third tick lost whatever had not gone out yet.
+    localStorage.setItem(
+      goalRetryStorageKey(KEY),
+      JSON.stringify(Array.from({ length: 12 }, (_, i) => goal(`g${i}`))),
+    );
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const q = make({ flushIntervalMs: 1000, maxPerFlush: 5 });
+    // Before any tick: the whole backlog is still durable.
+    expect(JSON.parse(localStorage.getItem(goalRetryStorageKey(KEY)) ?? '[]')).toHaveLength(12);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    // Five acknowledged, seven still to go — and still persisted.
+    const left = JSON.parse(localStorage.getItem(goalRetryStorageKey(KEY)) ?? '[]') as Array<{ id: string }>;
+    expect(left).toHaveLength(7);
+    expect(left.map((g) => g.id)).toEqual(['g5', 'g6', 'g7', 'g8', 'g9', 'g10', 'g11']);
+    q.destroy();
+  });
+
+  it('counts one failed flush round once, not once per goal in flight', async () => {
+    vi.useFakeTimers();
+    // Five goals go out in one tick and all fail. Counting per goal produced
+    // consecutiveFailures=5 → a 32s backoff; one failed round warrants 2s.
+    localStorage.setItem(
+      goalRetryStorageKey(KEY),
+      JSON.stringify(Array.from({ length: 5 }, (_, i) => goal(`g${i}`))),
+    );
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const q = make({ flushIntervalMs: 1000, maxPerFlush: 5 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+
+    // 2s later the queue must be sending again. Under the per-goal count it
+    // would still be waiting on a 32s backoff.
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(5);
+    q.destroy();
+  });
+
   it('flushes pending conversions on pagehide', async () => {
     vi.useFakeTimers();
     const fetchMock = vi

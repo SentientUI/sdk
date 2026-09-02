@@ -47,17 +47,53 @@ describe('writeEnvFile', () => {
     expect(content).toContain('NEXT_PUBLIC_SENTIENT_API_KEY=');
   });
 
-  it('never clobbers an existing assignment (even an empty one)', () => {
+  it('never clobbers an existing assignment when no key is passed (even an empty one)', () => {
     writeFileSync(envPath(), 'NEXT_PUBLIC_SENTIENT_API_KEY=pk_existing\n');
-    expect(writeEnvFile(dir, 'next-app', 'pk_new')).toBe('kept');
+    expect(writeEnvFile(dir, 'next-app', undefined)).toBe('kept');
     expect(readFileSync(envPath(), 'utf-8')).toBe('NEXT_PUBLIC_SENTIENT_API_KEY=pk_existing\n');
   });
 
-  it('treats a commented-out assignment as present (no confusing duplicate appended)', () => {
+  // An explicit --key used to return 'kept' too, so `init --key pk_…` after a
+  // keyless init silently left the empty assignment (local mode) in place —
+  // while init's log claimed the key was written.
+  it('an explicit key OVERWRITES a differing assignment in place', () => {
+    writeFileSync(envPath(), 'DATABASE_URL=postgres://x\nNEXT_PUBLIC_SENTIENT_API_KEY=\nOTHER=1\n');
+    expect(writeEnvFile(dir, 'next-app', 'pk_new')).toBe('updated');
+    expect(readFileSync(envPath(), 'utf-8')).toBe('DATABASE_URL=postgres://x\nNEXT_PUBLIC_SENTIENT_API_KEY=pk_new\nOTHER=1\n');
+  });
+
+  it('an explicit key equal to the current value is kept, byte-for-byte', () => {
+    writeFileSync(envPath(), 'NEXT_PUBLIC_SENTIENT_API_KEY=pk_same\n');
+    expect(writeEnvFile(dir, 'next-app', 'pk_same')).toBe('kept');
+    expect(readFileSync(envPath(), 'utf-8')).toBe('NEXT_PUBLIC_SENTIENT_API_KEY=pk_same\n');
+  });
+
+  it('an explicit EMPTY key (--key=) does not blank a configured key', () => {
+    writeFileSync(envPath(), 'NEXT_PUBLIC_SENTIENT_API_KEY=pk_existing\n');
+    expect(writeEnvFile(dir, 'next-app', '')).toBe('kept');
+    expect(readFileSync(envPath(), 'utf-8')).toBe('NEXT_PUBLIC_SENTIENT_API_KEY=pk_existing\n');
+  });
+
+  it('a key containing $ is written literally (no replacement-pattern expansion)', () => {
+    writeFileSync(envPath(), 'NEXT_PUBLIC_SENTIENT_API_KEY=pk_old\n');
+    expect(writeEnvFile(dir, 'next-app', 'pk_a$1b')).toBe('updated');
+    expect(readFileSync(envPath(), 'utf-8')).toBe('NEXT_PUBLIC_SENTIENT_API_KEY=pk_a$1b\n');
+  });
+
+  it('treats a commented-out assignment as present when no key is passed', () => {
     writeFileSync(envPath(), '# NEXT_PUBLIC_SENTIENT_API_KEY=pk_old_commented\n');
-    expect(writeEnvFile(dir, 'next-app', 'pk_new')).toBe('kept');
+    expect(writeEnvFile(dir, 'next-app', undefined)).toBe('kept');
     // File left byte-for-byte untouched — we do not append a second (active) copy.
     expect(readFileSync(envPath(), 'utf-8')).toBe('# NEXT_PUBLIC_SENTIENT_API_KEY=pk_old_commented\n');
+  });
+
+  it('an explicit key appends an active assignment beside a commented-out one', () => {
+    writeFileSync(envPath(), '# NEXT_PUBLIC_SENTIENT_API_KEY=pk_old_commented\n');
+    expect(writeEnvFile(dir, 'next-app', 'pk_new')).toBe('appended');
+    const content = readFileSync(envPath(), 'utf-8');
+    // The user's commented line is untouched; the requested key is now active.
+    expect(content).toContain('# NEXT_PUBLIC_SENTIENT_API_KEY=pk_old_commented');
+    expect(content).toContain('\nNEXT_PUBLIC_SENTIENT_API_KEY=pk_new');
   });
 
   it('uses the VITE_ variable for vite projects', () => {

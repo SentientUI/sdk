@@ -1,5 +1,97 @@
 # @sentientui/react
 
+## 0.24.5
+
+### Patch Changes
+
+- 2f5d3ac: `consentFrom` can now see consent being withdrawn. The source watcher latched
+  `granted` to true — and when the mount-time read already granted, it returned
+  without even subscribing to the CMP's decision event — so a visitor revoking
+  consent mid-visit was invisible and tracking continued against their explicit
+  decision until the page was reloaded. Every decision event now re-reads the
+  source in both directions: a revocation flows into the provider's existing
+  `consent === false` branch and tears the client down, and a later re-grant
+  re-initialises it, symmetric across any number of cycles.
+- 2f5d3ac: Nested components sharing one scroll_depth goal label no longer double-record
+  it. Two nested `<Adaptive>`s (or hooks) attach two separate
+  IntersectionObservers, and one scroll satisfies both in one task — but the
+  platform runs a microtask checkpoint between the two callback invocations, and
+  core's non-dispatch dedupe window closes on a microtask precisely so a genuine
+  repeat conversion can never be swallowed. That checkpoint therefore split one
+  scroll into two windows, and the goal recorded twice.
+
+  The collapse now lives at the layer that knows both fires are scroll-driven: a
+  task-scoped, per-label gate consulted only by scroll-fired goals. Task scoping
+  is the clock core abandoned, and it is safe here for the reason it was wrong
+  there — timers never consult this gate, only IntersectionObserver callbacks do,
+  so no armed timer can drop a genuinely separate conversion into the window;
+  a later real scroll fire arrives in a later rendering task. Core's window
+  semantics are untouched.
+
+- 2f5d3ac: SSR no longer mints an orphan session for every returning visitor. When browser
+  storage was namespaced per project, the client began writing the visitor cookie
+  under a suffixed name, but three readers kept the old bare `_snt_uid`: the SSR
+  helper (`readSessionCookie`, so `loadAdaptiveAssignments` / `loadAdaptiveDecision`
+  missed the cookie on every request and generated a fresh session — quota
+  inflation, broken sticky assignments, persona continuity lost), graph sync
+  (which sent `sessionId: undefined`), and the devtools panel. All three now
+  derive the name from the same function the writer uses (`sessionCookieName`,
+  newly exported), with the bare name kept as a fallback; a test runs the real
+  writer against the reader so they cannot drift apart again.
+
+  The rollout itself no longer resets identities either: a visitor whose id was
+  minted under the pre-namespacing bare names is adopted into the suffixed keys
+  instead of being issued a new one. The legacy keys are left standing, because
+  deleting them would reset any other project on a shared origin that hasn't
+  migrated the id yet.
+
+  `readSessionCookie` now takes the project's `apiKey` as an optional second
+  argument; without it only the legacy bare cookie is visible.
+
+- Updated dependencies [2f5d3ac]
+- Updated dependencies [2f5d3ac]
+  - @sentientui/core@0.21.3
+
+## 0.24.4
+
+### Patch Changes
+
+- Updated dependencies [625aa97]
+- Updated dependencies [625aa97]
+- Updated dependencies [625aa97]
+  - @sentientui/core@0.21.2
+  - @sentientui/policy@0.6.2
+
+## 0.24.3
+
+### Patch Changes
+
+- Updated dependencies [b1acec0]
+  - @sentientui/core@0.21.1
+
+## 0.24.2
+
+### Patch Changes
+
+- 47584a5: Snippet section reordering (Track B1.1) and vocabulary-validated persona preview (B1.2).
+
+  `window.sentient.sections: ['#hero', '#pricing', '#faq']` declares the page sections eligible for adaptive reordering, as CSS selectors in the theme's natural order — mirroring the React `sections` prop. Selectors that resolve on the page ride the existing decide call, and the served `layoutOrder` is applied only under fail-safe bounds: every id must resolve to exactly one element, all elements must share one parent, and the order must be a permutation of what can move — anything else applies nothing, silently. Return visits pre-paint the last served order from the local snapshot (bounded against the current DOM), so a learned layout doesn't flash natural-order first.
+
+  The `?sentient_persona=` preview banner now trusts the server's vocabulary echo: a recognized key shows its display name; an unrecognized value says "isn't in your personas — showing the default experience" instead of claiming a persona `/v1/explain` never simulated.
+
+- Updated dependencies [28352a0]
+- Updated dependencies [47584a5]
+  - @sentientui/core@0.21.0
+  - @sentientui/policy@0.6.1
+
+## 0.24.1
+
+### Patch Changes
+
+- 5bae186: Document the declared-persona surface shipped in the previous release: `init({ persona })`, the `persona` prop on `<AdaptiveRoot>`/`<AdaptiveProvider>`, and `window.sentient.persona` (string or function form) now appear in each package README, and the MCP integration guide explains per-project persona vocabularies and declaration instead of the old fixed four-persona list.
+- Updated dependencies [5bae186]
+  - @sentientui/core@0.20.1
+
 ## 0.24.0
 
 ### Minor Changes

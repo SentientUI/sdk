@@ -155,7 +155,7 @@ export function useAdaptive<T>(
         });
         client.goal(name, { metadata: {}, weight, stepIndex });
       },
-    });
+    }, goalLabel);
   }, [client, node, variant, apiKey, id, goal, goalLabel, isOverride]);
 
   // Micro-signal detectors — the third thing <Adaptive>'s container wires.

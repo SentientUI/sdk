@@ -163,7 +163,7 @@ export function AdaptiveGroup(props: AdaptiveGroupProps): JSX.Element {
         client.componentGoal(props.id, name, { reward: weight });
         client.goal(name, { metadata: { componentId: props.id, arm }, weight, stepIndex });
       },
-    });
+    }, label);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, props.id, goalKey, arm, source]);
 

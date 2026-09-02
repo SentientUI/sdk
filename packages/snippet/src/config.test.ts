@@ -103,3 +103,24 @@ describe('declared persona parsing', () => {
     expect(parseSnippetConfig({ ...base, persona: '   ' })?.persona).toBeUndefined();
   });
 });
+
+describe('sections parsing (B1.1)', () => {
+  const base = { apiKey: 'pk_x', context: 'landing', slots: {} };
+
+  it('accepts an ordered selector list', () => {
+    expect(parseSnippetConfig({ ...base, sections: ['#hero', '#pricing', '#faq'] })?.sections)
+      .toEqual(['#hero', '#pricing', '#faq']);
+  });
+
+  it('drops non-strings and empties; fewer than two survivors is undeclared', () => {
+    expect(parseSnippetConfig({ ...base, sections: ['#hero', 42, '', '  ', '#faq'] })?.sections)
+      .toEqual(['#hero', '#faq']);
+    expect(parseSnippetConfig({ ...base, sections: ['#hero', null, ''] })?.sections).toBeUndefined();
+    expect(parseSnippetConfig({ ...base, sections: 'x' })?.sections).toBeUndefined();
+  });
+
+  it('caps at 50 so an oversized list degrades instead of 400ing the decide', () => {
+    const many = Array.from({ length: 60 }, (_, i) => `#s${i}`);
+    expect(parseSnippetConfig({ ...base, sections: many })?.sections).toHaveLength(50);
+  });
+});

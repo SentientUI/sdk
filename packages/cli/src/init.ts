@@ -42,9 +42,21 @@ export function runInit(opts: InitOptions): { framework: Framework } {
   exec(install, opts.cwd);
 
   const envResult = writeEnvFile(opts.cwd, framework, opts.key);
-  log(
-    `[sentientui] .env.local ${envResult}: ${envVarName(framework)}=${opts.key ?? '(empty — local mode)'}`,
-  );
+  // The log must say what actually happened: it used to print `VAR=<key>` even
+  // when writeEnvFile kept a different existing value, so `init --key pk_…` on
+  // an initialized repo claimed the key was written while the app silently
+  // stayed on the old assignment.
+  if (envResult === 'kept') {
+    log(
+      `[sentientui] .env.local kept: ${envVarName(framework)} is already set${
+        opts.key ? ' to this key' : ''
+      } — left untouched`,
+    );
+  } else {
+    log(
+      `[sentientui] .env.local ${envResult}: ${envVarName(framework)}=${opts.key ?? '(empty — local mode)'}`,
+    );
+  }
 
   const scaffolded = scaffoldExample(opts.cwd);
   log(

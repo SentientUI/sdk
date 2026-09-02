@@ -2,6 +2,7 @@
 name = "SentientUI Pixel"
 type = "web_pixel_extension"
 runtime_context = "strict"
+uid = "a89161d3-7e06-f7c5-d62d-e12b6eb71a1a1ddc37b8"
 
 [settings]
 type = "object"

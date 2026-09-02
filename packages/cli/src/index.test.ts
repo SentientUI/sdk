@@ -24,10 +24,36 @@ describe('parseArgs', () => {
     expect(parseArgs(['init'])).toMatchObject({ command: 'init', key: undefined });
   });
 
-  it('ignores unknown flags like --yes', () => {
+  it('accepts --yes / -y as a known no-op', () => {
     expect(parseArgs(['init', '--yes', '--key=pk_x'])).toMatchObject({
       command: 'init',
       key: 'pk_x',
+      error: undefined,
+    });
+    expect(parseArgs(['init', '-y'])).toMatchObject({ command: 'init', error: undefined });
+  });
+
+  // `--key` used to swallow whatever token came next, so `init --key --yes`
+  // silently used "--yes" as the API key.
+  it('rejects an option-shaped value for --key', () => {
+    expect(parseArgs(['init', '--key', '--yes'])).toMatchObject({
+      command: 'init',
+      key: undefined,
+      error: expect.stringContaining('--key requires a value'),
+    });
+  });
+
+  it('rejects a missing value for --key', () => {
+    expect(parseArgs(['init', '--key'])).toMatchObject({
+      error: expect.stringContaining('--key requires a value'),
+    });
+  });
+
+  // A typo'd flag (`--kye pk_x`) used to be silently ignored, so init ran
+  // keyless and the user thought their key was configured.
+  it('rejects unknown flags instead of ignoring them', () => {
+    expect(parseArgs(['init', '--kye', 'pk_x'])).toMatchObject({
+      error: 'unknown option: --kye',
     });
   });
 
@@ -100,5 +126,19 @@ describe('main', () => {
     expect(exitCode).toBe(1);
     expect(err.join('\n')).toContain('unknown command: frobnicate');
     expect(out).toEqual([]);
+  });
+
+  it('exits 1 with the usage on an unknown option, before running anything', () => {
+    expect(() => main(['init', '--kye', 'pk_x'])).toThrow('process.exit');
+    expect(exitCode).toBe(1);
+    expect(err.join('\n')).toContain('unknown option: --kye');
+    expect(err.join('\n')).toContain('Usage');
+    expect(out).toEqual([]);
+  });
+
+  it('exits 1 when --key is given an option-shaped value', () => {
+    expect(() => main(['init', '--key', '--yes'])).toThrow('process.exit');
+    expect(exitCode).toBe(1);
+    expect(err.join('\n')).toContain('--key requires a value');
   });
 });

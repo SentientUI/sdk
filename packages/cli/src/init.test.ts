@@ -57,6 +57,28 @@ describe('runInit', () => {
     expect(readFileSync(path.join(dir, '.env.local'), 'utf-8')).toContain('NEXT_PUBLIC_SENTIENT_API_KEY=pk_live_xyz');
   });
 
+  // `init` then `init --key pk_…` is the natural onboarding order (try local
+  // mode, then paste the real key). The env writer used to keep the old empty
+  // assignment while the log printed `VAR=pk_…` as if it had been written.
+  it('--key on an already-initialized repo overwrites the empty assignment and logs the write', () => {
+    nextAppFixture();
+    runInit(opts()); // keyless init → NEXT_PUBLIC_SENTIENT_API_KEY=
+    runInit({ ...opts(), key: 'pk_live_xyz' });
+    expect(readFileSync(path.join(dir, '.env.local'), 'utf-8')).toContain('NEXT_PUBLIC_SENTIENT_API_KEY=pk_live_xyz');
+    const out = lines.join('\n');
+    expect(out).toContain('.env.local updated: NEXT_PUBLIC_SENTIENT_API_KEY=pk_live_xyz');
+  });
+
+  it('--key matching the configured key logs kept — and never claims a write', () => {
+    nextAppFixture();
+    runInit({ ...opts(), key: 'pk_live_xyz' });
+    lines.length = 0;
+    runInit({ ...opts(), key: 'pk_live_xyz' });
+    const out = lines.join('\n');
+    expect(out).toContain('.env.local kept: NEXT_PUBLIC_SENTIENT_API_KEY is already set to this key');
+    expect(out).not.toContain('.env.local kept: NEXT_PUBLIC_SENTIENT_API_KEY=');
+  });
+
   it('does not warn for a publishable pk_ key', () => {
     nextAppFixture();
     runInit({ ...opts(), key: 'pk_live_xyz' });

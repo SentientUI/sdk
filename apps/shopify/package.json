@@ -2,14 +2,50 @@
   "name": "@sentient/shopify",
   "version": "0.0.1",
   "private": true,
-  "description": "SentientUI Shopify app: theme app embed (snippet install), checkout web pixel, and orders-paid/refunds-create webhook forwarders.",
+  "description": "SentientUI Shopify app: theme app embed (snippet install), checkout web pixel, settings/provisioning screen, and orders-paid/refunds-create webhook forwarders.",
   "type": "module",
   "scripts": {
+    "build": "remix vite:build",
+    "dev": "shopify app dev",
+    "deploy": "shopify app deploy",
+    "config:link": "shopify app config link",
+    "generate": "shopify app generate",
+    "env": "shopify app env",
+    "start": "remix-serve ./build/server/index.js",
+    "setup": "prisma generate && prisma migrate deploy",
+    "prisma": "prisma",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "prisma generate && tsc --noEmit",
+    "docker-start": "npm run setup && npm run start"
+  },
+  "engines": {
+    "node": ">=20.19 <22 || >=22.12"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.2.1",
+    "@remix-run/dev": "^2.16.1",
+    "@remix-run/fs-routes": "^2.16.1",
+    "@remix-run/node": "^2.16.1",
+    "@remix-run/react": "^2.16.1",
+    "@remix-run/serve": "^2.16.1",
+    "@shopify/app-bridge-react": "^4.1.6",
+    "@shopify/polaris": "^12.0.0",
+    "@shopify/shopify-app-remix": "^4.1.0",
+    "@shopify/shopify-app-session-storage-prisma": "^8.0.0",
+    "isbot": "^5.1.0",
+    "prisma": "^6.2.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "vite-tsconfig-paths": "^5.0.1"
   },
   "devDependencies": {
+    "@remix-run/route-config": "^2.16.1",
+    "@shopify/web-pixels-extension": "^2.18.0",
+    "@types/node": "^22.2.0",
+    "@types/react": "^18.2.31",
+    "@types/react-dom": "^18.2.14",
     "typescript": "^5.6.3",
+    "vite": "^6.2.2",
     "vitest": "^2.1.9"
   }
 }

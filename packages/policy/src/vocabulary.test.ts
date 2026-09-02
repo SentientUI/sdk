@@ -3,6 +3,7 @@ import * as resolvePersonaModule from './vocabulary';
 import {
   DEFAULT_PERSONA_VOCABULARY,
   PERSONA_KEY_RE,
+  normalizeDeclaredPersona,
   RESERVED_PERSONA_KEYS,
   resolvePersona,
   type PersonaVocabularyMember,
@@ -181,5 +182,33 @@ describe('decisionPersona', () => {
     for (const v of [null, undefined, '', '   ']) {
       expect(resolvePersonaModule.decisionPersona(v)).toBe('unknown');
     }
+  });
+});
+
+describe('normalizeDeclaredPersona', () => {
+  it('accepts and normalizes a real persona key', () => {
+    expect(normalizeDeclaredPersona('  Buyer ')).toBe('buyer');
+    expect(normalizeDeclaredPersona('power_user')).toBe('power_user');
+    expect(normalizeDeclaredPersona('tier-2')).toBe('tier-2');
+  });
+
+  it('refuses anything that could not BE a key, so PII never reaches storage', () => {
+    // sessions.declared_persona and the unrecognized-value counter (rendered
+    // verbatim in Settings) took whatever the browser sent, so a customer
+    // wiring persona={user.email} filed real addresses in both.
+    expect(normalizeDeclaredPersona('someone@example.com')).toBeNull();
+    expect(normalizeDeclaredPersona('Jane Doe')).toBeNull();
+    expect(normalizeDeclaredPersona('x'.repeat(33))).toBeNull();
+    expect(normalizeDeclaredPersona('')).toBeNull();
+    expect(normalizeDeclaredPersona('   ')).toBeNull();
+    expect(normalizeDeclaredPersona(null)).toBeNull();
+    expect(normalizeDeclaredPersona(undefined)).toBeNull();
+  });
+
+  it('still admits a plain typo, so the "add it?" nudge keeps working', () => {
+    // The whole point of the miss counter is to surface a key the app sends
+    // that the vocabulary lacks — validation must not swallow those.
+    expect(normalizeDeclaredPersona('staff')).toBe('staff');
+    expect(normalizeDeclaredPersona('buyerr')).toBe('buyerr');
   });
 });

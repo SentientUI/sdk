@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { FIRED_GOALS_KEY, installGoalListeners, urlMatches } from './goal-wiring';
+import { firedGoalsKey, installGoalListeners, urlMatches } from './goal-wiring';
 import type { GoalDefinition } from '@sentientui/core';
 
 function mockClient() {
@@ -154,6 +154,41 @@ describe('scroll_depth goals', () => {
     document.dispatchEvent(new Event('scroll'));
     expect(client.goal).not.toHaveBeenCalled();
   });
+
+  // The self-removal compared the bare goalId against `fired`, which only ever
+  // holds COMPOSITE keys (firedKeyFor) — always false, so the scroll handler
+  // ran on every scroll for the rest of the page's life.
+  it('removes its own scroll listener once every scroll goal has fired', () => {
+    const client = mockClient();
+    const remove = vi.spyOn(document, 'removeEventListener');
+    setScroll(document, 1200, 500, 2000); // already past 75%
+    installGoalListeners(
+      [{ goalId: 'read-75', event: 'scroll_depth', threshold: 0.75 }], client, document);
+    expect(client.goal).toHaveBeenCalledWith('read-75');
+    expect(remove).toHaveBeenCalledWith('scroll', expect.any(Function));
+    remove.mockRestore();
+  });
+
+  it('keeps listening while any scroll goal is still unfired', () => {
+    const client = mockClient();
+    const remove = vi.spyOn(document, 'removeEventListener');
+    setScroll(document, 0, 500, 1000); // 50%: past 25%, short of 90%
+    installGoalListeners(
+      [
+        { goalId: 'read-25', event: 'scroll_depth', threshold: 0.25 },
+        { goalId: 'read-90', event: 'scroll_depth', threshold: 0.9 },
+      ],
+      client, document);
+    expect(client.goal).toHaveBeenCalledWith('read-25');
+    expect(remove).not.toHaveBeenCalledWith('scroll', expect.any(Function));
+    // The unfired 90% goal still fires when the visitor gets there…
+    setScroll(document, 950, 500, 1000);
+    document.dispatchEvent(new Event('scroll'));
+    expect(client.goal).toHaveBeenCalledWith('read-90');
+    // …and NOW nothing is left to watch for.
+    expect(remove).toHaveBeenCalledWith('scroll', expect.any(Function));
+    remove.mockRestore();
+  });
 });
 
 // SNIP-01: the snippet targets multi-page sites, where every navigation
@@ -177,10 +212,41 @@ describe('once-per-session dedupe survives a page load', () => {
     second.teardown();
   });
 
-  it('records the fired id in sessionStorage', () => {
+  it('records the fired goal in sessionStorage, keyed by its full wiring', () => {
     window.history.pushState({}, '', '/pricing');
     installGoalListeners(pageGoal, mockClient(), document).teardown();
-    expect(JSON.parse(sessionStorage.getItem(FIRED_GOALS_KEY)!)).toContain('saw_pricing');
+    // The id alone collided: the same goal id on two slots recorded once, and
+    // two definitions sharing an id with different triggers shadowed each other.
+    const stored = JSON.parse(sessionStorage.getItem(firedGoalsKey())!) as string[];
+    expect(stored).toEqual(['|saw_pricing|url_reached|']);
+  });
+
+  it('namespaces the dedupe store per project', () => {
+    // This was the only browser key we own that was NOT namespaced by apiKey,
+    // so two SentientUI projects on one origin shared it and each one's goal
+    // suppressed the other's for the whole tab session.
+    window.history.pushState({}, '', '/pricing');
+    const a = mockClient();
+    const b = mockClient();
+    installGoalListeners(pageGoal, a, document, 'pk_projectAAAAAAA').teardown();
+    installGoalListeners(pageGoal, b, document, 'pk_projectBBBBBBB').teardown();
+    expect(a.goal).toHaveBeenCalledTimes(1);
+    expect(b.goal).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem(firedGoalsKey('pk_projectAAAAAAA'))).toBeTruthy();
+    expect(sessionStorage.getItem(firedGoalsKey('pk_projectBBBBBBB'))).toBeTruthy();
+  });
+
+  it('does not latch a goal the client refused to send', () => {
+    // persistFired ran BEFORE client.goal, so a no-op (not yet initialized,
+    // consent withheld) latched the goal for the rest of the session.
+    window.history.pushState({}, '', '/pricing');
+    const throwing = { goal: vi.fn(() => { throw new Error('not ready'); }), componentGoal: vi.fn() };
+    installGoalListeners(pageGoal, throwing, document, 'pk_test').teardown();
+    expect(sessionStorage.getItem(firedGoalsKey('pk_test'))).toBeNull();
+
+    const working = mockClient();
+    installGoalListeners(pageGoal, working, document, 'pk_test').teardown();
+    expect(working.goal).toHaveBeenCalledTimes(1);
   });
 
   it('fires again in a new session', () => {
@@ -212,7 +278,7 @@ describe('once-per-session dedupe survives a page load', () => {
   });
 
   it('ignores a corrupt bucket instead of throwing', () => {
-    sessionStorage.setItem(FIRED_GOALS_KEY, 'not json');
+    sessionStorage.setItem(firedGoalsKey(), 'not json');
     window.history.pushState({}, '', '/pricing');
     const client = mockClient();
     expect(() => installGoalListeners(pageGoal, client, document).teardown()).not.toThrow();

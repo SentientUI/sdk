@@ -1,6 +1,7 @@
 import { resolveLocatorOne } from '../locator';
 import { generateLocator, resolvesUniquely } from './locator-gen';
 import { clearCachedEditorToken } from '../editor-token';
+import { deriveSitePalette } from './palette';
 import { cssValueSafe } from '../css-guard';
 import { applyOps } from '../ops';
 import {
@@ -35,7 +36,7 @@ function slugify(s: string): string {
  *  repeat edits of the same element (so re-editing updates the same draft), yet
  *  distinct across elements and kinds — which is what stops multiple reorders
  *  from overwriting one shared `reorder-slot` id. */
-export function deriveSlotId(kind: 'text' | 'style' | 'move', locator: CompoundLocator, el: Element): string {
+export function deriveSlotId(kind: 'text' | 'style' | 'move' | 'arrange', locator: CompoundLocator, el: Element): string {
   const handle =
     (locator.id) ||
     (locator.dataAttr?.value) ||
@@ -164,6 +165,24 @@ async function save(b: Boot, path: string, body: unknown): Promise<SaveResult> {
     return res.status === 401 ? 'expired' : 'error';
   } catch {
     return 'error';
+  }
+}
+
+/** Authenticated editor-scope POST that needs the response BODY (the plain
+ *  save() reports only ok/expired/error). Parses the body even on a 4xx so a
+ *  validation reason can be surfaced verbatim. */
+async function saveJson<T>(b: Boot, path: string, body: unknown): Promise<{ r: SaveResult; data: T | null }> {
+  try {
+    const res = await fetch(`${b.apiBase}${path}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${b.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => null)) as T | null;
+    if (res.ok) return { r: 'ok', data };
+    return { r: res.status === 401 ? 'expired' : 'error', data };
+  } catch {
+    return { r: 'error', data: null };
   }
 }
 
@@ -424,6 +443,9 @@ export function mount(b: Boot): void {
 
   const textBtn = el('button', btnStyle('#6366f1'), 'Test different text here') as HTMLButtonElement;
   const styleBtn = el('button', btnStyle('#374151'), 'Change style') as HTMLButtonElement;
+  // Arrangement picker (Track B B3, spec §7 step 2): test a catalog arrangement
+  // against the selected section — the section stays the control.
+  const arrangeBtn = el('button', btnStyle('#374151'), 'Try a different arrangement') as HTMLButtonElement;
   const goalBtn = el('button', btnStyle('#374151'), 'Track clicks as a goal') as HTMLButtonElement;
   // Only shown when the selected element sits inside a <form> — tracks the form.
   const formGoalBtn = el('button', btnStyle('#374151'), 'Track form submissions as a goal') as HTMLButtonElement;
@@ -446,11 +468,11 @@ export function mount(b: Boot): void {
   const publishBtn = el('button', btnStyle('#10b981'), 'Publish now — go live') as HTMLButtonElement;
   // Same golden path for goals: saved drafts activate right here.
   const activateGoalBtn = el('button', btnStyle('#10b981'), 'Start tracking now') as HTMLButtonElement;
-  for (const btn of [textBtn, styleBtn, goalBtn, moveUpBtn, moveDownBtn]) (btn as HTMLButtonElement).disabled = true;
+  for (const btn of [textBtn, styleBtn, arrangeBtn, goalBtn, moveUpBtn, moveDownBtn]) (btn as HTMLButtonElement).disabled = true;
   // Element actions stay HIDDEN until something is selected — a wall of greyed
   // buttons was the "messy" part; pre-selection the panel is just the hint plus
   // the page-visit goal (which needs no element).
-  const elementButtons = [textBtn, styleBtn, goalBtn, formGoalBtn, moveUpBtn, moveDownBtn];
+  const elementButtons = [textBtn, styleBtn, arrangeBtn, goalBtn, formGoalBtn, moveUpBtn, moveDownBtn];
   for (const btn of elementButtons) btn.style.display = 'none';
   saveArrangeBtn.style.display = 'none';
   undoBtn.style.display = 'none';
@@ -461,7 +483,7 @@ export function mount(b: Boot): void {
   publishFunnelBtn.style.display = 'none';
   panel.append(
     title, hint, pauseBtn, selectedLabel, status,
-    sectionLabel('Content & style'), textBtn, styleBtn,
+    sectionLabel('Content & style'), textBtn, styleBtn, arrangeBtn,
     sectionLabel('Track a goal'), goalBtn, formGoalBtn, pageGoalBtn, scrollGoalBtn,
     sectionLabel('Funnels'), funnelBtn, attachFunnelBtn, publishFunnelBtn,
     sectionLabel('Move'), moveUpBtn, moveDownBtn, saveArrangeBtn, undoBtn,
@@ -694,6 +716,7 @@ export function mount(b: Boot): void {
       : isLeaf ? ''
       : 'This element contains other elements, so testing text here would replace them. Pick the text itself (e.g. the heading), not its container.';
     (styleBtn as HTMLButtonElement).disabled = !unique;
+    (arrangeBtn as HTMLButtonElement).disabled = !unique;
     (goalBtn as HTMLButtonElement).disabled = !unique;
     // Form tracking only makes sense when the click landed inside a form.
     const form = t.closest('form');
@@ -741,6 +764,82 @@ export function mount(b: Boot): void {
         reportSave(r, '✓ Saved as a draft. Click “Publish now” to go live.');
       },
     );
+  };
+
+  // Arrangement picker (Track B B3): list the catalog, fill an arrangement's
+  // fields, and save a composition draft that tests it against the section as
+  // it is today ('original' arm with no blocks = the control). The server does
+  // all validation — instantiate total-validates the tree, and the slot save
+  // re-validates via validateDraftConfig — so this flow is only forms.
+  type EditorArrangement = {
+    id: string; sectionType: string; name: string; description: string;
+    fields: Array<{ id: string; label: string; kind: 'text' | 'href'; default?: string }>;
+  };
+  let arrangementsCache: EditorArrangement[] | null = null;
+
+  const openArrangementFields = (a: EditorArrangement, loc: CompoundLocator, target: Element): void => {
+    openForm(
+      a.fields.map((f) => ({
+        key: f.id,
+        label: f.kind === 'href' ? `${f.label} (link — required)` : f.label,
+        value: f.default ?? '',
+      })),
+      'Save draft',
+      async (v) => {
+        setStatus('Saving…');
+        const inst = await saveJson<{ blocks?: unknown; reason?: string }>(
+          b, `/v1/editor/arrangements/${encodeURIComponent(a.id)}/instantiate`, { fields: v },
+        );
+        if (inst.r !== 'ok' || !inst.data?.blocks) {
+          if (inst.r === 'expired') reportSave('expired', '');
+          else setStatus(`⚠ ${inst.data?.reason ?? 'Couldn’t build the arrangement — check the fields.'}`, false);
+          return;
+        }
+        const slotId = deriveSlotId('arrange', loc, target);
+        const r = await save(b, `/v1/editor/slots/${encodeURIComponent(slotId)}`, {
+          kind: 'arms',
+          target: loc,
+          draftConfig: {
+            arms: [
+              { id: 'original', displayName: 'Your page today' },
+              { id: a.id, displayName: a.name, blocks: inst.data.blocks },
+            ],
+            baseline: 'original',
+          },
+        });
+        if (r === 'ok') { closeForm(); offerPublish(slotId); }
+        reportSave(r, '✓ Saved as a draft — it will test against this section as it is today. Click “Publish now” to go live.');
+      },
+    );
+  };
+
+  arrangeBtn.onclick = async () => {
+    if (!selected || !currentLocator) return;
+    const loc = currentLocator;
+    const target = selected;
+    closeForm();
+    setStatus('Loading arrangements…');
+    if (!arrangementsCache) {
+      const body = await fetchEditorJson<{ arrangements: EditorArrangement[] }>(b, '/v1/editor/arrangements');
+      arrangementsCache = body?.arrangements ?? null;
+    }
+    if (!arrangementsCache || arrangementsCache.length === 0) {
+      setStatus('⚠ Couldn’t load the arrangements — try again.', false);
+      return;
+    }
+    setStatus('Pick an arrangement to test against this section.');
+    for (const a of arrangementsCache) {
+      const pick = el('button', { ...btnStyle('#374151'), textAlign: 'left' }) as HTMLButtonElement;
+      pick.append(
+        el('div', { fontWeight: '600' }, a.name),
+        el('div', { fontSize: '11px', opacity: '0.7' }, a.description),
+      );
+      pick.onclick = () => openArrangementFields(a, loc, target);
+      formHost.append(pick);
+    }
+    const cancel = el('button', { ...btnStyle('transparent'), opacity: '0.6' }, 'Cancel') as HTMLButtonElement;
+    cancel.onclick = closeForm;
+    formHost.append(cancel);
   };
 
   // After a goal draft saves, reveal "Start tracking now" — mirrors the slot
@@ -1192,6 +1291,11 @@ async function start(): Promise<void> {
   }
   if (document.getElementById(PANEL_ID)) return; // already mounted
   mount(b);
+  // Palette sampling (B3): re-derive from the live page on each editor open so
+  // the stored palette tracks theme changes. Fire-and-forget — a failed sample
+  // or save never blocks the editor, and serving degrades to neutral defaults.
+  const sampled = deriveSitePalette(document);
+  if (sampled) void save(b, '/v1/editor/palette', sampled);
   const targets = await fetchTargets(b); // best-effort: fetch/resolve failures never block the editor
   drawTargetHighlights(targets, document);
 }

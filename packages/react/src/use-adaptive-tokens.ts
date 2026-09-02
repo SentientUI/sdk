@@ -174,7 +174,7 @@ export function useAdaptiveTokens(
         client.componentGoal(id, name, { reward: weight });
         client.goal(name, { metadata: { componentId: id, arm }, weight, stepIndex });
       },
-    });
+    }, label);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, id, goalKey, arm, source]);
 
