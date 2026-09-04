@@ -24,16 +24,6 @@ describe('createGraphClient', () => {
     expect(snap.pageNodes[0].componentId).toBe('hero-1');
   });
 
-  it('serialize and restore round trip', () => {
-    const client = createGraphClient();
-    client.addPageNode(pageNode());
-    const serialized = client.serialize();
-
-    const client2 = createGraphClient();
-    client2.restore(serialized);
-    expect(client2.snapshot().pageNodes).toHaveLength(1);
-  });
-
   it('syncOnce fires a single fetch with Authorization header', () => {
     const fetchMock = vi.fn().mockReturnValue(Promise.resolve({ ok: true }));
     vi.stubGlobal('fetch', fetchMock);
@@ -144,25 +134,6 @@ describe('createGraphClient', () => {
     expect(client.snapshot().pageNodes[0].componentId).toBe('hero-1');
 
     setItem.mockRestore();
-  });
-
-  it('restore() ignores partially-corrupted JSON missing the pageNodes field', () => {
-    const client = createGraphClient();
-    client.addPageNode(pageNode({ componentId: 'existing-1' }));
-
-    // Object parses fine but has no pageNodes — defaults to [], so map is cleared.
-    client.restore(JSON.stringify({ somethingElse: true }));
-    expect(client.snapshot().pageNodes).toHaveLength(0);
-  });
-
-  it('restore() leaves state untouched when given non-JSON garbage', () => {
-    const client = createGraphClient();
-    client.addPageNode(pageNode({ componentId: 'keep-1' }));
-
-    // Throws inside JSON.parse → caught → map untouched.
-    client.restore('}{ not json');
-    expect(client.snapshot().pageNodes).toHaveLength(1);
-    expect(client.snapshot().pageNodes[0].componentId).toBe('keep-1');
   });
 
   it('semantic edges emit all pairs when multiple nodes share a neighbour type', () => {

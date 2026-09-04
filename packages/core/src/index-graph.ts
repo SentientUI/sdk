@@ -7,14 +7,34 @@
  * should use `@sentientui/core` (the lean entry) instead.
  */
 
-// Re-export everything from the lean entry except `init`, which we override below.
+// Re-export everything from the lean entry except `init`, which we override
+// below — so a graph consumer never needs dual-entry imports (importing the
+// lean entry alongside this one risks initialising two clients).
 export {
   detectDeviceClass,
   detectTrafficSource,
   detectTimeOfDay,
   deriveSessionSegment,
   referrerDomainFromReferer,
+  grantConsent,
 } from './index.js';
+// Sourced from their own modules (identical bindings to the lean barrel's):
+// snapshot/pre-paint helpers, slot helpers, blocks, micro-signals, and the
+// session cookie name — all were missing here, which made the comment above
+// a lie and forced consumers into dual-entry imports.
+export {
+  SNAPSHOT_STORAGE_KEY_PREFIX,
+  readSnapshot,
+  writeSnapshot,
+  renderPrePaintScript,
+} from './snapshot.js';
+export type { DecisionSnapshot, SlotConfigEntry, SlotOps, CompoundLocator } from './snapshot.js';
+export { armOfResult, baselineResultFor, baselineSlots, toWireSlot } from './slots.js';
+export type { SlotDeclInput, SlotResult } from './slots.js';
+export * from './blocks.js';
+export { attachMicroSignalDetectors } from './micro-signals.js';
+export type { MicroSignalEmitter, MicroSignalType } from './micro-signals.js';
+export { sessionCookieName, LEGACY_SESSION_COOKIE_NAME } from './storage-key.js';
 // SSR preload helpers moved to `@sentientui/core/server` in 0.6.0.
 export type {
   SentientConfig,
@@ -47,8 +67,16 @@ export type {
   GraphClient,
 } from './graph.js';
 export { sanitizePageUrl } from './graph.js';
+export { locatorFromElement } from './locator-from-dom.js';
 
-import { init as initLean, isDoNotTrackEnabled, type SentientConfig, type SentientClient } from './index.js';
+import {
+  init as initLean,
+  isDoNotTrackEnabled,
+  _registerConsentUpgradeInit,
+  type SentientConfig,
+  type SentientClient,
+} from './index.js';
+export { isDoNotTrackEnabled };
 import { LEGACY_SESSION_COOKIE_NAME, sessionCookieName } from './storage-key.js';
 
 const DEFAULT_INGEST_URL = 'https://api.sentient-ui.com/v1/events';
@@ -114,9 +142,27 @@ export function init(config: GraphSentientConfig): SentientClient {
   const dntBlocked = config.respectDoNotTrack !== false && isDoNotTrackEnabled();
   const gated = config.consent === false || dntBlocked;
 
-  // Keyless zero-network contract: with no api key there is nothing to feed —
-  // the scanner must never mount and /v1/graph/sync must never fire.
-  if (!config.graph || !config.apiKey || gated || typeof window === 'undefined') return client;
+  // Zero-network contract, mirroring the lean init's own gate: `localMode:
+  // true` forces the on-device engine, and a missing OR INVALID (non-`pk_`)
+  // key means the lean client is keyless-local or disabled. This used to check
+  // only `!apiKey`, so a typo'd key — which the React provider's default
+  // `graph: true` reaches — still mounted the scanner and POSTed
+  // /v1/graph/sync into a client that discards everything.
+  const keyValid = typeof config.apiKey === 'string' && config.apiKey.startsWith('pk_');
+  const zeroNetwork = config.localMode === true || !keyValid;
+  if (!config.graph || zeroNetwork || typeof window === 'undefined') return client;
+
+  if (gated) {
+    // Consent may still be granted later: grantConsent() must re-init through
+    // THIS entry so the post-consent client mounts the scanner — the lean init
+    // it upgraded through before knows nothing about graph resources, so a
+    // consent grant used to lose graph capture for the session. DNT-blocked
+    // clients register nothing: consent cannot override a global opt-out.
+    if (!dntBlocked) {
+      _registerConsentUpgradeInit(config.apiKey, (c) => init(c as GraphSentientConfig));
+    }
+    return client;
+  }
 
   // A prior graph mount for this key is now superseded — tear it down first so
   // its observer/timer don't leak alongside the new mount's.

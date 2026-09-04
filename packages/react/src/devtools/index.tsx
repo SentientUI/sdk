@@ -1,5 +1,7 @@
 'use client';
-import { useEffect, useReducer, useState, useSyncExternalStore, type CSSProperties } from 'react';
+// `type JSX` from react, not the global namespace removed in @types/react@19
+// (peers allow react >=18) — see adaptive-text.tsx.
+import { useEffect, useReducer, useState, useSyncExternalStore, type CSSProperties, type JSX } from 'react';
 import { PERSONAS, PERSONA_DISPLAY, confidenceBand } from '@sentientui/policy';
 import { LEGACY_SESSION_COOKIE_NAME, SNAPSHOT_STORAGE_KEY_PREFIX, sessionCookieName } from '@sentientui/core';
 import {
@@ -307,7 +309,10 @@ export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Elem
     const apply = useLocalEngine
       ? forcePersonaLocal(persona, config.apiKey)
       : forcePersonaKeyed(config.apiKey, config.apiBaseUrl, persona);
-    void apply.then(force);
+    // .catch: a failed simulate (offline /v1/explain, bad key, failed local
+    // dynamic import) is a preview no-op — without the handler it surfaced as
+    // an unhandled promise rejection in the console.
+    apply.then(force).catch(() => {});
   }
 
   return (

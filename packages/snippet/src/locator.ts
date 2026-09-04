@@ -5,7 +5,9 @@ import type { CompoundLocator } from '@sentientui/core';
 // fingerprint mismatch → null (the runtime NEVER guesses). URL scoping short-
 // circuits when the path doesn't match.
 
-function pathname(doc: Document): string {
+/** Exported so goal-wiring shares this copy instead of carrying a
+ *  byte-identical duplicate in the always-on bundle (audit SNIP-13). */
+export function pathname(doc: Document): string {
   const loc = (doc.defaultView ?? (typeof window !== 'undefined' ? window : undefined))?.location;
   return loc?.pathname ?? '';
 }

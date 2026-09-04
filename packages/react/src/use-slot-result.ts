@@ -31,14 +31,25 @@ export type SlotResolution = {
  * Purely read-side: exposure/goal wiring belongs to the calling hook.
  */
 export function useSlotResult(slotId: string, decl: SlotDeclInput): SlotResolution {
-  // Re-render when devtools writes window.__sentient_slot_overrides.
-  useSyncExternalStore(subscribeOverridesChanged, getOverridesVersion, () => 0);
   const client = useSentient();
   const initialSlots = useInitialSlots();
   const [, bump] = useReducer((n: number) => n + 1, 0);
 
-  const override =
-    typeof window !== 'undefined' ? window.__sentient_slot_overrides?.[slotId] : undefined;
+  // Devtools/test forcing (window.__sentient_slot_overrides — applyScenario,
+  // the Playwright/Cypress mocks) read through the useSyncExternalStore
+  // SNAPSHOT with a null server snapshot, exactly like useAssignment's dev
+  // override and useLayoutOrder. The old direct window read in the render body
+  // made the pre-hydration client render disagree with the server HTML
+  // whenever an override was written before hydration — which is precisely
+  // when the package's own Playwright/Cypress mocks write it — i.e. a
+  // hydration mismatch. The snapshot returns the stored object by reference
+  // (stable until the override bus notifies a rewrite), so it passes React's
+  // Object.is snapshot-caching check.
+  const override = useSyncExternalStore(
+    subscribeOverridesChanged,
+    () => (typeof window !== 'undefined' ? window.__sentient_slot_overrides?.[slotId] : undefined),
+    () => undefined,
+  );
   const preloaded = override === undefined ? initialSlots[slotId] : undefined;
   const fromClient =
     override === undefined && preloaded === undefined && client

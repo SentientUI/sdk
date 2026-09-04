@@ -4,7 +4,7 @@ import {
   __resetLocalModeLogGuards,
   LOCAL_MODE_BANNER,
 } from './local-mode.js';
-import { PERSONAS, fnv1a, pickDeterministicArm } from '@sentientui/policy';
+import { PERSONAS, fnv1a, pickDeterministicArm, confidenceBand } from '@sentientui/policy';
 
 const HERO_SLOT = { id: 'hero', dims: { tone: ['calm', 'urgent'] as const } };
 
@@ -101,6 +101,39 @@ describe('init() localMode gating — development condition (engine resolves)', 
     // Both slots readable — the second decide must not evict the first.
     expect(client.getSlotResult('hero')).not.toBeNull();
     expect(client.getSlotResult('pricing-area')).not.toBeNull();
+  });
+
+  // Hosted-client parity on first paint: the network client serves
+  // config.initialPersona (SSR) and then the persisted snapshot BEFORE its
+  // first decide; local mode returned null until the first decide resolved,
+  // so locally-developed pages rendered the default persona and diverged from
+  // what the same code shows in production.
+  it('getPersona() honors config.initialPersona before the first decide', () => {
+    const client = init({
+      apiKey: '',
+      context: 'landing',
+      ssrSessionId: 'sess-local-p1',
+      initialPersona: { persona: 'buyer', confidence: 0.8 },
+    });
+    expect(client.getPersona()).toEqual({
+      persona: 'buyer',
+      confidence: 0.8,
+      band: confidenceBand(0.8),
+    });
+    client.destroy();
+  });
+
+  it('getPersona() falls back to the persisted snapshot before the first decide', () => {
+    localStorage.setItem(
+      '_snt_snap:local',
+      JSON.stringify({ v: 1, persona: 'researcher', band: 'medium', slots: {}, layoutOrder: null, savedAt: Date.now() }),
+    );
+    const client = init({ apiKey: '', context: 'landing', ssrSessionId: 'sess-local-p2' });
+    const p = client.getPersona();
+    expect(p?.persona).toBe('researcher');
+    // Band-only source maps to a band-consistent confidence.
+    expect(p?.band).toBe('medium');
+    client.destroy();
   });
 
   it('adopts pre-written persona attributes instead of rewriting (single-writer)', async () => {

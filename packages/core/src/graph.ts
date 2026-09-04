@@ -36,8 +36,6 @@ export type GraphClient = {
   /** One-shot batch sync of all current page nodes to the backend. */
   syncOnce(): void;
   snapshot(): GraphSnapshot;
-  serialize(): string;
-  restore(data: string): void;
   destroy(): void;
 };
 
@@ -126,18 +124,9 @@ export function createGraphClient(config?: GraphConfig): GraphClient {
     writeStorage(nodesKey, [...pageNodes.values()]);
   };
 
-  const restore = (data: string): void => {
-    try {
-      const parsed = JSON.parse(data) as { pageNodes?: PageNode[] };
-      pageNodes.clear();
-      for (const node of parsed.pageNodes ?? []) {
-        pageNodes.set(node.componentId, node);
-      }
-    } catch {
-      /* ignore corrupt state */
-    }
-  };
-
+  // serialize()/restore() were removed here: persisted-node restoration moved
+  // into this constructor (below), leaving both dead — yet still shipping in
+  // the graph bundle.
   if (typeof window !== 'undefined') {
     const storedNodes = readStorage<PageNode[]>(nodesKey, []);
     for (const node of storedNodes) {
@@ -258,12 +247,6 @@ export function createGraphClient(config?: GraphConfig): GraphClient {
         capturedAt: Date.now(),
       };
     },
-
-    serialize(): string {
-      return JSON.stringify({ pageNodes: [...pageNodes.values()] });
-    },
-
-    restore,
 
     destroy(): void {
       if (typeof window === 'undefined') return;

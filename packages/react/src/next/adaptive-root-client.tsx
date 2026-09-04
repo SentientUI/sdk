@@ -1,6 +1,8 @@
 'use client';
 
-import type { ReactNode } from 'react';
+// `type JSX` from react, not the global namespace removed in @types/react@19
+// (peers allow react >=18) — see adaptive-text.tsx.
+import type { JSX, ReactNode } from 'react';
 // Import from the package entry (kept `external` in tsup) — NOT the relative
 // '../provider.js'. A relative import makes tsup inline a second copy of
 // provider.js into this /next bundle, which runs createContext() again and

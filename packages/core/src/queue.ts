@@ -117,10 +117,25 @@ export function createEventQueue(config: QueueConfig): EventQueue {
   // is dropped, so the set stays bounded by in-flight + queued size.
   const queuedIds = new Set<string>();
 
+  // Bound the in-memory queue at the same cap as the persisted retry bucket
+  // (maxRetrySize). During a sustained outage flush() keeps re-enqueueing every
+  // failed batch while the page keeps producing events, and only the
+  // localStorage bucket was capped — so a multi-hour outage on a long-lived
+  // SPA tab grew this array without limit. Drop-oldest, matching writeBucket's
+  // slice(-max) shed policy: the newest events are the ones a recovering
+  // server can still use.
+  const capQueue = (): void => {
+    while (queue.length > maxRetrySize) {
+      const dropped = queue.shift();
+      if (dropped) queuedIds.delete(dropped.id);
+    }
+  };
+
   const enqueue = (event: SentientEvent): void => {
     if (sentIds.has(event.id) || queuedIds.has(event.id)) return;
     queuedIds.add(event.id);
     queue.push(event);
+    capQueue();
   };
 
   // A retryable failure hands the batch back to the in-memory queue so the
@@ -136,6 +151,9 @@ export function createEventQueue(config: QueueConfig): EventQueue {
       queuedIds.add(event.id); // idempotent — keeps id-tracking consistent
       queue.push(event);
     }
+    // Failed batches count against the same bound as fresh pushes — this path
+    // is exactly the one that grew unbounded during an outage (see capQueue).
+    capQueue();
   };
 
   const retryEvents = drainBucket<SentientEvent>(RETRY_KEY, maxRetrySize);

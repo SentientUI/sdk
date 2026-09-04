@@ -82,6 +82,31 @@ describe('initSession', () => {
     localStorage.clear();
   });
 
+  // destroy() deletes only the SUFFIXED keys (the bare legacy ones belong to
+  // every project on the origin), so before the tombstone the next init()'s
+  // legacy fallback re-adopted the exact identity the visitor asked to forget.
+  it('does not re-adopt the bare legacy identity after an explicit destroy()', () => {
+    document.cookie = '_snt_uid=; max-age=0; path=/';
+    sessionStorage.clear();
+    document.cookie = '_snt_uid=legacy-visitor-id; path=/';
+    localStorage.setItem('_snt_uid', 'legacy-visitor-id');
+
+    const m1 = initSession({ apiKey: 'pk_forget' });
+    expect(m1.getSessionId()).toBe('legacy-visitor-id'); // adopted, as designed
+    m1.destroy();
+
+    const m2 = initSession({ apiKey: 'pk_forget' });
+    expect(m2.getSessionId()).toBeTruthy();
+    expect(m2.getSessionId()).not.toBe('legacy-visitor-id'); // a stranger now
+    // The bare legacy keys survive for OTHER projects on this origin...
+    expect(localStorage.getItem('_snt_uid')).toBe('legacy-visitor-id');
+    // ...which still adopt the legacy identity exactly as before.
+    expect(initSession({ apiKey: 'pk_other' }).getSessionId()).toBe('legacy-visitor-id');
+    m2.destroy();
+    document.cookie = '_snt_uid=; max-age=0; path=/';
+    localStorage.clear();
+  });
+
   it('a suffixed identity beats the legacy one when both exist', () => {
     document.cookie = '_snt_uid=stale-legacy-id; path=/';
     document.cookie = '_snt_uid_pk_both=own-id; path=/';

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { screen } from '@testing-library/react';
-import { renderWithSentient, setupSentientTests } from './index';
+import { renderWithSentient } from './react.js';
+import { setupSentientTests } from './index';
 import { Adaptive } from '../adaptive.js';
 
 function Demo() {

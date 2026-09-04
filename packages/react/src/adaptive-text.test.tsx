@@ -1,5 +1,5 @@
 import { render, waitFor, act } from '@testing-library/react';
-import { createElement, useState, type ReactNode } from 'react';
+import { createElement, type ReactNode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AdaptiveProvider } from './provider.js';
 import { AdaptiveText } from './adaptive-text.js';
@@ -89,8 +89,9 @@ describe('AdaptiveText', () => {
     );
   });
 
-  it('seeds cached managed content synchronously when the client is already live at mount (no flicker, no assign)', async () => {
+  it('syncs cached managed content when the client arrives after mount (the realistic first-paint order)', async () => {
     const assign = vi.fn().mockResolvedValue(null);
+    const onAssignment = vi.fn();
     const client = makeClient({
       assign,
       getAssignment: vi.fn().mockReturnValue({
@@ -103,36 +104,27 @@ describe('AdaptiveText', () => {
     });
     mockedInit.mockReturnValue(client as never);
 
-    // The provider initialises its client in a useEffect, so on the provider's
-    // very first paint the client is null. AdaptiveText's synchronous useState
-    // seed only sees a live client when it mounts *after* the provider is ready.
-    // Harness: mount the provider first, then reveal AdaptiveText once a render
-    // has flushed so its initialiser reads the live cached assignment.
-    let reveal: (() => void) | undefined;
-    function Harness({ children }: { children: ReactNode }) {
-      const [show, setShow] = useState(false);
-      reveal = () => setShow(true);
-      return createElement(
-        AdaptiveProvider,
-        { apiKey: 'pk_test_key_1234', context: 'saas', consent: true, enableGraph: false, children: undefined } as never,
-        show ? children : null,
-      );
-    }
-
+    // The provider initialises its client in a useEffect, so on a normal first
+    // paint AdaptiveText mounts BEFORE the client is live and its synchronous
+    // useState seeds run against a null client. The assign effect must then
+    // sync the cached assignment once the client lands — before the fix it
+    // early-returned on "already cached", so a returning visitor rendered
+    // defaultText all session and no exposure was ever recorded.
     const { getByText, queryByText } = render(
       createElement(AdaptiveText, { id: 'headline', default: 'Ship faster' }),
-      { wrapper: Harness },
+      { wrapper: wrapper(onAssignment) },
     );
 
-    // Provider effect runs -> client live. Now reveal AdaptiveText.
-    await waitFor(() => expect(reveal).toBeTruthy());
-    act(() => reveal!());
-
-    // Cached content shows immediately on AdaptiveText's first paint; default never wins.
-    expect(getByText('Cached headline')).toBeTruthy();
+    await waitFor(() => expect(getByText('Cached headline')).toBeTruthy());
     expect(queryByText('Ship faster')).toBeNull();
-    // content !== undefined -> assign() is skipped entirely.
+    // content !== undefined -> no network assign round-trip…
     expect(assign).not.toHaveBeenCalled();
+    // …but the synced variant still records its exposure and reports upstream,
+    // exactly like the fresh-assign path.
+    expect(client.track).toHaveBeenCalledWith(
+      expect.objectContaining({ componentId: 'headline', variantId: 'bold', eventType: 'variant_assigned' }),
+    );
+    expect(onAssignment).toHaveBeenCalledWith('headline', 'bold');
   });
 
   it('falls back to default and calls assign when the cached assignment has content=undefined', async () => {

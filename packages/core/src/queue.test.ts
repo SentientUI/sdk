@@ -682,3 +682,64 @@ describe('in-session retry after a retryable failure', () => {
     queue.destroy();
   });
 });
+
+// CORE-15: only the localStorage retry bucket was capped — the in-memory
+// queue grew without bound during a sustained outage (flush() re-enqueues
+// every failed batch while the page keeps producing events), turning a
+// multi-hour outage on a long-lived SPA tab into a slow memory leak.
+describe('in-memory queue cap (drop-oldest at maxRetrySize)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps only the newest maxRetrySize events when pushes outpace flushes', () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Large batch size so pushes never auto-flush; small retry cap so the
+    // in-memory bound is observable.
+    const queue = createEventQueue({
+      ingestUrl: INGEST,
+      apiKey: KEY,
+      maxBatchSize: 50,
+      maxRetrySize: 3,
+      flushIntervalMs: 60_000,
+    });
+
+    for (let i = 1; i <= 6; i++) queue.push(makeEvent({ id: `cap-${i}` }));
+    queue.flush();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(fetchMock.mock.calls[0]![1].body as string) as Array<{ id: string }>;
+    // Drop-oldest (matching the persisted bucket's slice(-max) policy): the
+    // newest events are the ones a recovering server can still use.
+    expect(sent.map((e) => e.id)).toEqual(['cap-4', 'cap-5', 'cap-6']);
+    queue.destroy();
+  });
+
+  it('a dropped event can be re-pushed later (its id is released)', () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const queue = createEventQueue({
+      ingestUrl: INGEST,
+      apiKey: KEY,
+      maxBatchSize: 50,
+      maxRetrySize: 2,
+      flushIntervalMs: 60_000,
+    });
+
+    queue.push(makeEvent({ id: 'old-1' }));
+    queue.push(makeEvent({ id: 'old-2' }));
+    queue.push(makeEvent({ id: 'old-3' })); // evicts old-1
+    queue.push(makeEvent({ id: 'old-1' })); // re-push must not be swallowed; evicts old-2
+    queue.flush();
+
+    const sent = JSON.parse(fetchMock.mock.calls[0]![1].body as string) as Array<{ id: string }>;
+    expect(sent.map((e) => e.id)).toEqual(['old-3', 'old-1']);
+    queue.destroy();
+  });
+});

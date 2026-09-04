@@ -1,6 +1,6 @@
 {
   "name": "@sentientui/react",
-  "version": "0.24.5",
+  "version": "0.25.1",
   "private": false,
   "license": "MIT",
   "sideEffects": false,
@@ -52,6 +52,16 @@
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.mjs",
       "require": "./dist/testing.js"
+    },
+    "./testing/msw": {
+      "types": "./dist/testing/msw.d.ts",
+      "import": "./dist/testing/msw.mjs",
+      "require": "./dist/testing/msw.js"
+    },
+    "./testing/react": {
+      "types": "./dist/testing/react.d.ts",
+      "import": "./dist/testing/react.mjs",
+      "require": "./dist/testing/react.js"
     },
     "./testing/node": {
       "types": "./dist/testing/node.d.ts",

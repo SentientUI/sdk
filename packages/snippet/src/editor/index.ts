@@ -1021,24 +1021,48 @@ export function mount(b: Boot): void {
     openForm(
       [
         { key: 'funnel', label: 'Funnel', type: 'select', options: funnels.map((f) => funnelSummaryLine(f)) },
-        // Steps for the FIRST funnel pre-render; re-picking after choosing a
-        // different funnel re-opens with that funnel's steps (simplest flow
-        // that fits the shared form helper).
+        // funnels[0]'s steps pre-render; the change listener installed after
+        // openForm() re-renders them for the picked funnel (audit SNIP-10).
         { key: 'step', label: 'Which step does this element serve?', type: 'select', options: stepOptions(funnels[0]!, goalNames).map((o) => o.label) },
       ],
       'Attach',
       async (v) => {
         const funnel = funnels.find((f) => funnelSummaryLine(f) === v.funnel) ?? funnels[0]!;
         const stepIdx = stepOptions(funnel, goalNames).findIndex((o) => o.label === v.step);
+        // A blank or mismatched step must FAIL, not post stepIndex:null behind
+        // a "✓ Attached" toast — that attached the slot to no step at all
+        // while claiming success (audit SNIP-10).
+        if (stepIdx < 0) {
+          setStatus('⚠ Pick which step this element serves.', false);
+          return;
+        }
         setStatus('Attaching…');
         const r = await save(b, `/v1/editor/funnels/${encodeURIComponent(funnel.funnel_id)}/assign`, {
           slotId,
-          stepIndex: stepIdx >= 0 ? stepIdx : null,
+          stepIndex: stepIdx,
         });
         if (r === 'ok') closeForm();
         reportSave(r, `✓ Attached — this test now works toward “${funnel.display_name}”.`);
       },
     );
+    // Re-render the step options from the SELECTED funnel: the pre-rendered
+    // list is funnels[0]'s, so picking a different funnel showed the wrong
+    // step labels and resolved the index against the wrong funnel (audit
+    // SNIP-10).
+    const funnelSel = formHost.querySelector<HTMLSelectElement>('select[data-field="funnel"]');
+    const stepSel = formHost.querySelector<HTMLSelectElement>('select[data-field="step"]');
+    if (funnelSel && stepSel) {
+      funnelSel.addEventListener('change', () => {
+        const f = funnels.find((x) => funnelSummaryLine(x) === funnelSel.value) ?? funnels[0]!;
+        stepSel.length = 1; // keep the leading "— no change —" option
+        for (const o of stepOptions(f, goalNames)) {
+          const opt = document.createElement('option');
+          opt.value = o.label;
+          opt.textContent = o.label;
+          stepSel.append(opt);
+        }
+      });
+    }
   };
 
   styleBtn.onclick = () => {

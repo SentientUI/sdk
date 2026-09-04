@@ -126,6 +126,41 @@ describe('decide()', () => {
     client.destroy();
   });
 
+  // The failure path (seedSlotBaselines) always guarded with has(); the
+  // success path wrote synthesized baselines unconditionally, clobbering
+  // SSR-seeded / previously-served results for slots the response omitted.
+  it('does not overwrite an SSR-seeded slot with a synthesized baseline when the response omits it', async () => {
+    stubFetch({ ok: true, json: { assignments: {}, persona: 'buyer', confidence: 0.8 } });
+    const client = init({
+      ...BASE_CONFIG,
+      initialSlots: { hero: { tone: 'urgent', motion: 'pulse' } },
+    });
+
+    const outcome = await client.decide({
+      slots: [{ id: 'hero', dims: { tone: ['calm', 'urgent'], motion: ['none', 'pulse'] } }],
+    });
+
+    // Served result stands — both in the store and in the returned outcome
+    // (the declared baseline would have been { tone: 'calm', motion: 'none' }).
+    expect(client.getSlotResult('hero')).toEqual({ tone: 'urgent', motion: 'pulse' });
+    expect(outcome!.slots.hero).toEqual({ tone: 'urgent', motion: 'pulse' });
+    client.destroy();
+  });
+
+  it('a served slot in the response still overwrites a previous result', async () => {
+    stubFetch({ ok: true, json: { slots: { hero: { tone: 'calm', motion: 'none' } }, persona: 'buyer', confidence: 0.8 } });
+    const client = init({
+      ...BASE_CONFIG,
+      initialSlots: { hero: { tone: 'urgent', motion: 'pulse' } },
+    });
+
+    await client.decide({
+      slots: [{ id: 'hero', dims: { tone: ['calm', 'urgent'], motion: ['none', 'pulse'] } }],
+    });
+    expect(client.getSlotResult('hero')).toEqual({ tone: 'calm', motion: 'none' });
+    client.destroy();
+  });
+
   it('returns null on a non-ok response', async () => {
     stubFetch({ ok: false, status: 500 });
     const client = init({ ...BASE_CONFIG });
@@ -259,6 +294,73 @@ describe('decide()', () => {
     });
     expect((snap.slots as Record<string, unknown>).hero).toEqual({ tone: 'urgent', motion: 'none' });
     expect(typeof snap.savedAt).toBe('number');
+    client.destroy();
+  });
+
+  // CORE-16: per-slot lazy-decide patterns fire one decide per mounted slot in
+  // the same tick; without coalescing that was N roundtrips + N snapshot
+  // rewrites for a single page.
+  it('coalesces concurrent identical decides into one request and one snapshot write', async () => {
+    const calls = stubFetch({ ok: true, json: DECIDE_OK });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    const client = init({ ...BASE_CONFIG });
+
+    // Two separately-constructed but identical inputs: coalescing must key on
+    // request CONTENT, not object identity.
+    const input = () => ({
+      slots: [{ id: 'hero', dims: { tone: ['calm', 'urgent'], motion: ['none', 'pulse'] } }],
+    });
+    const [a, b] = await Promise.all([client.decide(input()), client.decide(input())]);
+
+    expect(calls.filter((c) => c.url.endsWith('/decide'))).toHaveLength(1);
+    expect(a).toEqual(b);
+    expect(a?.slots.hero).toEqual({ tone: 'urgent', motion: 'none' });
+    expect(
+      setItem.mock.calls.filter(([k]) => k === '_snt_snap:' + BASE_CONFIG.apiKey),
+    ).toHaveLength(1);
+    client.destroy();
+  });
+
+  it('does NOT coalesce concurrent decides whose slot sets differ', async () => {
+    const calls = stubFetch({ ok: true, json: DECIDE_OK });
+    const client = init({ ...BASE_CONFIG });
+
+    // Sharing one promise here would hand the second caller an outcome that
+    // never decided (or baselined) its slot.
+    const [a, b] = await Promise.all([
+      client.decide({ slots: [{ id: 'hero', dims: { tone: ['calm', 'urgent'], motion: ['none', 'pulse'] } }] }),
+      client.decide({ slots: [{ id: 'pricing-area', arms: ['standard', 'social_first'] }] }),
+    ]);
+
+    expect(calls.filter((c) => c.url.endsWith('/decide'))).toHaveLength(2);
+    expect(a?.slots).toHaveProperty('hero');
+    expect(b?.slots).toHaveProperty('pricing-area');
+    client.destroy();
+  });
+
+  it('a settled decide leaves the in-flight map: the same input fetches again later', async () => {
+    const calls = stubFetch({ ok: true, json: DECIDE_OK });
+    const client = init({ ...BASE_CONFIG });
+    const input = { slots: [{ id: 'hero', arms: ['a', 'b'] }] };
+
+    await client.decide(input);
+    await client.decide(input);
+
+    // Coalescing dedupes CONCURRENT calls only — a sequential re-decide is a
+    // fresh decision, not a stale cache hit.
+    expect(calls.filter((c) => c.url.endsWith('/decide'))).toHaveLength(2);
+    client.destroy();
+  });
+
+  it('a failed decide is not stuck in the in-flight map (retry issues a new request)', async () => {
+    const calls = stubFetch({ ok: false, status: 500 });
+    const client = init({ ...BASE_CONFIG });
+    const input = { slots: [{ id: 'hero', arms: ['a', 'b'] }] };
+
+    expect(await client.decide(input)).toBeNull();
+    expect(await client.decide(input)).toBeNull();
+
+    expect(calls.filter((c) => c.url.endsWith('/decide'))).toHaveLength(2);
     client.destroy();
   });
 });

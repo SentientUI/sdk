@@ -19,7 +19,7 @@ export type Assignment = {
 export type AssignmentCache = {
   get(componentId: string, segment: string): Assignment | null;
   set(componentId: string, segment: string, assignment: Assignment): void;
-  invalidate(componentId: string): void;
+  /** Drops every entry, memory and localStorage — the forget-me path. */
   clear(): void;
 };
 
@@ -123,28 +123,6 @@ export function createAssignmentCache(ttlMs: number = DEFAULT_TTL_MS, apiKey?: s
         localStorage.setItem(storageKey(componentId, segment), JSON.stringify(assignment));
       } catch {
         /* ignore */
-      }
-    },
-
-    invalidate(componentId: string): void {
-      // Memory keys are encodeURIComponent(componentId) + ':' + encoded segment,
-      // so match on the encoded-id prefix (the ':' after it can't appear inside
-      // the encoded id).
-      const prefix = `${encodeURIComponent(componentId)}:`;
-      for (const key of [...memory.keys()]) {
-        if (key.startsWith(prefix)) {
-          memory.delete(key);
-        }
-      }
-      for (const storageK of listStorageKeys()) {
-        const parsed = parseStorageKey(storageK);
-        if (parsed?.componentId === componentId) {
-          try {
-            localStorage.removeItem(storageK);
-          } catch {
-            /* ignore */
-          }
-        }
       }
     },
 

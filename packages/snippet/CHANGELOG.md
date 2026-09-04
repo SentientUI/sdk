@@ -1,5 +1,11 @@
 # @sentientui/snippet
 
+## 0.18.0
+
+### Minor Changes
+
+- c69cdaf: September audit fixes. Consent: `grantConsent()` on a `consent:false` boot now installs the editor-defined goal listeners (consent-gated sites previously recorded zero goals per visit); a revoke during the in-flight decide no longer re-persists the snapshot; `revokeConsent()` clears the fired-goals sessionStorage; `getState().consent` reflects the live flags. Robustness: post-decide apply defers to `DOMContentLoaded` for async/GTM installs (no more false locator misses suspending healthy slots); a decide resolving after the 5s timeout is applied late instead of losing the whole view; invalid selectors are guarded per-slot and `getState()` never throws into host code; a safe no-op global API is installed even on config errors so `SentientSnippet.goal()` never throws; `matchAll` replaced with an ES2017-safe loop (iOS 12-era engines); unknown block gap tokens fall back to `md`; the editor loader removes its `no-referrer` meta on load failure; persona preview survives hydration via SPA hooks; the editor funnel-attach form uses the selected funnel's steps and surfaces failures instead of posting a null step behind a success toast.
+
 ## 0.17.2
 
 ### Patch Changes

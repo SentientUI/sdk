@@ -30,7 +30,7 @@ page is left exactly as it was.
   };
 </script>
 <script
-  src="https://unpkg.com/@sentientui/snippet@0.11.4/dist/snippet.global.js"
+  src="https://unpkg.com/@sentientui/snippet@0.17.2/dist/snippet.global.js"
   defer
   crossorigin="anonymous"
 ></script>
@@ -67,4 +67,4 @@ signals by default — that's what builds audience profiles with zero tagging. A
 `sectionCapture: false` to `window.sentient` to turn it off; it never runs for a Do-Not-Track,
 Global Privacy Control, or consent-gated visitor.
 
-Bundle ≤ 20 KiB gzip (CI-enforced). MIT.
+Bundle ≤ 21 KiB gzip (CI-enforced). MIT.

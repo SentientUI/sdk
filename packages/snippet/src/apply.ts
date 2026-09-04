@@ -6,6 +6,20 @@ import { applySlotBlocks, sweepOrphanBlocks } from './blocks';
 
 type SlotResult = string | Record<string, string>;
 
+// One guarded target resolution shared by both declared-slot passes and the
+// registry cfg.target fallback (audit SNIP-4 + SNIP-17): an invalid declared
+// selector must make THAT slot apply nothing, not throw out of the whole apply
+// loop — the same per-slot isolation resolveSections/resolveLocatorOne already
+// have. Sharing it also keeps one copy of the resolution in the bundle.
+function declTargets(target: string | undefined, doc: Document): Element[] {
+  if (!target) return [doc.documentElement];
+  try {
+    return Array.from(doc.querySelectorAll(target));
+  } catch {
+    return [];
+  }
+}
+
 export function applyPersonaAttributes(persona: string, band: string, doc: Document): void {
   doc.documentElement.setAttribute('data-sentient-persona', persona);
   doc.documentElement.setAttribute('data-sentient-confidence', band);
@@ -24,9 +38,7 @@ export function applySlotAttributes(
   for (const [slotId, decl] of Object.entries(decls)) {
     const result = results[slotId];
     if (!result || typeof result === 'string') continue;
-    const targets: Element[] = decl.target
-      ? Array.from(doc.querySelectorAll(decl.target))
-      : [doc.documentElement];
+    const targets = declTargets(decl.target, doc);
     for (const el of targets) {
       for (const [dim, value] of Object.entries(result)) {
         if (decl.dims[dim]?.includes(value)) el.setAttribute(`data-${dim}`, value);
@@ -52,9 +64,7 @@ export function applySlotArms(
     const result = results[slotId];
     if (typeof result !== 'string') continue; // dims results are handled elsewhere
     if (!decl.arms || !decl.arms.includes(result)) continue; // undeclared arm → no change
-    const targets: Element[] = decl.target
-      ? Array.from(doc.querySelectorAll(decl.target))
-      : [doc.documentElement];
+    const targets = declTargets(decl.target, doc);
     for (const el of targets) el.setAttribute('data-sentient-arm', result);
   }
 }
@@ -98,10 +108,11 @@ export function applyRegistrySlots(
     if (cfg.locator) {
       const el = resolveLocatorOne(cfg.locator, doc);
       targets = el ? [el] : [];
-    } else if (cfg.target) {
-      targets = Array.from(doc.querySelectorAll(cfg.target));
     } else {
-      targets = [doc.documentElement];
+      // declTargets guards the selector: a broken cfg.target yields [] and is
+      // reported as a miss below (so the worker can suspend that slot) instead
+      // of aborting every remaining slot in this loop (audit SNIP-4).
+      targets = declTargets(cfg.target, doc);
     }
     // A slot that names a specific target/locator but found nothing is a miss —
     // reported so the worker can suspend a broken slot. Applies nothing either way.

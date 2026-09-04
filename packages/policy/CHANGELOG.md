@@ -1,5 +1,29 @@
 # @sentientui/policy
 
+## 0.8.0
+
+### Minor Changes
+
+- af5b76c: New `@sentientui/policy/taxonomy` subpath: the two-layer section vocabulary.
+
+  `SEMANTIC_PARENTS` (the 10-value enum the layout bandit orders on — the only
+  layer that can ever widen the arm space), the ~44-topic `TOPICS` table with
+  per-topic default `role` (converter / persuader / structural), and
+  `parentOfTopic` / `roleOfTopic` with fail-safe defaults (unknown topic →
+  `generic` parent, `persuader` role — never `structural`, which would pin real
+  content in place).
+
+  Deliberately a subpath, not the barrel: the barrel is reachable from the
+  always-on snippet bundle and the topic table costs ~405 bytes gzip that the
+  browser never reads. The map initialiser carries `/* @__PURE__ */` so bundlers
+  can drop it — keep that annotation when editing.
+
+## 0.7.0
+
+### Minor Changes
+
+- c69cdaf: New exports `pickFromWeights` and `WEIGHTS_FALLBACK_PRIOR_PULLS`: the React SDK's degraded-fallback weights picker, moved here verbatim so all shrinkage variants live in the pinned package. Deliberately keeps its historical fixed 5-pseudo-pull zero prior (documented and pin-tested as distinct from `SHRINKAGE_M = 20`); unifying the constants would be a serving-behavior change requiring a replay.
+
 ## 0.6.2
 
 ### Patch Changes

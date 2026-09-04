@@ -45,7 +45,12 @@ const CSS_FN_ALLOW = /^(rgb|rgba|hsl|hsla|calc|var|min|max|clamp)$/i;
 export function cssValueSafe(v: string): boolean {
   if (v.trim().length === 0 || /[;{}<>]/.test(v)) return false;
   // Every `(` must be immediately preceded by an allow-listed function name.
-  for (const m of v.matchAll(/([A-Za-z-]*)\(/g)) {
+  // RegExp.exec loop, NOT String#matchAll: matchAll is ES2020 and this ships
+  // in the es2017-target always-on bundle — on iOS 12-era engines any styled
+  // slot threw here, aborting personalization (audit SNIP-5).
+  const fn = /([A-Za-z-]*)\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = fn.exec(v)) !== null) {
     if (!CSS_FN_ALLOW.test(m[1] ?? '')) return false;
   }
   return true;

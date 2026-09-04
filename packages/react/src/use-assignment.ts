@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { type AssignResult } from '@sentientui/core';
+// The degraded-fallback pick lives in @sentientui/policy so its shrinkage
+// formula is single-sourced with the pinned statistics (audit REACT-14 — a
+// local copy here was a third shrinkage variant nobody replayed).
+import { pickFromWeights } from '@sentientui/policy';
 import { useSentient, useInitialAssignments, useSessionSegment, useSsrFallback, useOnAssignment, useDebug } from './provider.js';
-import { subscribe, getWeights, type ComponentWeights } from './weights-store.js';
+import { subscribe, getWeights } from './weights-store.js';
 import { subscribeOverridesChanged } from './override-events.js';
 import { getDevOverride } from './dev-override.js';
 
@@ -26,32 +30,6 @@ export type AssignmentState = {
    */
   isOverride?: boolean;
 };
-
-// Pseudo-count for the shrinkage prior below — the number of "prior" pulls at
-// reward 0 mixed into every arm's mean. Large enough to sink a lucky 1-pull
-// arm, small enough to be negligible once an arm has real traffic.
-const PRIOR_PULLS = 5;
-
-/**
- * Degraded-fallback selection from cached bandit weights (used only when the
- * server assignment hasn't resolved). Ranks arms by a posterior mean shrunk
- * toward a zero prior — `pulls·avgReward / (pulls + PRIOR_PULLS)` — so a lucky
- * small-sample arm (e.g. 1 pull at avgReward 1.0) can't outrank a well-sampled
- * one (500 pulls at 0.2). With equal pulls the shrinkage is monotonic in
- * avgReward, preserving plain "highest avgReward wins" behavior.
- */
-function pickFromWeights(weights: ComponentWeights, variantIds: string[]): string | null {
-  let best: { variantId: string; score: number } | null = null;
-  for (const v of weights.variants) {
-    if (!variantIds.includes(v.variantId)) continue;
-    const pulls = v.pulls ?? 0;
-    const score = pulls > 0 ? (pulls * v.avgReward) / (pulls + PRIOR_PULLS) : 0;
-    if (!best || score > best.score) {
-      best = { variantId: v.variantId, score };
-    }
-  }
-  return best?.variantId ?? null;
-}
 
 /**
  * Returns a sticky variant assignment for a component.
@@ -134,7 +112,7 @@ export function useAssignment(componentId: string, variantIds: string[], agentDa
     }
     const weights = getWeights(componentId);
     if (weights) {
-      const chosen = pickFromWeights(weights, variantIds);
+      const chosen = pickFromWeights(weights.variants, variantIds);
       if (chosen) return { variantId: chosen, content: null, isLoading: false, settled: true };
     }
     // Interim placeholder while the async assign() below is in flight — not a
@@ -160,6 +138,17 @@ export function useAssignment(componentId: string, variantIds: string[], agentDa
     if (cached && (variantIds.includes(cached.variantId) || cached.content)) {
       setState({ variantId: cached.variantId, content: cached.content ?? null, isLoading: false, settled: true });
       reportAssignment(cached.variantId);
+      return;
+    }
+    // Weights-resolved initializer pick: the useState initializer above can
+    // settle on a variant chosen from cached bandit weights but, being
+    // render-phase, it cannot call onAssignment — so weights-resolved variants
+    // never reported while the cache/assign paths always did. Report it here;
+    // the pick is recomputed (deterministic for the same store contents) so a
+    // settled state from any OTHER source is left alone.
+    const weights = getWeights(componentId);
+    if (weights && state.settled && state.variantId && state.variantId === pickFromWeights(weights.variants, variantIds)) {
+      reportAssignment(state.variantId);
       return;
     }
     setState((prev) => prev.variantId ? prev : { variantId: variantIds[0] ?? null, content: null, isLoading: false, settled: false });
@@ -195,10 +184,17 @@ export function useAssignment(componentId: string, variantIds: string[], agentDa
       const cached = client.getAssignment(componentId, segment);
       if (cached && (variantIds.includes(cached.variantId) || cached.content)) {
         setState({ variantId: cached.variantId, content: cached.content ?? null, isLoading: false, settled: true });
+        reportAssignment(cached.variantId);
         return;
       }
-      const chosen = pickFromWeights(weights, variantIds);
-      if (chosen) setState({ variantId: chosen, content: null, isLoading: false, settled: true });
+      const chosen = pickFromWeights(weights.variants, variantIds);
+      if (chosen) {
+        setState({ variantId: chosen, content: null, isLoading: false, settled: true });
+        // A live-subscription pick is as real an assignment as assign()'s
+        // result — without this report, onAssignment fired late or never for
+        // weights-resolved variants (reportAssignment dedupes per variant).
+        reportAssignment(chosen);
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overrideVariant, client, componentId, segment]);

@@ -1,4 +1,6 @@
-import { Children, isValidElement, useEffect, useMemo, useRef, type ReactNode } from 'react';
+// `type JSX` from react, not the global namespace removed in @types/react@19
+// (peers allow react >=18) — see adaptive-text.tsx.
+import { Children, isValidElement, useEffect, useMemo, useRef, type JSX, type ReactNode } from 'react';
 import type { SlotDeclInput } from '@sentientui/core';
 import { useAdaptiveApiKey, useSentient } from './provider.js';
 import { useSlotResult } from './use-slot-result.js';
@@ -135,8 +137,11 @@ export function AdaptiveGroup(props: AdaptiveGroupProps): JSX.Element {
   const goalKey =
     props.goal === undefined ? null : typeof props.goal === 'string' ? props.goal : JSON.stringify(props.goal);
   useEffect(() => {
-    // Forced arms record nothing (preview only) — same gate as the exposure.
-    if (!client || props.goal === undefined || source === 'override') return;
+    // Forced arms record nothing (preview only), and an unresolved `baseline`
+    // source never recorded an impression (see the exposure effect above) — a
+    // conversion attached in that state would attribute to an arm with zero
+    // exposures. Same source gates as the exposure.
+    if (!client || props.goal === undefined || source === 'override' || source === 'baseline') return;
     const node = containerRef.current;
     if (!node) return;
     const label = goalLabelOf(props.goal);

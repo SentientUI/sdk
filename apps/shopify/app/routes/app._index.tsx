@@ -17,7 +17,9 @@ import {
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { getSettings, provisionSentient, saveSettings } from "../lib/settings.server";
-import { ensureWebPixel } from "../lib/pixel.server";
+import { isDropBannerVisible } from "../lib/drop-visibility";
+import { settingsEncryptionEnabled } from "../lib/secret-box";
+import { ensureWebPixel, healWebPixelApiBase } from "../lib/pixel.server";
 import {
   PERSONA_TAGS_KEY,
   PERSONA_TAGS_NAMESPACE,
@@ -34,6 +36,13 @@ import {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
   const settings = await getSettings(session.shop);
+  // The pixel bakes SENTIENT_API_URL into its settings at save time, so an
+  // env change stranded every shop's checkout events on the old API until the
+  // merchant happened to re-save. Heal it on the admin visit instead: reads
+  // the pixel, rewrites only when the stored apiBase differs. Fail-soft.
+  if (settings) {
+    await healWebPixelApiBase(admin.graphql, settings.publishableKey);
+  }
   // Current tag → persona mapping, from the app-owned shop metafield the
   // theme embed reads. Best-effort: a read failure just shows an empty box.
   let mappingText = "";
@@ -56,6 +65,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     publishableKey: settings?.publishableKey ?? "",
     // The sk_ is never echoed back — only whether one is stored.
     hasSecretKey: Boolean(settings?.secretKey),
+    // secret-box.ts silently degrades to plaintext when the env key is unset —
+    // the screen must say so, or the downgrade is invisible until a breach.
+    encryptionEnabled: settingsEncryptionEnabled(),
+    // Webhook health: a terminal drop (rotated sk_ → 401) used to live only in
+    // Fly logs. Recent drop with no forward since → warn the merchant; a
+    // forward newer than the drop clears the banner with no manual dismissal.
+    droppedRecently: isDropBannerVisible(
+      new Date(),
+      settings?.lastDropAt ?? null,
+      settings?.lastForwardAt ?? null,
+    ),
+    // Formatted server-side: toLocaleString in the component would render
+    // differently on server and client (locale/timezone) and trip hydration.
+    lastDropAtDisplay: settings?.lastDropAt?.toISOString().replace('T', ' ').slice(0, 16).concat(' UTC') ?? null,
+    lastDropReason: settings?.lastDropReason ?? null,
     mappingText,
   });
 };
@@ -125,6 +149,36 @@ export default function Index() {
                 <Text as="h2" variant="headingMd">
                   Connect your SentientUI project
                 </Text>
+                {/* encryptSecret writes PLAINTEXT when SETTINGS_ENCRYPTION_KEY
+                    is unset (deliberate degrade, see secret-box.ts) — without
+                    this banner a lost env var downgraded every subsequent save
+                    silently. */}
+                {!data.encryptionEnabled && (
+                  <Banner tone="warning">
+                    Secret-key encryption is off: SETTINGS_ENCRYPTION_KEY is not set on the app
+                    server, so saved keys are stored unencrypted. Everything still works, but the
+                    operator should set the key (deploy runbook) — keys re-encrypt on the next save.
+                  </Banner>
+                )}
+                {data.droppedRecently && (
+                  <Banner tone="critical" title="Some orders are not reaching SentientUI">
+                    <BlockStack gap="200">
+                      <Text as="p" variant="bodyMd">
+                        An order or refund could not be delivered to SentientUI and will not be
+                        retried
+                        {data.lastDropAtDisplay ? ` (last time: ${data.lastDropAtDisplay})` : ""}
+                        . The usual cause is a rotated or revoked secret key — check your API keys
+                        in the SentientUI dashboard and paste the current secret key below. This
+                        warning clears on its own once orders start flowing again.
+                      </Text>
+                      {data.lastDropReason && (
+                        <Text as="p" tone="subdued" variant="bodySm">
+                          Details: {data.lastDropReason}
+                        </Text>
+                      )}
+                    </BlockStack>
+                  </Banner>
+                )}
                 {result && "error" in result && result.error && (
                   <Banner tone={result.ok ? "warning" : "critical"}>{result.error}</Banner>
                 )}

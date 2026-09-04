@@ -13,6 +13,7 @@ describe('forwardWebhook — the retry contract', () => {
     const f = fetchOk();
     const r = await forwardWebhook({ topic: 'ORDERS_PAID', payload: ORDER, secretKey: 'sk_test', apiUrl: 'https://api.test', fetchImpl: f });
     expect(r.status).toBe(200);
+    expect(r.outcome).toBe('forwarded');
     const [url, init] = (f as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(url).toBe('https://api.test/v1/conversions');
     expect((init as RequestInit).headers).toMatchObject({ authorization: 'Bearer sk_test' });
@@ -32,6 +33,7 @@ describe('forwardWebhook — the retry contract', () => {
   it('a non-2xx from SentientUI → 500, so Shopify retries for 48h', async () => {
     const r = await forwardWebhook({ topic: 'ORDERS_PAID', payload: ORDER, secretKey: 'sk_test', apiUrl: 'https://api.test', fetchImpl: fetchOk(503) });
     expect(r.status).toBe(500);
+    expect(r.outcome).toBe('retry');
   });
 
   it('an unreachable API → 500 (same retry path)', async () => {
@@ -44,6 +46,7 @@ describe('forwardWebhook — the retry contract', () => {
     const f = fetchOk();
     const r = await forwardWebhook({ topic: 'ORDERS_PAID', payload: ORDER, secretKey: null, fetchImpl: f });
     expect(r.status).toBe(200);
+    expect(r.outcome).toBe('skipped');
     expect(f).not.toHaveBeenCalled();
   });
 
@@ -64,6 +67,10 @@ describe('forwardWebhook — the retry contract', () => {
       fetchImpl: fetchOk(status), onTerminal,
     });
     expect(r.status).toBe(200);
+    // 200-but-dropped and 200-forwarded must be distinguishable: the routes
+    // record lastForwardAt only for real deliveries, and conflating them
+    // would let a dropped order mark the shop's webhook health as fine.
+    expect(r.outcome).toBe('dropped');
     expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({ status, path: '/v1/conversions' }));
   });
 
@@ -189,5 +196,24 @@ describe('payload validation at the webhook boundary', () => {
     });
     expect(r.status).toBe(200);
     expect(f).toHaveBeenCalled();
+  });
+});
+
+describe('onTerminal is awaited', () => {
+  it('waits for an async onTerminal before returning, so the drop is persisted before Shopify gets its 200', async () => {
+    // The routes write the drop to the DB from onTerminal. Fire-and-forget
+    // meant the 200 could go back with the write still in flight.
+    const order: string[] = [];
+    const r = await forwardWebhook({
+      topic: 'ORDERS_PAID', payload: ORDER, secretKey: 'sk_test',
+      fetchImpl: fetchOk(401),
+      onTerminal: async () => {
+        await new Promise((res) => setTimeout(res, 10));
+        order.push('recorded');
+      },
+    });
+    order.push('returned');
+    expect(r.outcome).toBe('dropped');
+    expect(order).toEqual(['recorded', 'returned']);
   });
 });

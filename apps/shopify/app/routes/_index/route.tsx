@@ -6,6 +6,11 @@ import { login } from "../../shopify.server";
 
 import styles from "./styles.module.css";
 
+// The public root, seen outside the embedded admin (app-store listing clicks,
+// health checkers, the curious). It shipped for months with the template's
+// "[your app]" placeholder copy — say what the connector actually does
+// instead, in plain merchant language, and keep the template's shop-domain
+// login form as the way in.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
 
@@ -22,9 +27,11 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>SentientUI for Shopify</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Connects your store&rsquo;s orders and refunds to SentientUI, so your
+          revenue goals and experiments are credited with the sales they
+          actually made.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
@@ -38,20 +45,13 @@ export default function App() {
             </button>
           </Form>
         )}
-        <ul className={styles.list}>
-          <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
-          </li>
-          <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
-          </li>
-          <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
-          </li>
-        </ul>
+        <p className={styles.text}>
+          New here?{" "}
+          <a href="https://sentient-ui.com" target="_blank" rel="noreferrer">
+            Learn more about SentientUI
+          </a>
+          .
+        </p>
       </div>
     </div>
   );

@@ -3,7 +3,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   // index-server is a separate entry so SSR helpers (server.ts) never land in
   // the browser bundles; code shared with the lean entry stays in the chunk.
-  entry: ['src/index.ts', 'src/index-graph.ts', 'src/index-engagement.ts', 'src/index-server.ts', 'src/index-local.ts', 'src/index-local-stub.ts'],
+  entry: ['src/index.ts', 'src/index-graph.ts', 'src/index-engagement.ts', 'src/index-topics.ts', 'src/index-server.ts', 'src/index-local.ts', 'src/index-local-stub.ts'],
   format: ['esm', 'cjs'],
   outExtension({ format }) {
     return { js: format === 'esm' ? '.mjs' : '.js' };

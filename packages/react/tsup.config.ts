@@ -81,6 +81,33 @@ export default defineConfig([
     minify: true,
   },
   {
+    // msw-dependent testing helpers — separate entry so the main ./testing
+    // entry never imports the OPTIONAL msw peer at module top level (which
+    // crashed consumers without msw installed).
+    entry: { 'testing/msw': 'src/testing/msw.ts' },
+    format: ['esm', 'cjs'],
+    outExtension,
+    dts: true,
+    sourcemap: true,
+    external: ['msw'],
+    target: 'es2017',
+    minify: true,
+  },
+  {
+    // @testing-library/react-dependent testing helpers — separate entry so the
+    // main ./testing entry never imports the OPTIONAL RTL peer at module top
+    // level (which crashed consumers without it installed).
+    entry: { 'testing/react': 'src/testing/react.tsx' },
+    format: ['esm', 'cjs'],
+    outExtension,
+    dts: true,
+    sourcemap: true,
+    banner: { js: "'use client';" },
+    external: ['react', '@sentientui/core', '@sentientui/react', '@sentientui/policy', '@testing-library/react'],
+    target: 'es2017',
+    minify: true,
+  },
+  {
     // Node-only testing helpers (msw/node) — separate entry so the main
     // ./testing entry stays browser-bundle-safe (Cypress/webpack).
     entry: { 'testing/node': 'src/testing/node.ts' },

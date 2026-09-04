@@ -10,7 +10,7 @@ const pkg = JSON.parse(
 export default defineConfig({
   // Two IIFE bundles: the lean always-on snippet, and a separate editor overlay
   // loaded lazily only in ?sentient_editor= mode (zero bytes on the normal path,
-  // so it never counts against the snippet's 16 KB budget). Each bundle has its
+  // so it never counts against the snippet's 21 KiB budget). Each bundle has its
   // own gzip budget enforced by scripts/size-check.ts.
   entry: { snippet: 'src/index.ts', editor: 'src/editor/index.ts' },
   format: ['iife'],

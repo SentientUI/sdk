@@ -5,7 +5,6 @@ const { leanClient, scanner, graphClient } = vi.hoisted(() => ({
   leanClient: { destroy: vi.fn(), assign: vi.fn(), goal: vi.fn() },
   scanner: { scan: vi.fn(), observe: vi.fn(), destroy: vi.fn() },
   graphClient: {
-    restore: vi.fn(),
     addPageNode: vi.fn(),
     addStructuralEdge: vi.fn(),
     syncOnce: vi.fn(),
@@ -17,6 +16,8 @@ const { leanClient, scanner, graphClient } = vi.hoisted(() => ({
 vi.mock('./index.js', () => ({
   init: vi.fn(() => leanClient),
   isDoNotTrackEnabled: vi.fn(() => false),
+  grantConsent: vi.fn(),
+  _registerConsentUpgradeInit: vi.fn(),
   detectDeviceClass: vi.fn(),
   detectTrafficSource: vi.fn(),
   detectTimeOfDay: vi.fn(),
@@ -27,7 +28,7 @@ vi.mock('./scanner.js', () => ({ createDOMScanner: vi.fn(() => scanner) }));
 vi.mock('./graph.js', () => ({ createGraphClient: vi.fn(() => graphClient) }));
 
 import { init } from './index-graph.js';
-import { init as initLean, isDoNotTrackEnabled } from './index.js';
+import { init as initLean, isDoNotTrackEnabled, _registerConsentUpgradeInit } from './index.js';
 import { createDOMScanner } from './scanner.js';
 
 const SCAN_RESULT = {
@@ -78,13 +79,37 @@ describe('index-graph init override', () => {
     expect(client).toBe(leanClient);
   });
 
-  it('does not re-load persisted page nodes via restore() — the graph client constructor owns that', () => {
-    // Persisted _snt_graph_nodes is loaded once, by createGraphClient's constructor.
-    // This entry must NOT re-read the key and call restore() on top of it (that was
-    // a redundant second load path that cleared and reloaded identical data).
-    localStorage.setItem('_snt_graph_nodes', JSON.stringify([{ id: 'hero', componentId: 'hero' }]));
+  // The gate must mirror the lean init's zero-network conditions, not just
+  // `!apiKey`: an invalid non-`pk_` key falls into keyless local mode, where
+  // the lean client never touches the network — yet this entry still mounted
+  // the scanner and POSTed /v1/graph/sync. The React provider's default
+  // `graph: true` reaches this for any typo'd key.
+  it('does not mount the graph scanner for an invalid (non-pk_) apiKey', () => {
+    const client = init({ apiKey: 'sk_not_public1', context: 'saas', graph: true });
+    expect(createDOMScanner).not.toHaveBeenCalled();
+    expect(graphClient.syncOnce).not.toHaveBeenCalled();
+    expect(client).toBe(leanClient);
+  });
+
+  it('does not mount the graph scanner when localMode: true forces the on-device engine', () => {
+    const client = init({ apiKey: 'pk_test', context: 'saas', graph: true, localMode: true });
+    expect(createDOMScanner).not.toHaveBeenCalled();
+    expect(graphClient.syncOnce).not.toHaveBeenCalled();
+    expect(client).toBe(leanClient);
+  });
+
+  // A consent-gated graph client must upgrade through THIS entry's init when
+  // consent arrives — grantConsent() upgrading via the lean init produced a
+  // post-consent client that never mounted the scanner.
+  it('registers its own init as the consent upgrade path when gated on consent', () => {
+    init({ apiKey: 'pk_test', context: 'saas', graph: true, consent: false });
+    expect(_registerConsentUpgradeInit).toHaveBeenCalledWith('pk_test', expect.any(Function));
+  });
+
+  it('registers no consent upgrade path under DNT (consent cannot override the opt-out)', () => {
+    vi.mocked(isDoNotTrackEnabled).mockReturnValueOnce(true);
     init({ apiKey: 'pk_test', context: 'saas', graph: true });
-    expect(graphClient.restore).not.toHaveBeenCalled();
+    expect(_registerConsentUpgradeInit).not.toHaveBeenCalled();
   });
 
   it('feeds scanned nodes and edges into the graph then syncs once (no DOM text by default)', async () => {
@@ -118,17 +143,11 @@ describe('index-graph init override', () => {
     expect(graphClient.syncOnce).toHaveBeenCalledOnce();
   });
 
-  it('recovers from corrupt _snt_graph_nodes without throwing and never calls restore', () => {
+  it('recovers from corrupt _snt_graph_nodes without throwing', () => {
+    // This entry never reads _snt_graph_nodes itself; corrupt persisted state
+    // is handled inside the graph client constructor's own try/catch.
     localStorage.setItem('_snt_graph_nodes', '}{ not valid json');
     expect(() => init({ apiKey: 'pk_test', context: 'saas', graph: true })).not.toThrow();
-    // This entry no longer reads _snt_graph_nodes; corrupt state is handled by the
-    // graph client constructor's own try/catch, so restore is never called here.
-    expect(graphClient.restore).not.toHaveBeenCalled();
-  });
-
-  it('does not call restore when no persisted nodes exist', () => {
-    init({ apiKey: 'pk_test', context: 'saas', graph: true });
-    expect(graphClient.restore).not.toHaveBeenCalled();
   });
 
   it('debounce collapses many rapid mutation events into a single sync', async () => {

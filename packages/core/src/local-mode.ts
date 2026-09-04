@@ -9,7 +9,7 @@
  * console.error per page load.
  */
 import { initSession } from './session.js';
-import { writeSnapshot } from './snapshot.js';
+import { readSnapshot, writeSnapshot } from './snapshot.js';
 import { confidenceBand } from '@sentientui/policy';
 import type {
   DecideOutcome,
@@ -88,6 +88,21 @@ export function createLocalModeClient(config: SentientConfig): SentientClient {
 
   let lastOutcome: DecideOutcome | null = null;
 
+  // Pre-first-decide persona seed. The hosted client serves config.initialPersona
+  // (SSR) and then the persisted snapshot before its first decide; local mode
+  // returned null until the first decide resolved, so a locally-developed page
+  // rendered its default persona on first paint and diverged from what the
+  // same code shows against production. Band-only snapshot sources map to the
+  // same band-consistent confidences the hosted client uses, so
+  // confidenceBand(confidence) always round-trips to the stored band.
+  const BAND_CONFIDENCE: Record<string, number> = { low: 0.15, medium: 0.5, high: 0.85 };
+  const seedPersona = ((): { persona: string; confidence: number } | null => {
+    if (config.initialPersona) return { ...config.initialPersona };
+    const snap = readSnapshot(config.apiKey || 'local');
+    if (snap) return { persona: snap.persona, confidence: BAND_CONFIDENCE[snap.band] ?? 0.15 };
+    return null;
+  })();
+
   function applyPersonaAttributes(outcome: DecideOutcome): void {
     // Single-writer rule: adopt attributes already written (e.g. by the
     // AdaptiveRoot inline script); only write when nothing has yet.
@@ -130,11 +145,12 @@ export function createLocalModeClient(config: SentientConfig): SentientClient {
     },
 
     getPersona() {
-      if (!lastOutcome) return null;
+      const p = lastOutcome ?? seedPersona;
+      if (!p) return null;
       return {
-        persona: lastOutcome.persona,
-        confidence: lastOutcome.confidence,
-        band: confidenceBand(lastOutcome.confidence),
+        persona: p.persona,
+        confidence: p.confidence,
+        band: confidenceBand(p.confidence),
       };
     },
 

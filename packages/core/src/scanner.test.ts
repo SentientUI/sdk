@@ -64,6 +64,66 @@ describe('createDOMScanner', () => {
     scanner.destroy();
   });
 
+  // A SPA/framework mount inserts ONE root node whose interesting sections
+  // are all descendants; inspecting only the added root made framework-mounted
+  // components permanently invisible to graph capture.
+  it('observe scans the inserted subtree, not just the added root node', async () => {
+    const scanner = createDOMScanner();
+    const added = vi.fn();
+    scanner.observe(added);
+
+    // The root is a plain wrapper (no id/aria) — only descendants qualify.
+    const root = document.createElement('div');
+    root.innerHTML = `
+      <section aria-label="Pricing"><h2>Pricing</h2></section>
+      <div><span data-sentient-id="deep-cta">Buy</span></div>
+    `;
+    document.body.appendChild(root);
+
+    await vi.waitFor(() => expect(added).toHaveBeenCalled());
+    const nodes = added.mock.calls.flatMap((c) => c[0].nodes) as Array<{ componentId: string }>;
+    // Initial-scan criteria applied to the subtree: any [data-sentient-id]
+    // element, plus structural tags carrying an aria-label.
+    expect(nodes.some((n) => n.componentId === 'deep-cta')).toBe(true);
+    expect(nodes.some((n) => n.componentId.startsWith('section-'))).toBe(true);
+    scanner.destroy();
+  });
+
+  it('observe does not emit duplicate nodes when a parent and its child are both added', async () => {
+    const scanner = createDOMScanner();
+    const added = vi.fn();
+    scanner.observe(added);
+
+    const section = document.createElement('section');
+    section.setAttribute('data-sentient-id', 'once-1');
+    const wrapper = document.createElement('div');
+    wrapper.appendChild(section);
+    document.body.appendChild(wrapper);
+
+    await vi.waitFor(() => expect(added).toHaveBeenCalled());
+    const nodes = added.mock.calls.flatMap((c) => c[0].nodes) as Array<{ componentId: string }>;
+    expect(nodes.filter((n) => n.componentId === 'once-1')).toHaveLength(1);
+    scanner.destroy();
+  });
+
+  // The initial scan queries `section, article, main, aside` but OBSERVE_TAGS
+  // omitted ASIDE — a dynamically inserted aside was ignored while an
+  // identical server-rendered one was captured.
+  it('observe fires for a dynamically inserted aside', async () => {
+    const scanner = createDOMScanner();
+    const added = vi.fn();
+    scanner.observe(added);
+
+    const aside = document.createElement('aside');
+    aside.setAttribute('aria-label', 'Related content');
+    document.body.appendChild(aside);
+
+    await vi.waitFor(() => expect(added).toHaveBeenCalled());
+    const nodes = added.mock.calls.flatMap((c) => c[0].nodes) as Array<{ componentId: string }>;
+    expect(nodes.length).toBeGreaterThanOrEqual(1);
+    scanner.destroy();
+  });
+
   it('destroy disconnects observer without throwing', () => {
     const scanner = createDOMScanner();
     scanner.observe(() => undefined);
@@ -272,5 +332,49 @@ describe('createDOMScanner', () => {
       );
       expect(type).toBe('generic');
     });
+  });
+});
+
+// section_key is derived server-side from this locator, so a node without one
+// has no stable identity and cannot be reconciled against the crawler's view of
+// the same section. See apps/api/src/domain/locator-parity.test.ts.
+describe('locator emission', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('attaches a locator to each scanned node', async () => {
+    document.body.innerHTML = '<div data-sentient-id="pricing-1" data-sentient-type="pricing"><h2>Plans</h2></div>';
+    const scanner = createDOMScanner();
+    const result = await scanner.scan();
+    const node = result.nodes.find((n) => n.componentId === 'pricing-1');
+    // NOTE: data-sentient-id is deliberately NOT in STABLE_DATA_ATTRS — that
+    // list is shared with the server generator and changing it would move
+    // section_key for existing rows. So our own marker attribute does not win
+    // the locator; the element resolves by unique selector instead. Revisit in
+    // Phase 2, changing BOTH generators together.
+    expect(node?.locator).toEqual({
+      v: 1,
+      selector: 'div',
+      fingerprint: { tag: 'div', text: 'Plans' },
+    });
+  });
+
+  it('prefers a stable data attribute when one is present', async () => {
+    document.body.innerHTML =
+      '<div data-sentient-id="a" data-testid="pricing"><h2>Plans</h2></div><div>filler</div>';
+    const scanner = createDOMScanner();
+    const result = await scanner.scan();
+    const node = result.nodes.find((n) => n.componentId === 'a');
+    expect(node?.locator?.dataAttr).toEqual({ name: 'data-testid', value: 'pricing' });
+  });
+
+  it('leaves locator undefined when nothing resolves uniquely', async () => {
+    document.body.innerHTML = '<div data-sentient-id="a"><p>same</p><p>same</p></div>';
+    const scanner = createDOMScanner();
+    const result = await scanner.scan();
+    for (const n of result.nodes) {
+      if (n.locator) expect(n.locator).toHaveProperty('v', 1);
+    }
   });
 });

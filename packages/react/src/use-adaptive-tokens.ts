@@ -77,18 +77,20 @@ export function useAdaptiveTokens(
   );
 
   if (isDevBuild() && !warnedTokenSlots.has(id)) {
+    // Added UNCONDITIONALLY: the id used to be added only on the warn branches,
+    // so a VALID declaration re-ran validateSlotDecl plus the combination-space
+    // product on every dev render for the page's whole lifetime.
+    warnedTokenSlots.add(id);
     const validity = validateSlotDecl({
       id,
       dims: Object.fromEntries(Object.entries(dims).map(([k, v]) => [k, [...v]])),
     });
     const space = Object.values(dims).reduce((n, values) => n * values.length, 1);
     if (!validity.ok) {
-      warnedTokenSlots.add(id);
       console.warn(
         `[sentient] useAdaptiveTokens("${id}"): invalid declaration — ${validity.reason}. Serving baseline.`,
       );
     } else if (space > 4) {
-      warnedTokenSlots.add(id);
       console.warn(
         `[sentient] useAdaptiveTokens("${id}") declares ${space} combinations — more than the recommended 4. Each extra combination needs more traffic to learn; consider fewer dims/values.`,
       );
@@ -136,8 +138,11 @@ export function useAdaptiveTokens(
   // Credit flows through componentGoal(slot id) — the core resolves the
   // attributed arm from its slot state (Task 3.3 fallback).
   useEffect(() => {
-    // Forced arms record nothing (preview only) — same gate as the exposure.
-    if (!client || !opts?.goal || source === 'override') return;
+    // Forced arms record nothing (preview only), and an unresolved `baseline`
+    // source never recorded an impression (see the exposure effect above) — a
+    // conversion attached in that state would attribute to an arm with zero
+    // exposures. Same source gates as the exposure.
+    if (!client || !opts?.goal || source === 'override' || source === 'baseline') return;
     const node = document.querySelector(`[data-sentient-slot="${cssEscape(id)}"]`);
     if (!node) {
       if (isDevBuild()) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SHRINKAGE_M, shrunkPosterior } from './shrinkage';
+import { SHRINKAGE_M, WEIGHTS_FALLBACK_PRIOR_PULLS, pickFromWeights, shrunkPosterior } from './shrinkage';
 
 const mean = (p: { alpha: number; beta: number }): number => p.alpha / (p.alpha + p.beta);
 const mass = (p: { alpha: number; beta: number }): number => p.alpha + p.beta;
@@ -86,5 +86,63 @@ describe('shrinkage', () => {
       alpha: 3,
       beta: 7,
     });
+  });
+});
+
+// The SDK weights fallback moved here verbatim from @sentientui/react
+// (audit REACT-14). These pins freeze its serving behaviour: any change to
+// the constant or formula reorders variants for assign-pending visitors and
+// must be replayed first.
+describe('pickFromWeights (SDK weights fallback)', () => {
+  it('pins the fallback prior at 5 pseudo-pulls — NOT SHRINKAGE_M', () => {
+    expect(WEIGHTS_FALLBACK_PRIOR_PULLS).toBe(5);
+    expect(WEIGHTS_FALLBACK_PRIOR_PULLS).not.toBe(SHRINKAGE_M);
+  });
+
+  it('keeps a well-sampled arm over a lucky single-pull arm', () => {
+    // 1·1.0/(1+5) ≈ 0.167  <  500·0.2/(500+5) ≈ 0.198
+    const got = pickFromWeights(
+      [
+        { variantId: 'lucky', pulls: 1, avgReward: 1.0 },
+        { variantId: 'steady', pulls: 500, avgReward: 0.2 },
+      ],
+      ['lucky', 'steady'],
+    );
+    expect(got).toBe('steady');
+  });
+
+  it('with equal pulls, shrinkage is monotonic in avgReward (highest wins)', () => {
+    const got = pickFromWeights(
+      [
+        { variantId: 'a', pulls: 40, avgReward: 0.1 },
+        { variantId: 'b', pulls: 40, avgReward: 0.3 },
+      ],
+      ['a', 'b'],
+    );
+    expect(got).toBe('b');
+  });
+
+  it('on a score tie keeps the first arm in weights order (strict > comparison)', () => {
+    const got = pickFromWeights(
+      [
+        { variantId: 'first', pulls: 10, avgReward: 0.5 },
+        { variantId: 'second', pulls: 10, avgReward: 0.5 },
+      ],
+      ['second', 'first'],
+    );
+    expect(got).toBe('first');
+  });
+
+  it('zero/absent pulls score 0, and non-overlapping variantIds yield null', () => {
+    expect(
+      pickFromWeights(
+        [
+          { variantId: 'unseen', pulls: 0, avgReward: 1.0 },
+          { variantId: 'proven', pulls: 10, avgReward: 0.1 },
+        ],
+        ['unseen', 'proven'],
+      ),
+    ).toBe('proven');
+    expect(pickFromWeights([{ variantId: 'a', pulls: 3, avgReward: 1 }], ['b'])).toBeNull();
   });
 });

@@ -1,3 +1,6 @@
+// `type JSX` from react, not the global namespace removed in @types/react@19
+// (peers allow react >=18) — see adaptive-text.tsx.
+import type { JSX } from 'react';
 import { renderPrePaintScript } from '@sentientui/core';
 import { confidenceBand } from '@sentientui/policy';
 

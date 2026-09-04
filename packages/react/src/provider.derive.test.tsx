@@ -3,19 +3,17 @@ import { createElement, type ReactNode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // This file exercises provider internals that depend on core's detection
-// helpers (deriveDefaultSegment) and on fetchWeights polling. It uses its own
-// module mock so detectDeviceClass / detectTrafficSource can be made to throw,
-// which the shared provider.test.tsx mock (init-only) cannot do.
-const { init, detectDeviceClass, detectTrafficSource } = vi.hoisted(() => ({
+// helper (deriveSessionSegment, via deriveDefaultSegment) and on fetchWeights
+// polling. It uses its own module mock so deriveSessionSegment can be made to
+// throw, which the shared provider.test.tsx mock (init-only) cannot do.
+const { init, deriveSessionSegment } = vi.hoisted(() => ({
   init: vi.fn(),
-  detectDeviceClass: vi.fn(() => 'desktop'),
-  detectTrafficSource: vi.fn(() => 'direct'),
+  deriveSessionSegment: vi.fn(() => 'desktop:direct'),
 }));
 
 vi.mock('@sentientui/core', () => ({
   init,
-  detectDeviceClass,
-  detectTrafficSource,
+  deriveSessionSegment,
 }));
 vi.mock('@sentientui/core/engagement', () => ({ startEngagementCapture: vi.fn() }));
 
@@ -52,22 +50,27 @@ function wrapper(extra: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  detectDeviceClass.mockReturnValue('desktop');
-  detectTrafficSource.mockReturnValue('direct');
+  deriveSessionSegment.mockReturnValue('desktop:direct');
 });
 
 describe('deriveDefaultSegment', () => {
-  it('builds device:source from the detection helpers when they succeed', () => {
-    detectDeviceClass.mockReturnValue('mobile');
-    detectTrafficSource.mockReturnValue('paid');
+  it('uses the segment core derives when the helper succeeds', () => {
+    deriveSessionSegment.mockReturnValue('mobile:paid');
     init.mockReturnValue(makeClient() as never);
 
     const { result } = renderHook(() => useSessionSegment(), { wrapper: wrapper() });
     expect(result.current).toBe('mobile:paid');
+    // The provider must feed BROWSER globals to core's derivation — an empty
+    // call would re-derive from nothing and diverge from init()'s cache key.
+    expect(deriveSessionSegment).toHaveBeenCalledWith({
+      userAgent: navigator.userAgent,
+      referer: document.referrer,
+      appOrigin: window.location.origin,
+    });
   });
 
   it('falls back to desktop:direct when detection throws', () => {
-    detectDeviceClass.mockImplementation(() => {
+    deriveSessionSegment.mockImplementation(() => {
       throw new Error('navigator exploded');
     });
     init.mockReturnValue(makeClient() as never);
@@ -82,7 +85,7 @@ describe('deriveDefaultSegment', () => {
       wrapper: wrapper({ sessionSegment: 'tablet:social' }),
     });
     expect(result.current).toBe('tablet:social');
-    expect(detectDeviceClass).not.toHaveBeenCalled();
+    expect(deriveSessionSegment).not.toHaveBeenCalled();
   });
 });
 

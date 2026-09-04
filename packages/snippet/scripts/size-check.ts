@@ -37,7 +37,13 @@ const bundles: Array<{ name: string; file: string; limit: number }> = [
   // content, so the code that puts it back has to be always-on too). ~400 bytes
   // of headroom left for B2's remaining phases — the next addition needs a
   // deliberate decision about this budget.
-  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 21 * 1024 },
+  // Re-baselined 21→22 KB for client-side locator generation. The snippet now
+  // sends one section-map entry PER ELEMENT with its own compound locator,
+  // instead of one per semantic TYPE — which is what gives each section its own
+  // section_key. Without it a page whose bands all classify `generic` collapses
+  // into a single nc-generic with summed dwell and no per-section identity at
+  // all (measured on a real site: 8 of 9 sections generic). Measured 21902.
+  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 22 * 1024 },
   // Measured 11628 (arrangement picker +521 on a palette-sampling 11107) —
   // 660 bytes of margin. The composition spec expected this budget to need
   // raising for the editor phase; it did NOT (the picker is forms — the server

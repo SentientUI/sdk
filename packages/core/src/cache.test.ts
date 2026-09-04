@@ -40,18 +40,34 @@ describe('createAssignmentCache', () => {
     expect(cache2.get('pricing', 'us')?.variantId).toBe('p-us');
   });
 
-  it('invalidation clears both stores', () => {
-    const cache = createAssignmentCache();
+  // clear() is destroy()'s forget-me path: a surviving `_snt_asgn_*` entry
+  // hands a revoked visitor their previous personalized variants back on the
+  // next visit within TTL.
+  it('clear() empties memory AND the persisted keys', () => {
+    const cache = createAssignmentCache(undefined, 'pk_clear');
     cache.set('nav', 'a', assignment({ segment: 'a' }));
-    cache.set('nav', 'b', assignment({ segment: 'b', variantId: 'v-b' }));
     cache.set('footer', 'a', assignment({ variantId: 'footer-v' }));
 
-    cache.invalidate('nav');
+    cache.clear();
 
     expect(cache.get('nav', 'a')).toBeNull();
-    expect(cache.get('nav', 'b')).toBeNull();
-    expect(cache.get('footer', 'a')?.variantId).toBe('footer-v');
-    expect(localStorage.getItem('_snt_asgn_nav:a')).toBeNull();
+    expect(cache.get('footer', 'a')).toBeNull();
+    // A fresh instance restores nothing — the storage entries are gone too.
+    const fresh = createAssignmentCache(undefined, 'pk_clear');
+    expect(fresh.get('nav', 'a')).toBeNull();
+    expect(fresh.get('footer', 'a')).toBeNull();
+  });
+
+  it('clear() only removes the namespaced keys of its own project', () => {
+    const mine = createAssignmentCache(undefined, 'pk_mine');
+    const other = createAssignmentCache(undefined, 'pk_other');
+    mine.set('hero', 'a', assignment());
+    other.set('hero', 'a', assignment({ variantId: 'keep' }));
+
+    mine.clear();
+
+    const otherReloaded = createAssignmentCache(undefined, 'pk_other');
+    expect(otherReloaded.get('hero', 'a')?.variantId).toBe('keep');
   });
 });
 
@@ -114,11 +130,9 @@ describe('createAssignmentCache — storage failure & corruption resilience', ()
     expect(cache.get('cta', 'mobile')?.variantId).toBe('good');
   });
 
-  it('invalidate() on a non-existent componentId does not throw and leaves others intact', () => {
+  it('clear() on an empty cache does not throw', () => {
     const cache = createAssignmentCache();
-    cache.set('hero', 'default', assignment({ variantId: 'keep' }));
-    expect(() => cache.invalidate('does-not-exist')).not.toThrow();
-    expect(cache.get('hero', 'default')?.variantId).toBe('keep');
+    expect(() => cache.clear()).not.toThrow();
   });
 });
 
@@ -154,10 +168,6 @@ describe('createAssignmentCache — storage-key parsing with underscores/colons'
 
     const c2 = createAssignmentCache();
     expect(c2.get('hero', 'desktop:direct')?.variantId).toBe('seg-colon');
-    // invalidate must still match the component despite the colon in the segment.
-    c2.invalidate('hero');
-    const c3 = createAssignmentCache();
-    expect(c3.get('hero', 'desktop:direct')).toBeNull();
   });
 });
 
@@ -174,11 +184,6 @@ describe('createAssignmentCache — in-memory key collision', () => {
     cache.set('a', 'b:c', assignment({ variantId: 'second' }));
 
     expect(cache.get('a:b', 'c')?.variantId).toBe('first');
-    expect(cache.get('a', 'b:c')?.variantId).toBe('second');
-
-    // invalidate targets only the matching componentId, not the collided sibling.
-    cache.invalidate('a:b');
-    expect(cache.get('a:b', 'c')).toBeNull();
     expect(cache.get('a', 'b:c')?.variantId).toBe('second');
   });
 });

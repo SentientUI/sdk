@@ -1,6 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ElementType } from 'react';
+// `type JSX` comes from react, not the global namespace: @types/react@19
+// removed the global JSX while the peer range allows react >=18, so a bare
+// `JSX.*` in the public d.ts fails to resolve for React 19 consumers.
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ElementType, type JSX } from 'react';
 import type { AssignResult } from '@sentientui/core';
 import { useSentient, useAdaptiveApiKey, useOnAssignment, useSessionSegment } from './provider.js';
 import { attachGoalListeners, goalValueOf, isDevBuild, normalizeGoal, type GoalConfig } from './adaptive-shared.js';
@@ -68,8 +71,20 @@ export function AdaptiveText({
   useEffect(() => {
     if (override) return; // forced variant — no network assign
     if (!client) return;
-    // Skip if content already cached; assign() re-checks internally but this avoids the async round-trip on remount.
-    if (client.getAssignment(id, segment)?.content !== undefined) return;
+    const cached = client.getAssignment(id, segment);
+    if (cached?.content !== undefined) {
+      // Content already cached — skip the network assign, but DO sync it into
+      // state. The client normally arrives AFTER mount (the provider inits it
+      // in an effect), so the useState seeds above ran against a null client;
+      // early-returning here left text/variantId null, and a returning visitor
+      // rendered defaultText all session with no exposure ever recorded. The
+      // sync makes the exposure effect below fire variant_assigned (and
+      // onAssignment) exactly like the fresh-assign path; when the seeds
+      // already caught the cache, these setters are no-op re-renders.
+      setVariantId(cached.variantId);
+      setText(cached.content);
+      return;
+    }
 
     let cancelled = false;
     void client.assign(id).then((result: AssignResult | null) => {

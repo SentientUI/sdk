@@ -57,13 +57,28 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // The same reasoning as the durable goal queue applies: the weight buys a
     // delivery guarantee for revenue events, so it stays. Budget moves one step
     // and no further. Measured 12270.
-    limit: 13 * 1024,
+    //
+    // Re-baselined 13→14 KB. locator-from-dom.ts (+~455 bytes gzip) is used by
+    // the graph and engagement entries, so tsup places it in the SHARED chunk —
+    // and this bundle is measured as (shared chunk + entry). The lean entry
+    // therefore pays for a generator it never calls. Splitting it out would mean
+    // duplicating it into both consuming entries, which is worse for the common
+    // case (the React provider uses engagement capture by default), so the
+    // shared chunk is the right placement and the lean budget absorbs it.
+    // Revisit if a lean-only consumer ever needs those bytes back.
+    limit: 14 * 1024,
   },
   {
     name: '@sentientui/core/graph (additions only)',
     entry: 'index-graph.mjs',
     // scanner + graph on top of the shared chunk.
-    limit: 16384,
+    // Re-baselined 16→17 KB for locatorFromElement (+452 bytes gzip, measured
+    // 15913→16365). That generator is the live-DOM twin of the server's
+    // locatorFromNode, and it is what lets the crawler and the SDK derive the
+    // SAME section_key for one physical section. Without it a client-rendered
+    // page has no stable section identity at all, so every per-section number
+    // downstream splits in two. Budget moves one step and no further.
+    limit: 17 * 1024,
   },
 ];
 

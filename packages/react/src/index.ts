@@ -67,8 +67,10 @@ export type { AgentFeed, AgentBlock } from './agent-feed.js';
 // without adding @sentientui/core as a direct dependency — the docs already
 // point React users at grantConsent(), so it belongs on this entry.
 //
-// Safe here, unlike the server-only helpers re-exported from /next: this index
-// carries no 'use client' directive, and grantConsent is browser-only (it
-// returns immediately during SSR), so it is only ever called from a client
-// component and never becomes a client reference invoked on the server.
+// Safe here, unlike the server-only helpers re-exported from /next — though
+// not for the reason once claimed: tsup DOES stamp a 'use client' banner on
+// this bundle (see tsup.config.ts), so this re-export IS a client reference.
+// It stays safe because grantConsent is browser-only (it returns immediately
+// during SSR), so it is only ever invoked from client components and the
+// client reference is never called on the server.
 export { grantConsent } from '@sentientui/core';

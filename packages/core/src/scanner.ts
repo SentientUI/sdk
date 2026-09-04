@@ -1,6 +1,8 @@
 /** Reads the rendered DOM to build the page-side context graph. */
 
 import { classifySection, SEMANTIC_TYPES, type SemanticType } from './engagement/classify';
+import { locatorFromElement } from './locator-from-dom.js';
+import type { CompoundLocator } from './snapshot.js';
 
 export type ScannedNode = {
   componentId: string;
@@ -12,6 +14,11 @@ export type ScannedNode = {
   depth: number;
   reactComponentName?: string;
   dataAttributes: Record<string, string>;
+  /** Compound locator for this element. The server hashes it into section_key —
+   *  the identity the crawler and the snippet resolve to for the same physical
+   *  section. Undefined when nothing resolves uniquely: the runtime never
+   *  guesses an identity it could not verify later. */
+  locator?: CompoundLocator;
 };
 
 export type StructuralEdge = {
@@ -40,8 +47,18 @@ export type DOMScanner = {
   destroy(): void;
 };
 
-const OBSERVE_TAGS = new Set(['SECTION', 'ARTICLE', 'MAIN', 'DIV']);
+// ASIDE included to match the initial scan (which queries `section, article,
+// main, aside`) — this set omitted it, so a server-rendered aside was captured
+// while an identical dynamically-inserted one was silently ignored.
+const OBSERVE_TAGS = new Set(['SECTION', 'ARTICLE', 'MAIN', 'DIV', 'ASIDE']);
 const HEADING_SELECTOR = 'h1, h2, h3';
+// Selector mirror of the initial scan's criteria (collectNodesAndEdges): any
+// element carrying a declared id, plus structural tags with an aria-label.
+// Used to walk INTO inserted subtrees — a SPA mounts ONE root node whose
+// interesting sections are all descendants, and inspecting only the root made
+// every framework-mounted component permanently invisible to graph capture.
+const SUBTREE_SELECTOR =
+  '[data-sentient-id], section[aria-label], article[aria-label], main[aria-label], aside[aria-label]';
 
 // Sibling detection is O(n²) per group and emits two edges per pair, so a page
 // with hundreds of co-located components (e.g. a 200-cell product grid) would
@@ -173,6 +190,7 @@ function scanElement(
     depth: depthOf(element),
     reactComponentName: readReactComponentName(element),
     dataAttributes: extractDataAttributes(element),
+    locator: locatorFromElement(element, element.ownerDocument) ?? undefined,
   };
 }
 
@@ -342,14 +360,33 @@ export function createDOMScanner(): DOMScanner {
           if (mutation.type !== 'childList') continue;
           mutation.addedNodes.forEach((node) => {
             if (!(node instanceof Element)) return;
-            if (!OBSERVE_TAGS.has(node.tagName)) return;
-            const hasId = node.hasAttribute('data-sentient-id');
-            const hasAria = node.hasAttribute('aria-label');
-            if (!hasId && !hasAria) return;
-            const scanned = scanElement(node, getProminenceScore);
-            added.push(scanned);
-            addedIds.add(scanned.componentId);
-            knownElementToId.set(node, scanned.componentId);
+            const candidates: Element[] = [];
+            if (
+              OBSERVE_TAGS.has(node.tagName) &&
+              (node.hasAttribute('data-sentient-id') || node.hasAttribute('aria-label'))
+            ) {
+              candidates.push(node);
+            }
+            // Also scan the inserted SUBTREE with the initial scan's criteria
+            // (see SUBTREE_SELECTOR): the root of a SPA/framework mount is
+            // usually a plain wrapper, and its sections arrive as descendants
+            // of ONE childList mutation — inspecting only the root meant they
+            // were never captured at all.
+            try {
+              node.querySelectorAll(SUBTREE_SELECTOR).forEach((el) => candidates.push(el));
+            } catch {
+              /* exotic host without querySelectorAll — root-only scan stands */
+            }
+            for (const el of candidates) {
+              // Skip elements already registered: a parent and its child can
+              // both appear in addedNodes (the child once via the parent's
+              // subtree, once directly), which would emit duplicate nodes.
+              if (knownElementToId.has(el)) continue;
+              const scanned = scanElement(el, getProminenceScore);
+              added.push(scanned);
+              addedIds.add(scanned.componentId);
+              knownElementToId.set(el, scanned.componentId);
+            }
           });
         }
         if (added.length === 0 || !contentCallback) return;

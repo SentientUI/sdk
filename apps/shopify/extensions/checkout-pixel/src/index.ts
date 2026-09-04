@@ -5,17 +5,9 @@
 // webhook is the truth path; the external_id unique makes the pair converge
 // (whichever lands second no-ops).
 //
-// Origin note (UNVERIFIED RISK — plan Task 4): the web-pixel sandbox is a
-// cross-origin worker/iframe, so its fetches likely carry a sandbox Origin
-// (or none), NOT the shop domain. Against a project with requireOrigin: true,
-// the API's auth middleware 403s any pk_ request whose Origin is missing or
-// not allow-listed (apps/api/src/auth/middleware.ts, origin_not_allowed) —
-// meaning EVERY call this pixel makes (/v1/goals, /v1/attributions) may be
-// dead on such projects: no funnel steps, no checkout-token attribution, no
-// purchase fast path (the orders/paid webhook still records the purchase via
-// sk_, which skips Origin checks). Needs dev-store verification; if confirmed,
-// route these calls through the app proxy (backend forwards with sk_, which
-// bypasses Origin by design) — do NOT weaken requireOrigin on the API.
+// Origin: verified live (README dev-store checklist, 2026-08-29) — the
+// sandboxed pixel's requests pass the API's requireOrigin check as-is, so no
+// app-proxy detour is needed (and requireOrigin must not be weakened).
 import { register } from '@shopify/web-pixels-extension';
 
 register(({ analytics, browser, settings }) => {

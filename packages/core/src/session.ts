@@ -147,6 +147,13 @@ export function initSession(config?: SessionConfig): SessionManager {
   const suffix = storageSuffix(config?.apiKey);
   const cookieName = config?.cookieName ?? sessionCookieName(config?.apiKey);
   const storageKey = `${STORAGE_KEY}${suffix}`;
+  // Forget-me tombstone for the legacy fallback below. destroy() deletes only
+  // this project's SUFFIXED keys — deleting the bare pre-namespacing ones
+  // would reset every other project on a shared origin — so without a marker
+  // the next init()'s readLegacy() re-adopted the exact identity the visitor
+  // had just asked to forget. The marker carries the same per-project suffix,
+  // so other projects keep adopting the bare id exactly as before.
+  const legacyTombstoneKey = `${STORAGE_KEY}_tomb${suffix}`;
   const cookieTTLDays = config?.cookieTTLDays ?? DEFAULT_COOKIE_TTL_DAYS;
   const maxAgeSeconds = cookieTTLDays * 24 * 60 * 60;
 
@@ -168,8 +175,11 @@ export function initSession(config?: SessionConfig): SessionManager {
   // origin that haven't migrated it yet. Skipped when the caller manages its own
   // cookieName — the bare `_snt_uid` was never theirs — and when there is no
   // suffix (local mode still uses the bare names directly).
+  // The tombstone (written by destroy()) blocks this fallback for THIS project
+  // only — a forgotten visitor must come back a stranger, not resurrected from
+  // the bare keys that other projects still legitimately share.
   const readLegacy = (): string | null =>
-    suffix && !config?.cookieName
+    suffix && !config?.cookieName && readLocalStorage(legacyTombstoneKey) === null
       ? nonEmpty(readCookie(DEFAULT_COOKIE_NAME)) ??
         nonEmpty(readLocalStorage(STORAGE_KEY)) ??
         nonEmpty(readSessionStorage(STORAGE_KEY))
@@ -199,6 +209,10 @@ export function initSession(config?: SessionConfig): SessionManager {
       clearCookie(cookieName);
       removeLocalStorage(storageKey);
       removeSessionStorage(storageKey);
+      // See legacyTombstoneKey: the bare `_snt_uid` keys stay for the other
+      // projects on this origin, but this project's next init() must not
+      // re-adopt them — that quietly undid the forget-me it just performed.
+      if (suffix && !config?.cookieName) writeLocalStorage(legacyTombstoneKey, '1');
     },
   };
 }

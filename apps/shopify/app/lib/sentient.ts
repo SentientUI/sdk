@@ -41,7 +41,7 @@ export type ShopifyOrderCancelled = {
 export type ShopifyRefundCreate = {
   id: number | string;
   order_id: number | string;
-  transactions?: Array<{ amount?: string | number | null; currency?: string | null }> | null;
+  transactions?: Array<{ amount?: string | number | null; currency?: string | null; status?: string | null }> | null;
 };
 
 /** orders/paid → POST /v1/conversions body. `processed_at` arrives with a
@@ -76,7 +76,13 @@ export function orderPaidToConversion(order: ShopifyOrderPaid): ConversionReques
  *  No transactions means no money moved; under-netting is recoverable, wiping a
  *  real order's revenue is not. */
 export function refundCreateToRefund(refund: ShopifyRefundCreate): RefundRequest {
-  const txns = refund.transactions ?? [];
+  // Only transactions that settled count — the same "no money moved" rule as
+  // the empty-list case above. A declined or errored gateway refund still
+  // arrives in the payload WITH its full amount, so summing unconditionally
+  // netted revenue for money the customer never got back. A missing status
+  // (older payload shapes, hand-built retries) is trusted as settled; only an
+  // explicit non-success is excluded.
+  const txns = (refund.transactions ?? []).filter((t) => t.status == null || t.status === 'success');
   const sum = txns.reduce((s, t) => s + Number(t.amount || 0), 0);
   // Carry the currency the refund actually settled in. RefundRequest declared it
   // and the API accepts it, but nothing populated it — so on a multi-currency

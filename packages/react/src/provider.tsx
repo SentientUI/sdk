@@ -2,6 +2,8 @@
 
 declare const process: { env?: { NODE_ENV?: string } } | undefined;
 
+// `type JSX` from react, not the global namespace removed in @types/react@19
+// (peers allow react >=18) — see adaptive-text.tsx.
 import {
   createContext,
   useContext,
@@ -10,11 +12,11 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type JSX,
   type ReactNode,
 } from 'react';
 import {
-  detectDeviceClass,
-  detectTrafficSource,
+  deriveSessionSegment,
   init,
   type SentientClient,
   type SentientConfig,
@@ -27,18 +29,23 @@ import { publishDevtoolsConfig } from './devtools-config.js';
 import { registerSections } from './devtools-registry.js';
 
 /**
- * Mirrors the segment derivation inside core `init()` so the cache key used
- * by `useAssignment` always matches the key `assign()` writes under. Before
- * this, the context defaulted to 'desktop:direct' while core used the
+ * Feeds browser globals into core's `deriveSessionSegment` so the cache key
+ * used by `useAssignment` always matches the key `assign()` writes under.
+ * Before this, the context defaulted to 'desktop:direct' while core used the
  * detected segment — a systematic cache miss for every integration that
- * didn't pass `sessionSegment` explicitly.
+ * didn't pass `sessionSegment` explicitly. The derivation itself lives in
+ * core (audit REACT-14): a hand-mirrored `${device}:${source}` copy here
+ * drifted independently of the key core writes, which is the cache-miss bug
+ * all over again, one refactor later.
  */
 function deriveDefaultSegment(): string {
   if (typeof window === 'undefined') return 'desktop:direct';
   try {
-    const device = detectDeviceClass(navigator.userAgent ?? '');
-    const source = detectTrafficSource(document.referrer ?? '', window.location.origin);
-    return `${device}:${source}`;
+    return deriveSessionSegment({
+      userAgent: navigator.userAgent ?? '',
+      referer: document.referrer ?? '',
+      appOrigin: window.location.origin,
+    });
   } catch {
     return 'desktop:direct';
   }
@@ -317,13 +324,19 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
   const sourceGranted = useConsentSource(props.consentFrom);
   const consent = props.consentFrom ? props.consent === true || sourceGranted : props.consent;
 
+  // The live client mirrored outside React state, so teardown can reach it
+  // without a side effect inside a setState updater: React double-invokes
+  // updaters in StrictMode dev (they must be pure), so `prev?.destroy()` inside
+  // setClient ran twice — and could run during a render that never commits.
+  const clientRef = useRef<SentientClient | null>(null);
+
   useEffect(() => {
-    // When consent is explicitly false with no preConsentBehavior, tear down any existing client.
+    // When consent is explicitly false with no preConsentBehavior, tear down any
+    // existing client — via the ref, in the effect body (see clientRef above).
     if (consent === false && !props.preConsentBehavior) {
-      setClient((prev: SentientClient | null) => {
-        prev?.destroy();
-        return null;
-      });
+      clientRef.current?.destroy();
+      clientRef.current = null;
+      setClient(null);
       return;
     }
 
@@ -374,11 +387,13 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       void import('@sentientui/core/graph').then(({ init: initGraph }) => {
         if (cancelled) return;
         created = initGraph({ ...config, graph: true, captureDomText: props.captureDomText === true });
+        clientRef.current = created;
         setClient(created);
         startEngagement(created);
       });
     } else {
       created = init(config);
+      clientRef.current = created;
       setClient(created);
       startEngagement(created);
     }

@@ -1,6 +1,6 @@
 {
   "name": "@sentientui/policy",
-  "version": "0.6.2",
+  "version": "0.8.0",
   "private": false,
   "description": "Pure decision-policy functions shared by the SentientUI API and the keyless local engine",
   "license": "MIT",
@@ -21,6 +21,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./taxonomy": {
+      "types": "./dist/taxonomy.d.ts",
+      "import": "./dist/taxonomy.mjs",
+      "require": "./dist/taxonomy.js"
     }
   },
   "files": [

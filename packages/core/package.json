@@ -1,6 +1,6 @@
 {
   "name": "@sentientui/core",
-  "version": "0.21.3",
+  "version": "0.23.0",
   "private": false,
   "license": "MIT",
   "sideEffects": false,
@@ -41,6 +41,11 @@
       "types": "./dist/index-engagement.d.ts",
       "import": "./dist/index-engagement.mjs",
       "require": "./dist/index-engagement.js"
+    },
+    "./topics": {
+      "types": "./dist/index-topics.d.ts",
+      "import": "./dist/index-topics.mjs",
+      "require": "./dist/index-topics.js"
     },
     "./server": {
       "types": "./dist/index-server.d.ts",

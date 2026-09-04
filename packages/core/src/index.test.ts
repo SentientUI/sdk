@@ -322,6 +322,30 @@ describe('grantConsent()', () => {
     client.destroy();
   });
 
+  // A keyless/local client registers no upgrade hook — grantConsent() used to
+  // return SILENTLY, so a CMP callback wired to it looked like it worked while
+  // nothing ever started tracking. It must say what is wrong instead.
+  it('warns clearly when there is nothing to upgrade (keyless/local client)', () => {
+    const client = init({ ...BASE_CONFIG, apiKey: '', consent: false });
+    grantConsent();
+    const warnings = vi.mocked(console.warn).mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes('keyless/local'))).toBe(true);
+    // And it must not misreport the situation as "called before init()".
+    expect(warnings.some((w) => w.includes('before init()'))).toBe(false);
+    client.destroy();
+  });
+
+  // The gated invalid-key branch used to register under `config.apiKey` (which
+  // can be ''), unreachable by a no-arg grantConsent() whose `_lastApiKey = ''`
+  // is falsy — so it wrongly warned "called before init()".
+  it('no-arg grantConsent() resolves a gated invalid-key client under the local fallback key', () => {
+    init({ ...BASE_CONFIG, apiKey: '', localMode: false, consent: false });
+    grantConsent();
+    const warnings = vi.mocked(console.warn).mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes('called before init()'))).toBe(false);
+    expect(warnings.some((w) => w.includes('invalid apiKey'))).toBe(true);
+  });
+
   it('does not upgrade a control-mode client while DNT is enabled', async () => {
     Object.defineProperty(navigator, 'doNotTrack', { value: '1', configurable: true });
     const client = init({ ...BASE_CONFIG, apiKey: 'pk_ctrl_dnt1', consent: false, preConsentBehavior: 'control' });
@@ -582,6 +606,13 @@ describe('destroy() — forget-me teardown', () => {
       JSON.stringify({ v: 1, persona: 'buyer', band: 'high', slots: {}, layoutOrder: null, savedAt: 1 }),
     );
     localStorage.setItem('_snt_retry_pk_test_abc1', '[]');
+    // A cached assignment (`_snt_asgn_*`, namespaced per project) surviving
+    // forget-me handed a returning revoked visitor their previous
+    // personalized variants back within the TTL.
+    localStorage.setItem(
+      '_snt_asgn_pk_test_abc1_hero:desktop%3Adirect',
+      JSON.stringify({ variantId: 'v1', assignedAt: Date.now(), segment: 'desktop:direct', confidence: 1 }),
+    );
 
     client.destroy();
 
@@ -589,6 +620,7 @@ describe('destroy() — forget-me teardown', () => {
     // surviving snapshot would re-personalize the next visit after forget-me.
     expect(localStorage.getItem(`_snt_snap:${BASE_CONFIG.apiKey}`)).toBeNull();
     expect(localStorage.getItem('_snt_retry_pk_test_abc1')).toBeNull();
+    expect(localStorage.getItem('_snt_asgn_pk_test_abc1_hero:desktop%3Adirect')).toBeNull();
   });
 });
 
@@ -600,6 +632,10 @@ describe('dispose() — routine cleanup teardown', () => {
       JSON.stringify({ v: 1, persona: 'buyer', band: 'high', slots: {}, layoutOrder: null, savedAt: 1 }),
     );
     localStorage.setItem('_snt_retry_pk_test_abc1', '[]');
+    localStorage.setItem(
+      '_snt_asgn_pk_test_abc1_hero:desktop%3Adirect',
+      JSON.stringify({ variantId: 'v1', assignedAt: Date.now(), segment: 'desktop:direct', confidence: 1 }),
+    );
 
     client.dispose();
 
@@ -608,6 +644,7 @@ describe('dispose() — routine cleanup teardown', () => {
     expect(document.cookie).toContain('_snt_uid');
     expect(localStorage.getItem(`_snt_snap:${BASE_CONFIG.apiKey}`)).not.toBeNull();
     expect(localStorage.getItem('_snt_retry_pk_test_abc1')).not.toBeNull();
+    expect(localStorage.getItem('_snt_asgn_pk_test_abc1_hero:desktop%3Adirect')).not.toBeNull();
   });
 });
 

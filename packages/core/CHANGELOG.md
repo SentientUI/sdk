@@ -1,5 +1,50 @@
 # @sentientui/core
 
+## 0.23.0
+
+### Minor Changes
+
+- af5b76c: Semantic section identity + topic-aware classifier (semantic-graph phases 1–2c).
+
+  - New `@sentientui/core/topics` entry (server-only by design — do not import it
+    from browser bundles): the ~40-topic vocabulary, `classifyTopic` returning
+    `{topic, parent, role, strength, stage}`, schema.org `@type` → topic mapping.
+  - Classifier rewrite in `engagement/classify.ts`, each fix reproduced against
+    the shipped classifier first: structural rules run before the converter
+    fallback (a `<div class="navbar">` no longer classifies `cta`), `<header>` is
+    a hero by HTML-AAM mapping, ARIA landmark roles are honoured, and the
+    over-broad `plans?`/`customers?` keywords are tightened. New content-evidence
+    patterns classify body text when headings give nothing.
+  - `locatorFromElement` (new `locator-from-dom.ts`): live-DOM twin of the
+    server's locator generator — id → stable data-attr → shortest unique
+    selector, always fingerprinted, refusing ambiguous identities. Parity with
+    the server implementation is CI-locked.
+  - The DOM scanner and engagement capture now attach compound locators, and
+    capture registers one section-map entry PER ELEMENT (with per-element
+    provenance) instead of one per collapsed `nc-<type>` component, so the server
+    can derive a distinct `section_key` per physical section.
+
+  Serving behavior is unchanged by this release — the identity and topic layers
+  are data collection until the server's phase 2d ships.
+
+### Patch Changes
+
+- Updated dependencies [af5b76c]
+  - @sentientui/policy@0.8.0
+
+## 0.22.0
+
+### Minor Changes
+
+- c69cdaf: September audit fixes. Breaking for unlikely consumers: the dead `GraphClient.serialize()`/`restore()` methods and `AssignmentCache.invalidate()` are removed, and the `/graph` entry's zero-network gate now also covers `localMode: true` and invalid (non-`pk_`) keys, matching the lean `init`.
+
+  Fixes: `destroy()` (forget-me) now clears the localStorage assignment cache and tombstones the legacy bare `_snt_uid` so a revoked visitor is not re-personalized or re-identified on the next init; the graph scanner observes inserted subtrees (SPA-mounted components are no longer invisible) and dynamic `<aside>` elements; `decide()` no longer overwrites previously served slot results with synthesized baselines when a response omits a slot; `decide()` and the pre-consent winner path gained in-flight coalescing (N concurrent identical calls share one roundtrip); `grantConsent()` resolves gated keyless/invalid-key clients instead of warning "called before init()", warns instead of silently no-oping when an upgrade is impossible, and `/graph`-entry clients now mount the scanner after consent; the in-memory event queue is bounded (drop-oldest) during sustained outages; local-mode `getPersona()` honors `initialPersona` and the snapshot before the first decide. The `/graph` entry re-exports the full lean surface (`grantConsent`, snapshot/pre-paint helpers, slot helpers, blocks, micro-signals, cookie names), and `deriveSessionSegment` backs the React provider's segment derivation.
+
+### Patch Changes
+
+- Updated dependencies [c69cdaf]
+  - @sentientui/policy@0.7.0
+
 ## 0.21.3
 
 ### Patch Changes

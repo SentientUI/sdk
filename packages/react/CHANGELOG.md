@@ -1,5 +1,29 @@
 # @sentientui/react
 
+## 0.25.1
+
+### Patch Changes
+
+- Updated dependencies [af5b76c]
+- Updated dependencies [af5b76c]
+  - @sentientui/core@0.23.0
+  - @sentientui/policy@0.8.0
+
+## 0.25.0
+
+### Minor Changes
+
+- c69cdaf: September audit fixes. Breaking: the `/testing` entry no longer eagerly imports the optional peers `msw` and `@testing-library/react` — `scenarioToHandlers` moved to `@sentientui/react/testing/msw` and `renderWithSentient` to `@sentientui/react/testing/react`; update those two imports.
+
+  Fixes: `AdaptiveText` now renders and tracks the cached managed assignment when the client initializes after mount (returning visitors previously saw `defaultText` all session with no exposure recorded); goal listeners across `Adaptive`, `useAdaptive`, `AdaptiveGroup`, and `useAdaptiveTokens` gained the settled/non-baseline gates the exposure effects already had, so interim-window conversions can no longer attribute to arms that never recorded an impression; slot overrides are read through `useSyncExternalStore`, fixing hydration mismatches with the package's own Playwright/Cypress mocks; public types use `React.JSX.*` so React 19 typechecking works; the `Adaptive` memo comparator no longer swallows `funnel` changes; missing `goal` fails soft in production instead of crashing the render; weights-resolved variants fire `onAssignment` consistently; the weights fallback picker and session-segment derivation are now sourced from `@sentientui/policy` and `@sentientui/core` (identical numerics) instead of local mirrors; plus StrictMode, devtools unhandled-rejection, and prop-type (`AdaptiveRootProps` Omit) corrections.
+
+### Patch Changes
+
+- Updated dependencies [c69cdaf]
+- Updated dependencies [c69cdaf]
+  - @sentientui/core@0.22.0
+  - @sentientui/policy@0.7.0
+
 ## 0.24.5
 
 ### Patch Changes

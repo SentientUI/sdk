@@ -1,6 +1,7 @@
 import { classifySection, SEMANTIC_TYPES, type SemanticType } from './classify';
 import { isDoNotTrackEnabled } from '../index.js';
 import { attachMicroSignalDetectors } from '../micro-signals.js';
+import { locatorFromElement } from '../locator-from-dom.js';
 
 // Shared engagement capture (spec 2026-07-22-persona-signal-capture). Detects
 // semantic sections, registers them via /v1/section-map, and records per-section
@@ -68,7 +69,12 @@ function registerSections(
   apiKey: string,
   apiBase: string,
   pageUrl: string,
-  sections: Array<{ componentId: string; semanticType: SemanticType; source: 'markup' | 'auto' }>,
+  sections: Array<{
+    componentId: string;
+    semanticType: SemanticType;
+    source: 'markup' | 'auto';
+    locator?: unknown;
+  }>,
 ): void {
   try {
     void fetch(`${apiBase}/v1/section-map`, {
@@ -93,8 +99,11 @@ export function startEngagementCapture(
   if (isDoNotTrackEnabled()) return NOOP;
   // Keyless zero-network contract: capture exists to feed the hosted persona
   // pipeline — with no api key there is nothing to feed, and the section-map
-  // registration fetch must never fire.
-  if (!opts.apiKey) return NOOP;
+  // registration fetch must never fire. Same validity rule as init() and the
+  // graph entry: this used to check truthiness only, so an invalid non-`pk_`
+  // (typo'd) key still fired /v1/section-map registration and dwell events
+  // into a client that discards everything.
+  if (!opts.apiKey || !opts.apiKey.startsWith('pk_')) return NOOP;
   // Normalize so both a ROOT base (`https://api.sentient-ui.com`) and a
   // `/v1`-suffixed base resolve to exactly one `/v1/section-map` — some callers
   // pass the versioned base, which would otherwise produce `/v1/v1/section-map`
@@ -110,8 +119,17 @@ export function startEngagementCapture(
   // by semantic type anyway). Per-element precedence: explicit data-sentient-type
   // markup → served section map (opts.typeOf) → local heuristic.
   const componentOf = new Map<Element, string>();
-  const types = new Map<string, SemanticType>();
-  const sources = new Map<string, 'markup' | 'auto'>();
+  // One entry PER ELEMENT for the section map, even though componentId still
+  // collapses by type. The server derives a distinct section_key from each
+  // locator, so a page whose bands all classify `generic` still gets one
+  // identity per band instead of a single nc-generic covering all of them.
+  // Dwell keeps keying on the collapsed componentId — that is unchanged here.
+  const entries: Array<{
+    componentId: string;
+    semanticType: SemanticType;
+    source: 'markup' | 'auto';
+    locator?: unknown;
+  }> = [];
   for (const el of els) {
     const explicit = el.getAttribute('data-sentient-type');
     const markup = explicit && (SEMANTIC_TYPES as readonly string[]).includes(explicit)
@@ -120,16 +138,21 @@ export function startEngagementCapture(
     const type = markup ?? opts.typeOf?.(el) ?? classifySection(el);
     const componentId = `nc-${type}`;
     componentOf.set(el, componentId);
-    types.set(componentId, type);
-    // Markup wins if the same collapsed component gets both provenances.
-    if (markup) sources.set(componentId, 'markup');
-    else if (!sources.has(componentId)) sources.set(componentId, 'auto');
+    // `source` is now per ELEMENT, not per collapsed component. Previously,
+    // markup on any one element made the whole collapsed component report as
+    // 'markup'; with one row per section the server can record each section's
+    // real provenance instead of the most-confident of its siblings'.
+    const locator = locatorFromElement(el, doc);
+    entries.push({
+      componentId,
+      semanticType: type,
+      source: markup ? 'markup' : 'auto',
+      ...(locator ? { locator } : {}),
+    });
   }
 
   const pageUrl = (doc.defaultView ?? (typeof window !== 'undefined' ? window : undefined))?.location?.pathname ?? '/';
-  registerSections(opts.apiKey, apiBase, pageUrl, [...types.entries()].map(([componentId, semanticType]) => ({
-    componentId, semanticType, source: sources.get(componentId) ?? 'auto',
-  })));
+  registerSections(opts.apiKey, apiBase, pageUrl, entries);
 
   // Accumulate visible dwell (ms) + max scroll ratio per component. `intersecting`
   // tracks in-viewport state independently of `enterAt` (the running clock) so a

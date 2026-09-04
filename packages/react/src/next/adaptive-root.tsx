@@ -1,7 +1,9 @@
 import { deriveSessionSegment, matchedAgentToken } from '@sentientui/core';
 import type { SlotDeclInput, SlotResult } from '@sentientui/core';
 import { cookies, headers } from 'next/headers';
-import type { ReactNode } from 'react';
+// `type JSX` from react, not the global namespace removed in @types/react@19
+// (peers allow react >=18) — see adaptive-text.tsx.
+import type { JSX, ReactNode } from 'react';
 import type { AdaptiveProviderProps } from '../provider.js';
 import { SentientPersonaScript } from '../persona-script.js';
 import {
@@ -31,7 +33,18 @@ export type PreloadComponent = { id: string; variantIds: string[] };
 
 export type AdaptiveRootProps = Omit<
   AdaptiveProviderProps,
-  'initialAssignments' | 'onAssignment' | 'initialSlots' | 'initialPersona'
+  // Every provider prop AdaptiveRoot itself resolves and passes AFTER the
+  // {...providerProps} spread must be omitted here: a caller-supplied value
+  // would typecheck but be silently clobbered by the spread order
+  // (initialLayoutOrder, declaredSections and sessionSegment were missing
+  // from this list and suffered exactly that).
+  | 'initialAssignments'
+  | 'onAssignment'
+  | 'initialSlots'
+  | 'initialPersona'
+  | 'initialLayoutOrder'
+  | 'declaredSections'
+  | 'sessionSegment'
 > & {
   /**
    * Components to assign server-side (SEO-safe). Optional — omit when the
@@ -242,7 +255,9 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       origin: resolvedOrigin,
       userAgent,
       referer,
-      doNotTrack: skipSsr,
+      // doNotTrack is deliberately not passed: it is necessarily false on this
+      // branch — a DNT/GPC or consent-gated request already took the skipSsr
+      // arm above and never reaches this loader.
       timeoutMs,
       persona: providerProps.persona,
     });
@@ -262,7 +277,9 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       origin: resolvedOrigin,
       userAgent,
       referer,
-      doNotTrack: skipSsr,
+      // doNotTrack is deliberately not passed: it is necessarily false on this
+      // branch — a DNT/GPC or consent-gated request already took the skipSsr
+      // arm above and never reaches this loader.
       timeoutMs,
       persona: providerProps.persona,
     });

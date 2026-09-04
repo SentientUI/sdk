@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { isStaleUninstall } from "../lib/drop-visibility";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   // Read the trigger time BEFORE authenticate.webhook consumes the request.
@@ -13,10 +14,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // 48h, so a duplicate can land AFTER the merchant has reinstalled and pasted
   // their keys again. Deleting unconditionally silently logged them out and
   // disconnected the shop, after which every order was dropped as unconfigured.
-  // The stored row's updatedAt is the install's own clock: if it is newer than
-  // the event, this uninstall has already been superseded.
-  const settings = await db.sentientSettings.findUnique({ where: { shop } });
-  if (settings && Number.isFinite(triggeredAt) && settings.updatedAt.getTime() > triggeredAt) {
+  // Two "the install is newer than the event" signals (see isStaleUninstall):
+  // settings.updatedAt is the key re-paste's clock, and the newest Session
+  // row's createdAt is the reinstall OAuth's clock — the latter covers the
+  // window where the merchant has reinstalled but not yet re-saved keys, in
+  // which the settings check alone still wiped their fresh login mid-setup.
+  const [settings, newestSession] = await Promise.all([
+    db.sentientSettings.findUnique({ where: { shop } }),
+    db.session.findFirst({ where: { shop }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+  ]);
+  if (isStaleUninstall(triggeredAt, settings?.updatedAt ?? null, newestSession?.createdAt ?? null)) {
     console.log(`[sentient] ignoring a stale ${topic} for ${shop} — reinstalled since it fired`);
     return new Response();
   }

@@ -68,6 +68,17 @@ const DEFAULT_INGEST_URL = 'https://api.sentient-ui.com/v1/events';
 const _clients = new Map<string, {
   config: SentientConfig;
   upgrade: ((c: SentientClient) => void) | null;
+  // Why grantConsent() cannot upgrade this entry (keyless/local mode, invalid
+  // key). grantConsent() warns with this instead of silently no-oping — a CMP
+  // callback wired to it otherwise LOOKED like it worked while nothing ever
+  // started tracking. Absent for entries where the silent no-op IS the
+  // documented contract (DNT-blocked, already upgraded).
+  upgradeBlockedReason?: string;
+  // Set by an alternate entry point (the /graph entry) whose gated init
+  // deferred extra resources: grantConsent() must re-run THAT entry's init —
+  // upgrading through the lean init() produced a post-consent client that
+  // never mounted the DOM scanner, silently losing graph capture.
+  reinit?: (c: SentientConfig) => SentientClient;
   // Teardown for the live client bound to this key (stops its queue interval +
   // unload listeners). Present only for the full tracking client; the no-op /
   // pre-consent / local entries have nothing to tear down. Called before a
@@ -75,6 +86,22 @@ const _clients = new Map<string, {
   dispose?: () => void;
 }>();
 let _lastApiKey: string | null = null;
+
+/**
+ * @internal Wires an alternate entry point's init as grantConsent()'s upgrade
+ * path for `apiKey`. The /graph entry calls this when its init is gated on
+ * consent: without it, grantConsent() upgraded through the LEAN init, so a
+ * graph-configured page granted consent but never mounted the scanner (the
+ * graph resources exist only in the /graph entry). No-op unless the entry is
+ * actually upgradeable — DNT-blocked and local entries register no hook.
+ */
+export function _registerConsentUpgradeInit(
+  apiKey: string,
+  reinit: (config: SentientConfig) => SentientClient,
+): void {
+  const entry = _clients.get(apiKey);
+  if (entry && entry.upgrade) entry.reinit = reinit;
+}
 
 export type SentientConfig = {
   apiKey: string;
@@ -665,13 +692,24 @@ export function grantConsent(apiKey?: string): void {
     return;
   }
 
-  const { config, upgrade } = entry;
-  if (!upgrade) return;
+  const { config, upgrade, reinit } = entry;
+  if (!upgrade) {
+    // Keyless/local and invalid-key clients register no upgrade hook — there
+    // is no hosted client to swap in. This used to return SILENTLY, so a CMP
+    // callback wired to grantConsent() looked like it worked while nothing
+    // ever started tracking. DNT-blocked and already-upgraded entries carry no
+    // reason and stay quiet: for them the no-op is the documented contract.
+    if (entry.upgradeBlockedReason) console.warn(entry.upgradeBlockedReason);
+    return;
+  }
 
   // Honor an active Do Not Track signal — consent cannot override a global opt-out.
   if (config.respectDoNotTrack !== false && isDoNotTrackEnabled()) return;
 
-  const fullClient = init({ ...config, consent: true });
+  // Upgrade through the entry point that ran the gated init when one
+  // registered itself (see _registerConsentUpgradeInit) — the lean init knows
+  // nothing about that entry's extra resources (the /graph scanner).
+  const fullClient = (reinit ?? init)({ ...config, consent: true });
   upgrade(fullClient);
   // init() just registered the full client (with its dispose) under `key`.
   // Preserve that dispose so a later re-init/teardown can still tear it down —
@@ -692,6 +730,16 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
     Authorization: `Bearer ${config.apiKey}`,
   } as const;
 
+  // Pre-consent winners are read-only and render-driven: every mounted
+  // component re-calls assign() on every render, and without a result cache or
+  // in-flight coalescing each call refired GET /v1/winner — the full client
+  // has inflightAssigns for exactly this. Successful winners are cached for
+  // the pre-consent phase (the winner is stable, and a flip mid-visit would be
+  // a variant flash anyway); failure fallbacks are NOT cached, so a recovering
+  // server gets asked again. Both maps die with the proxy on upgrade.
+  const winnerCache = new Map<string, AssignResult>();
+  const inflightWinners = new Map<string, Promise<AssignResult | null>>();
+
   let inner: SentientClient = {
     track: () => undefined,
     goal: () => undefined,
@@ -699,22 +747,28 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
     identify: () => undefined,
     getAssignment: () => null,
     fetchWeights: () => Promise.resolve([]),
-    async assign(componentId, variantIds, _agentData?) {
+    assign(componentId, variantIds, _agentData?) {
       // Control mode: no request. Callers fall back to variantIds[0] through
       // ssrFallback, exactly as they did against the old no-op client.
-      if (!servesWinner) return null;
-      try {
-        const params = new URLSearchParams({ componentId });
-        for (const v of variantIds ?? []) params.append('variantIds[]', v);
-        const res = await fetch(`${baseUrl}/winner?${params.toString()}`, {
-          headers: authHeaders,
-        });
-        if (!res.ok) return variantIds?.[0] ? { variantId: variantIds[0], assignmentTtlMs: 0 } : null;
-        const body = (await res.json()) as { variantId: string };
-        return { variantId: body.variantId, assignmentTtlMs: 0 };
-      } catch {
-        return variantIds?.[0] ? { variantId: variantIds[0], assignmentTtlMs: 0 } : null;
-      }
+      if (!servesWinner) return Promise.resolve(null);
+      const cached = winnerCache.get(componentId);
+      if (cached) return Promise.resolve(cached);
+      return coalesce(inflightWinners, componentId, async (): Promise<AssignResult | null> => {
+        try {
+          const params = new URLSearchParams({ componentId });
+          for (const v of variantIds ?? []) params.append('variantIds[]', v);
+          const res = await fetch(`${baseUrl}/winner?${params.toString()}`, {
+            headers: authHeaders,
+          });
+          if (!res.ok) return variantIds?.[0] ? { variantId: variantIds[0], assignmentTtlMs: 0 } : null;
+          const body = (await res.json()) as { variantId: string };
+          const result: AssignResult = { variantId: body.variantId, assignmentTtlMs: 0 };
+          winnerCache.set(componentId, result);
+          return result;
+        } catch {
+          return variantIds?.[0] ? { variantId: variantIds[0], assignmentTtlMs: 0 } : null;
+        }
+      });
     },
     decide: () => Promise.resolve(null),
     getSlotResult: () => null,
@@ -750,6 +804,30 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
 }
 
 /**
+ * Shares one promise among concurrent calls with the same key — assign() and
+ * decide() both use this so N same-tick requests (several mounted slots
+ * sharing a component id; per-slot lazy decides) cost one roundtrip. The map
+ * entry lives exactly as long as the request is in flight: a settled result
+ * must NOT serve later calls (a sequential re-request is a fresh decision —
+ * caching lives elsewhere), and a failed one must not wedge the key. No
+ * `.finally()` — that's ES2018 and this file ships in the es2017 snippet
+ * bundle (the SNIP-5 lesson).
+ */
+function coalesce<T>(inflight: Map<string, Promise<T>>, key: string, run: () => Promise<T>): Promise<T> {
+  const hit = inflight.get(key);
+  if (hit) return hit;
+  const request = (async (): Promise<T> => {
+    try {
+      return await run();
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+  inflight.set(key, request);
+  return request;
+}
+
+/**
  * Initializes the Sentient client. Returns a no-op client during SSR.
  */
 export function init(config: SentientConfig): SentientClient {
@@ -757,7 +835,11 @@ export function init(config: SentientConfig): SentientClient {
     return SSR_CLIENT;
   }
 
-  _lastApiKey = config.apiKey;
+  // `|| 'local'`: keyless clients register under the 'local' fallback key
+  // below, and `_lastApiKey = ''` is falsy — so a no-arg grantConsent() after
+  // a keyless init() warned "called before init()" even though init() DID run,
+  // instead of resolving that entry (and its blocked-upgrade explanation).
+  _lastApiKey = config.apiKey || 'local';
 
   // A re-init for the same key (HMR, consent toggle, provider remount) supersedes
   // the prior client. Dispose it first so its queue's setInterval and
@@ -788,13 +870,18 @@ export function init(config: SentientConfig): SentientClient {
   // (createLocalModeClient handles that), so no NODE_ENV check is needed here.
   const keyValid = typeof config.apiKey === 'string' && config.apiKey.startsWith('pk_');
   if (config.localMode === true || (!keyValid && config.localMode !== false)) {
+    // One registration for both arms (they used to duplicate this set call).
+    // upgrade stays null — there is no hosted client to swap in — but the
+    // reason lets grantConsent() explain that instead of no-oping silently.
+    _clients.set(config.apiKey || 'local', {
+      config,
+      upgrade: null,
+      upgradeBlockedReason:
+        '[sentient] grantConsent(): this client is keyless/local — there is no hosted client to upgrade to. Configure a pk_ API key to enable tracking.',
+    });
     // A gated visitor must never get the identity cookie. Local mode has no
     // server to serve a statistical winner from, so return a plain no-op.
-    if (gated) {
-      _clients.set(config.apiKey || 'local', { config, upgrade: null });
-      return SSR_CLIENT;
-    }
-    _clients.set(config.apiKey || 'local', { config, upgrade: null });
+    if (gated) return SSR_CLIENT;
     return createLocalModeClient(config);
   }
 
@@ -803,7 +890,16 @@ export function init(config: SentientConfig): SentientClient {
       if (config.preConsentBehavior === 'statistical_winner') {
         console.warn('[sentient] init() called with an invalid apiKey — expected a pk_ public key. SDK disabled.');
       }
-      _clients.set(config.apiKey, { config, upgrade: null });
+      // Registered under the same 'local' fallback key the local branch uses:
+      // `config.apiKey` here can be '', and a ''-keyed entry was unreachable
+      // by a no-arg grantConsent() (falsy `_lastApiKey`), which then wrongly
+      // warned "called before init()".
+      _clients.set(config.apiKey || 'local', {
+        config,
+        upgrade: null,
+        upgradeBlockedReason:
+          '[sentient] grantConsent(): the client was initialized with an invalid apiKey (expected a pk_ public key) — consent cannot enable tracking.',
+      });
       return SSR_CLIENT;
     }
     // Every gated client gets an upgradeable proxy, not just the winner-serving
@@ -872,11 +968,20 @@ export function init(config: SentientConfig): SentientClient {
   });
 
   const deviceClass = detectDeviceClass(navigator.userAgent ?? '');
-  const appOrigin = typeof window !== 'undefined' ? window.location.origin : undefined;
+  // No window guard here: init() already returned SSR_CLIENT at the top when
+  // window is undefined, so the old `typeof window` ternary was dead code.
+  const appOrigin = window.location.origin;
   const trafficSource = detectTrafficSource(document.referrer ?? '', appOrigin);
   const sessionSegment =
     config.sessionSegment ?? `${deviceClass}:${trafficSource}`;
   const inflightAssigns = new Map<string, Promise<AssignResult | null>>();
+  // Mirrors inflightAssigns for decide(): per-slot lazy-decide patterns (see
+  // local-mode's merge comment — one decide({ slots: [decl] }) per mounted
+  // slot, all in the same tick) otherwise issue N roundtrips and N snapshot
+  // rewrites for one page. Keyed by the full request payload, never just "a
+  // decide is running": coalescing {slots:[a]} with {slots:[b]} would hand
+  // slot b's caller an outcome that never decided b.
+  const inflightDecides = new Map<string, Promise<DecideOutcome | null>>();
 
   // --- Adaptive-slot state (decide) ---
   // Results served for this session, keyed by slot id. Written by decide();
@@ -1213,10 +1318,7 @@ export function init(config: SentientConfig): SentientClient {
 
       // Coalesce concurrent assigns for the same component (e.g. several
       // mounted slots sharing one id) into a single network request.
-      const inflight = inflightAssigns.get(componentId);
-      if (inflight) return inflight;
-
-      const request = (async (): Promise<AssignResult | null> => {
+      return coalesce(inflightAssigns, componentId, async () => {
         await sessionReady;
         try {
           const body: Record<string, unknown> = { sessionId: sid, componentId, variantIds };
@@ -1244,118 +1346,148 @@ export function init(config: SentientConfig): SentientClient {
           return result;
         } catch {
           return null;
-        } finally {
-          inflightAssigns.delete(componentId);
         }
-      })();
-      inflightAssigns.set(componentId, request);
-      return request;
+      });
     },
 
     async decide(input) {
       const sid = session.getSessionId();
       if (!sid) return null;
       const declared = input.slots ?? [];
-      await sessionReady;
-      try {
-        const body: Record<string, unknown> = { sessionId: sid };
-        if (input.sections && input.sections.length > 0) {
-          body.sections = input.sections.map((id) => ({ id }));
-        }
-        body.components = input.components ?? [];
-        if (declared.length > 0) body.slots = declared.map(toWireSlot);
-        if (input.slotsFrom === 'registry') body.slotsFrom = 'registry';
-        if (input.v) body.v = input.v;
-        // Declared persona rides on decide too: SSR-first flows can race the
-        // session upsert, and the decide-body value wins for this decision.
-        if (config.persona) body.persona = config.persona;
 
-        const res = await fetch(`${baseUrl}/decide`, {
-          method: 'POST',
-          body: JSON.stringify(body),
-          headers: authHeaders,
-        });
-        if (!res.ok) {
+      const body: Record<string, unknown> = { sessionId: sid };
+      if (input.sections && input.sections.length > 0) {
+        body.sections = input.sections.map((id) => ({ id }));
+      }
+      body.components = input.components ?? [];
+      if (declared.length > 0) body.slots = declared.map(toWireSlot);
+      if (input.slotsFrom === 'registry') body.slotsFrom = 'registry';
+      if (input.v) body.v = input.v;
+      // Declared persona rides on decide too: SSR-first flows can race the
+      // session upsert, and the decide-body value wins for this decision.
+      if (config.persona) body.persona = config.persona;
+
+      // Coalesce concurrent IDENTICAL decides into one request + one snapshot
+      // write, keyed by the serialized wire payload (also reused as the fetch
+      // body). Never key on just "a decide is running": coalescing {slots:[a]}
+      // with {slots:[b]} would hand slot b's caller an outcome that never
+      // decided b. The wire projection is a safe key even though toWireSlot
+      // strips SDK-only decl fields — the baselines synthesized for omitted
+      // slots below go through baselineResultFor, which projects with the
+      // same toWireSlot, so identical payloads imply identical outcomes.
+      const decideKey = JSON.stringify(body);
+      return coalesce(inflightDecides, decideKey, async () => {
+        await sessionReady;
+        try {
+          const res = await fetch(`${baseUrl}/decide`, {
+            method: 'POST',
+            body: decideKey,
+            headers: authHeaders,
+          });
+          if (!res.ok) {
+            seedSlotBaselines(declared);
+            return null;
+          }
+          const data = (await res.json()) as {
+            layoutOrder?: string[] | null;
+            assignments?: Record<string, string>;
+            slots?: Record<string, SlotResult>;
+            slotConfig?: Record<string, SlotConfigEntry>;
+            goals?: GoalDefinition[];
+            sectionMap?: SectionMapEntry[];
+            palette?: import('./blocks.js').SitePalette;
+            persona?: string;
+            confidence?: number;
+          };
+
+          const slots: Record<string, SlotResult> = {};
+          for (const d of declared) {
+            // `data.slots === undefined` means the server predates the slots
+            // contract: serve the declared baseline everywhere, do NOT retry.
+            // (Distinct from `slots: {}`, which also falls back per-slot.)
+            const served = data.slots?.[d.id];
+            if (served !== undefined) {
+              slots[d.id] = served;
+              slotStore.set(d.id, served);
+              continue;
+            }
+            // Slot omitted from the response → synthesize a baseline for the
+            // RETURN value, but apply the same never-overwrite rule the failure
+            // path (seedSlotBaselines) has always had. This success path used
+            // to write unconditionally, so a partial response — or a pre-slots
+            // server — clobbered SSR-seeded and previously-served results with
+            // synthetic baselines.
+            const prior = slotStore.get(d.id);
+            if (prior !== undefined) {
+              slots[d.id] = prior;
+            } else {
+              const baseline = baselineResultFor(d);
+              slots[d.id] = baseline;
+              slotStore.set(d.id, baseline);
+            }
+          }
+          // Registry mode: the server returns slots the request never declared.
+          // Take them verbatim (classic mode returns only declared slots, so this
+          // union is a no-op there — back-compatible). These are real served
+          // results, so they may overwrite the store, unlike the baselines above.
+          if (data.slots) {
+            for (const [slotId, result] of Object.entries(data.slots)) {
+              if (!(slotId in slots)) {
+                slots[slotId] = result;
+                slotStore.set(slotId, result);
+              }
+            }
+          }
+          // Only overwrite persona when the response actually carries one, and
+          // never downgrade a known persona to 'unknown' — a decide that omits
+          // persona (or returns 'unknown') must not clobber a good SSR/snapshot/
+          // initialPersona value, and must not persist that regression below.
+          const known = personaState != null && personaState.persona !== 'unknown';
+          if (data.persona && !(data.persona === 'unknown' && known)) {
+            personaState = { persona: data.persona, confidence: data.confidence ?? 0 };
+          } else if (!personaState) {
+            personaState = { persona: 'unknown', confidence: 0 };
+          }
+
+          // Seed component assignments so <Adaptive>/assign() agree with this
+          // decide (same shape as the initialAssignments seed above).
+          for (const [componentId, variantId] of Object.entries(data.assignments ?? {})) {
+            assignmentCache.set(componentId, sessionSegment, {
+              variantId,
+              assignedAt: Date.now(),
+              segment: sessionSegment,
+              confidence: 1,
+            });
+          }
+
+          // Persist for the next visit's pre-paint (SPA cache-first pattern).
+          writeSnapshot(config.apiKey, {
+            v: 1,
+            persona: personaState.persona,
+            band: confidenceBand(personaState.confidence),
+            slots: Object.fromEntries(slotStore),
+            layoutOrder: data.layoutOrder ?? null,
+            savedAt: Date.now(),
+            ...(data.slotConfig ? { slotConfig: data.slotConfig } : {}),
+            ...(data.palette ? { palette: data.palette } : {}),
+          });
+
+          return {
+            layoutOrder: data.layoutOrder ?? null,
+            assignments: data.assignments ?? {},
+            slots,
+            persona: personaState.persona,
+            confidence: personaState.confidence,
+            ...(data.slotConfig ? { slotConfig: data.slotConfig } : {}),
+            ...(data.goals ? { goals: data.goals } : {}),
+            ...(data.sectionMap ? { sectionMap: data.sectionMap } : {}),
+            ...(data.palette ? { palette: data.palette } : {}),
+          };
+        } catch {
           seedSlotBaselines(declared);
           return null;
         }
-        const data = (await res.json()) as {
-          layoutOrder?: string[] | null;
-          assignments?: Record<string, string>;
-          slots?: Record<string, SlotResult>;
-          slotConfig?: Record<string, SlotConfigEntry>;
-          goals?: GoalDefinition[];
-          sectionMap?: SectionMapEntry[];
-          palette?: import('./blocks.js').SitePalette;
-          persona?: string;
-          confidence?: number;
-        };
-
-        const slots: Record<string, SlotResult> = {};
-        for (const d of declared) {
-          // `data.slots === undefined` means the server predates the slots
-          // contract: serve the declared baseline everywhere, do NOT retry.
-          // (Distinct from `slots: {}`, which also falls back per-slot.)
-          slots[d.id] = data.slots?.[d.id] ?? baselineResultFor(d);
-        }
-        // Registry mode: the server returns slots the request never declared.
-        // Take them verbatim (classic mode returns only declared slots, so this
-        // union is a no-op there — back-compatible).
-        if (data.slots) {
-          for (const [slotId, result] of Object.entries(data.slots)) {
-            if (!(slotId in slots)) slots[slotId] = result;
-          }
-        }
-        for (const [slotId, result] of Object.entries(slots)) slotStore.set(slotId, result);
-        // Only overwrite persona when the response actually carries one, and
-        // never downgrade a known persona to 'unknown' — a decide that omits
-        // persona (or returns 'unknown') must not clobber a good SSR/snapshot/
-        // initialPersona value, and must not persist that regression below.
-        const known = personaState != null && personaState.persona !== 'unknown';
-        if (data.persona && !(data.persona === 'unknown' && known)) {
-          personaState = { persona: data.persona, confidence: data.confidence ?? 0 };
-        } else if (!personaState) {
-          personaState = { persona: 'unknown', confidence: 0 };
-        }
-
-        // Seed component assignments so <Adaptive>/assign() agree with this
-        // decide (same shape as the initialAssignments seed above).
-        for (const [componentId, variantId] of Object.entries(data.assignments ?? {})) {
-          assignmentCache.set(componentId, sessionSegment, {
-            variantId,
-            assignedAt: Date.now(),
-            segment: sessionSegment,
-            confidence: 1,
-          });
-        }
-
-        // Persist for the next visit's pre-paint (SPA cache-first pattern).
-        writeSnapshot(config.apiKey, {
-          v: 1,
-          persona: personaState.persona,
-          band: confidenceBand(personaState.confidence),
-          slots: Object.fromEntries(slotStore),
-          layoutOrder: data.layoutOrder ?? null,
-          savedAt: Date.now(),
-          ...(data.slotConfig ? { slotConfig: data.slotConfig } : {}),
-          ...(data.palette ? { palette: data.palette } : {}),
-        });
-
-        return {
-          layoutOrder: data.layoutOrder ?? null,
-          assignments: data.assignments ?? {},
-          slots,
-          persona: personaState.persona,
-          confidence: personaState.confidence,
-          ...(data.slotConfig ? { slotConfig: data.slotConfig } : {}),
-          ...(data.goals ? { goals: data.goals } : {}),
-          ...(data.sectionMap ? { sectionMap: data.sectionMap } : {}),
-          ...(data.palette ? { palette: data.palette } : {}),
-        };
-      } catch {
-        seedSlotBaselines(declared);
-        return null;
-      }
+      });
     },
 
     getSlotResult(slotId) {
@@ -1409,6 +1541,11 @@ export function init(config: SentientConfig): SentientClient {
       eventQueue.destroy();
       goalQueue.destroy();
       session.destroy();
+      // The assignment cache persists in localStorage (`_snt_asgn_*`) with a
+      // 30-minute default TTL — left in place, a revoked visitor returning
+      // within that window was handed their previous personalized variants
+      // back, so forget-me wasn't total.
+      assignmentCache.clear();
       if (_clients.get(config.apiKey)?.dispose === client.dispose) {
         _clients.delete(config.apiKey);
       }

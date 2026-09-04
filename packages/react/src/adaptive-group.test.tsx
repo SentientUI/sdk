@@ -206,7 +206,10 @@ describe('AdaptiveGroup â€” learning wiring', () => {
       { id: 'pricing-g9', arrangements: { standard: ['x'] }, goal: 'plan_click' } as never,
       createElement('button', { key: 'x' }, 'CHOOSE'),
     );
-    const { getByText } = render(el, { wrapper: wrapperWith() });
+    // A DECIDED arm (SSR preload): an unresolved baseline records no exposure
+    // (test #2 above), so it must record no goals either — a conversion would
+    // attribute to an arm with zero impressions.
+    const { getByText } = render(el, { wrapper: wrapperWith({ initialSlots: { 'pricing-g9': 'standard' } }) });
     fireEvent.click(getByText('CHOOSE'));
     fireEvent.click(getByText('CHOOSE'));
     expect(client.componentGoal).toHaveBeenCalledTimes(1);
@@ -221,7 +224,8 @@ describe('AdaptiveGroup â€” learning wiring', () => {
       { id: 'pricing-g10', arrangements: { standard: ['x'] }, goal: 'plan_click' } as never,
       createElement('button', { key: 'x' }, 'CHOOSE'),
     );
-    const { getByText } = render(el, { wrapper: wrapperWith() });
+    // Decided arm, same reason as the componentGoal test above.
+    const { getByText } = render(el, { wrapper: wrapperWith({ initialSlots: { 'pricing-g10': 'standard' } }) });
     fireEvent.click(getByText('CHOOSE'));
     expect(client.goal).toHaveBeenCalledTimes(1);
     expect(client.goal).toHaveBeenCalledWith('plan_click', {

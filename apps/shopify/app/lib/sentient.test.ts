@@ -57,4 +57,28 @@ describe('refundCreateToRefund', () => {
     expect(refundCreateToRefund({ id: 1, order_id: 2, transactions: [] }).amount).toBe(0);
     expect(refundCreateToRefund({ id: 1, order_id: 2, transactions: [{ amount: 0 }] }).amount).toBe(0);
   });
+
+  it('ignores transactions that did not settle', () => {
+    // A declined card refund arrives as status "failure" WITH its full amount
+    // — no money moved, so it must not net the order's revenue. The currency
+    // must come from a settled transaction for the same reason.
+    const req = refundCreateToRefund({
+      id: 1,
+      order_id: 2,
+      transactions: [
+        { amount: '5.00', status: 'failure', currency: 'USD' },
+        { amount: '30.00', status: 'success', currency: 'GBP' },
+      ],
+    });
+    expect(req.amount).toBe(30);
+    expect(req.currency).toBe('GBP');
+    // All failed → nothing settled → explicit zero, never "refund everything".
+    expect(refundCreateToRefund({
+      id: 1, order_id: 2, transactions: [{ amount: '20.00', status: 'error' }],
+    }).amount).toBe(0);
+    // Missing status (older payload shapes) is trusted as settled.
+    expect(refundCreateToRefund({
+      id: 1, order_id: 2, transactions: [{ amount: '20.00' }],
+    }).amount).toBe(20);
+  });
 });

@@ -1,10 +1,10 @@
-import { init, grantConsent as coreGrantConsent, isDoNotTrackEnabled, readSnapshot, writeSnapshot, type CompoundLocator, type GoalDefinition, type SentientClient, type SlotConfigEntry } from '@sentientui/core';
+import { init, grantConsent as coreGrantConsent, isDoNotTrackEnabled, readSnapshot, writeSnapshot, type CompoundLocator, type DecideOutcome, type GoalDefinition, type SentientClient, type SlotConfigEntry } from '@sentientui/core';
 import { startEngagementCapture, type SemanticType } from '@sentientui/core/engagement';
 import { parseSnippetConfig, type SnippetConfig } from './config';
 import { applyPersonaAttributes, applySlotAttributes, applySlotArms, applyRegistrySlots } from './apply';
 import { setBlockPalette, sweepOrphanBlocks } from './blocks';
 import { attachSlotSignals, type AppliedSlot } from './slot-signals';
-import { installGoalListeners, type GoalListeners } from './goal-wiring';
+import { installGoalListeners, clearFiredGoals, type GoalListeners } from './goal-wiring';
 import { resolveLocatorOne } from './locator';
 import { cacheEditorToken, readCachedEditorToken } from './editor-token';
 
@@ -87,7 +87,15 @@ let consentGranted = false;
 let consentRevoked = false;
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
-  return Promise.race([p, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))]);
+  // Clear the timer once the race settles either way: a fast decide otherwise
+  // left the 5s timeout callback (and its closure) pinned alive on every page
+  // view (audit SNIP-14).
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); });
+  return Promise.race([p, timeout]).then(
+    (v) => { clearTimeout(timer); return v; },
+    (e) => { clearTimeout(timer); throw e; },
+  );
 }
 
 function dbg(cfg: SnippetConfig | null, ...args: unknown[]): void {
@@ -337,7 +345,14 @@ function installSpaHooks(): void {
 function matchCounts(cfg: SnippetConfig): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [id, decl] of Object.entries(cfg.slots)) {
-    out[id] = decl.target ? document.querySelectorAll(decl.target).length : 1;
+    // Per-slot guard, same rule as resolveSections: one invalid declared
+    // selector counts 0 for THAT slot instead of throwing out of the loop —
+    // and out of page-exposed getState() into host code (audit SNIP-4).
+    try {
+      out[id] = decl.target ? document.querySelectorAll(decl.target).length : 1;
+    } catch {
+      out[id] = 0;
+    }
   }
   return out;
 }
@@ -364,8 +379,12 @@ export function parseEditorToken(search: string): string | null {
 function deriveEditorSrc(): string | null {
   try {
     const scripts = Array.from(document.getElementsByTagName('script'));
-    const self = scripts.find((s) => /snippet(\.global)?\.js/.test(s.src));
-    if (self?.src) return self.src.replace(/snippet(\.global)?\.js/, 'editor.global.js');
+    // Anchored to a path segment and the end of the filename: a bare substring
+    // match hijacked any site script whose name merely CONTAINED the token
+    // (e.g. /js/carousel-snippet.js), deriving a bogus editor URL (audit SNIP-16).
+    const re = /(^|\/)snippet(\.global)?\.js(\?|$)/;
+    const self = scripts.find((s) => re.test(s.src));
+    if (self?.src) return self.src.replace(re, '$1editor.global.js$3');
   } catch {
     /* fail-safe */
   }
@@ -414,6 +433,15 @@ function loadEditor(cfg: SnippetConfig, token: string): void {
 
 const EDITOR_LOAD_NOTICE_ID = 'sentient-editor-load-notice';
 
+// Chrome shared by both snippet-side pinned overlays (editor-load notice and
+// persona-preview banner): one literal in the always-on bundle instead of two
+// duplicated ones (audit SNIP-17 — recovered bytes fund this batch's fixes).
+const PINNED_BOX_STYLE: Partial<CSSStyleDeclaration> = {
+  position: 'fixed', bottom: '16px', zIndex: '2147483647',
+  background: '#111827', color: '#fff',
+  boxShadow: '0 10px 34px rgba(0,0,0,0.45)',
+};
+
 /** Minimal fallback notice shown from the SNIPPET side when the separate editor
  *  bundle can't even load (cold CDN, 404, blocked, or no derivable src). The
  *  editor's richer toast is unavailable in that case because its code never ran,
@@ -422,15 +450,19 @@ const EDITOR_LOAD_NOTICE_ID = 'sentient-editor-load-notice';
 function showEditorLoadNotice(): void {
   try {
     if (typeof document === 'undefined' || document.getElementById(EDITOR_LOAD_NOTICE_ID)) return;
+    // Every caller of this notice is an editor-load FAILURE: the no-referrer
+    // meta loadEditor injected for the (never-started) editor session must not
+    // outlive it, or the site's own referrer policy stays degraded for the
+    // rest of the page view (audit SNIP-7). The marker attribute scopes the
+    // removal to exactly our meta, never a site-owned one.
+    document.querySelector('meta[name="referrer"][data-sentient-editor]')?.remove();
     const box = document.createElement('div');
     box.id = EDITOR_LOAD_NOTICE_ID;
     box.textContent = 'Couldn’t load the editor — check your connection and reopen it from your dashboard.';
-    Object.assign(box.style, {
-      position: 'fixed', bottom: '16px', right: '16px', zIndex: '2147483647',
-      maxWidth: '320px', padding: '14px 16px', borderRadius: '14px',
-      background: '#111827', color: '#fff', font: '13px/1.45 system-ui, sans-serif',
-      border: '1px solid rgba(245,158,11,0.6)', boxShadow: '0 10px 34px rgba(0,0,0,0.45)',
-      cursor: 'pointer',
+    Object.assign(box.style, PINNED_BOX_STYLE, {
+      right: '16px', maxWidth: '320px', padding: '14px 16px', borderRadius: '14px',
+      font: '13px/1.45 system-ui, sans-serif',
+      border: '1px solid rgba(245,158,11,0.6)', cursor: 'pointer',
     } as Partial<CSSStyleDeclaration>);
     box.addEventListener('click', () => box.remove());
     (document.body ?? document.documentElement).appendChild(box);
@@ -489,11 +521,11 @@ function showPreviewBanner(persona: string, unrecognized?: boolean): void {
     const box = document.createElement('div');
     box.id = PREVIEW_BANNER_ID;
     box.setAttribute('role', 'status');
-    Object.assign(box.style, {
-      position: 'fixed', bottom: '16px', left: '50%', transform: 'translateX(-50%)',
-      zIndex: '2147483647', display: 'flex', alignItems: 'center', gap: '12px',
-      padding: '10px 14px', borderRadius: '999px', background: '#111827', color: '#fff',
-      font: '13px/1 system-ui, sans-serif', boxShadow: '0 10px 34px rgba(0,0,0,0.45)',
+    Object.assign(box.style, PINNED_BOX_STYLE, {
+      left: '50%', transform: 'translateX(-50%)',
+      display: 'flex', alignItems: 'center', gap: '12px',
+      padding: '10px 14px', borderRadius: '999px',
+      font: '13px/1 system-ui, sans-serif',
       border: '1px solid rgba(255,255,255,0.14)',
     } as Partial<CSSStyleDeclaration>);
     const text = document.createElement('span');
@@ -578,6 +610,10 @@ async function previewPersona(cfg: SnippetConfig, persona: string): Promise<void
   // Preview content is authoritative for this view, so a later reapply() may
   // restamp copy/ops (not just reversible attributes).
   decided = true;
+  // Same as slot preview mode: on hydrating/client-routed sites the preview is
+  // wiped after first paint, and without these hooks it was never restamped —
+  // the operator just saw the default page (audit SNIP-9).
+  installSpaHooks();
   exposeGlobal(cfg);
   // Vocabulary echo (B1.2): only an explicit `recognized: false` shows the
   // "not one of your personas" banner — an older API omits the field, and the
@@ -639,6 +675,16 @@ function exposeGlobal(cfg: SnippetConfig): void {
           // Normal path: the client is a live pre-consent proxy — upgrade it in
           // place and flush core's queued events.
           coreGrantConsent(cfg.apiKey);
+          // Install the editor-defined goal listeners run() withheld for a
+          // consent:false boot — without this, a visit that granted consent
+          // after load recorded ZERO click/submit/url/scroll goals (audit
+          // SNIP-1: the missing half of the capture-after-consent fix; the
+          // revoke→grant branch above already re-wires them from the same
+          // module-scope activeGoals, never a new decide).
+          if (activeClient && activeGoals && activeGoals.length > 0) {
+            goalListeners?.teardown();
+            goalListeners = installGoalListeners(activeGoals, activeClient, document, cfg.apiKey);
+          }
         }
         consentRevoked = false;
       } catch {
@@ -669,6 +715,10 @@ function exposeGlobal(cfg: SnippetConfig): void {
         // client we're about to destroy (leak on a destroyed client, audit).
         goalListeners?.teardown();
         goalListeners = null;
+        // Forget the fired-goal latches too: forget-me must be total, and the
+        // `_snt_fired_goals_*` sessionStorage entry otherwise kept naming the
+        // visitor's conversions after revoke (audit SNIP-12, privacy).
+        clearFiredGoals(typeof window !== 'undefined' ? window : null, cfg.apiKey);
         consentGranted = false;
         consentRevoked = true;
         activeClient?.destroy();
@@ -684,14 +734,23 @@ function exposeGlobal(cfg: SnippetConfig): void {
     },
     reapply,
     getState(): SnippetState {
-      return {
-        apiKey: cfg.apiKey,
-        persona: activePersona?.persona ?? null,
-        band: activePersona?.band ?? null,
-        slots: activeSlots,
-        matchCounts: matchCounts(cfg),
-        consent: cfg.consent !== false,
-      };
+      // Wrapped like goal/grantConsent: this is page-exposed, so a throw here
+      // lands in merchant host code (audit SNIP-4).
+      try {
+        return {
+          apiKey: cfg.apiKey,
+          persona: activePersona?.persona ?? null,
+          band: activePersona?.band ?? null,
+          slots: activeSlots,
+          matchCounts: matchCounts(cfg),
+          // Live flags, not boot-time config: a visitor who granted after load
+          // (or revoked) otherwise read the wrong consent state for the rest
+          // of the visit (audit SNIP-8).
+          consent: !consentRevoked && (cfg.consent !== false || consentGranted),
+        };
+      } catch {
+        return { apiKey: cfg.apiKey, persona: null, band: null, slots: {}, matchCounts: {}, consent: false };
+      }
     },
   };
   // Intentional shape-shift: at build time tsup assigns the module's exported
@@ -709,6 +768,34 @@ function exposeGlobal(cfg: SnippetConfig): void {
     } catch {
       /* fail-safe */
     }
+  }
+}
+
+// Minimal callable page API for the paths where run() can't build the real one
+// (malformed/missing config, or the outer catch before exposeGlobal ran). The
+// build-time IIFE global has no goal method, so leaving it installed made
+// merchant SentientSnippet.goal() THROW and stranded the pre-boot stub queue —
+// the same bug already fixed for editor/preview modes (audit SNIP-6). Never
+// downgrades: a live api (goal is a function) is left untouched.
+function exposeNoopGlobal(): void {
+  try {
+    if (typeof window === 'undefined') return;
+    const w = window as unknown as { SentientSnippet?: { goal?: unknown } & Record<string, unknown> };
+    if (typeof w.SentientSnippet?.goal === 'function') return;
+    const noop = (): void => {};
+    w.SentientSnippet = {
+      goal: noop,
+      componentGoal: noop,
+      grantConsent: noop,
+      revokeConsent: noop,
+      reapply: noop,
+      getState: (): SnippetState =>
+        ({ apiKey: '', persona: null, band: null, slots: {}, matchCounts: {}, consent: false }),
+    };
+    // Drain the pre-boot stub queue so a later boot never replays stale calls.
+    prebootQueue.length = 0;
+  } catch {
+    /* fail-safe */
   }
 }
 
@@ -734,7 +821,12 @@ function exposeGlobal(cfg: SnippetConfig): void {
 export async function run(): Promise<void> {
   try {
     const cfg = parseSnippetConfig((window as unknown as { sentient?: unknown }).sentient);
-    if (!cfg) return;
+    if (!cfg) {
+      // A bad pk_/malformed config must still leave a callable API behind
+      // (audit SNIP-6).
+      exposeNoopGlobal();
+      return;
+    }
     activeCfg = cfg;
     // Fresh visit decision: withhold content restamping from reapply() until this
     // run's /v1/decide confirms it (see the `decided` declaration).
@@ -859,105 +951,150 @@ export async function run(): Promise<void> {
     // Fewer than two left → nothing to reorder, so the field is omitted and the
     // server's layout machinery never engages.
     const sectionIds = Array.from(resolveSections(document).keys());
-    const outcome = await withTimeout(
-      client.decide({
-        slots,
-        ...reportVersion,
-        ...(sectionIds.length >= 2 ? { sections: sectionIds } : {}),
-        ...(registryMode ? { slotsFrom: 'registry' as const } : {}),
-      }),
-      DECIDE_TIMEOUT_MS,
-    );
+    const decidePromise = client.decide({
+      slots,
+      ...reportVersion,
+      ...(sectionIds.length >= 2 ? { sections: sectionIds } : {}),
+      ...(registryMode ? { slotsFrom: 'registry' as const } : {}),
+    });
+    const outcome = await withTimeout(decidePromise, DECIDE_TIMEOUT_MS);
+    // Everything downstream of a successful decide, extracted so the late-
+    // arrival path below can run it too. Synchronous except for applyDecided's
+    // own DOMContentLoaded deferral.
+    const applyOutcome = (outcome: DecideOutcome): void => {
+      const persona = client.getPersona();
+      if (persona) activePersona = { persona: persona.persona, band: persona.band };
+      else if (outcome.persona) activePersona = { persona: outcome.persona, band: 'low' };
+      activeSlots = outcome.slots;
+      // Registry mode: adopt the served slotConfig UNCONDITIONALLY (?? null) so a
+      // decide response with no slotConfig CLEARS the cached one — otherwise an
+      // unpublished/removed registry slot from the prior visit's snapshot keeps
+      // being re-applied and re-persisted (audit). Declared-slot mode carries no
+      // server slotConfig, so only overwrite when present.
+      if (registryMode) activeSlotConfig = outcome.slotConfig ?? null;
+      else if (outcome.slotConfig) activeSlotConfig = outcome.slotConfig;
+      // Served palette wins over the snapshot's; an absent one leaves the cached
+      // palette standing for this view (same one-visit-drift rule as layoutOrder
+      // — the snapshot write below persists only what the server said).
+      if (outcome.palette) setBlockPalette(outcome.palette);
+      // Authoritative section order for this visit — corrects a pre-paint from a
+      // stale snapshot (bounded apply is idempotent, so agreeing orders no-op).
+      // An absent/empty layoutOrder deliberately leaves the pre-paint order
+      // standing for this view, same as a decide timeout would; the snapshot
+      // write below persists the server's answer, so it lasts one visit at most.
+      activeLayoutOrder = outcome.layoutOrder ?? activeLayoutOrder;
+      // Post-decide apply is authoritative — report any locator misses (not from
+      // pre-paint or reapply, which would be noisy/premature). Collect the applied
+      // (slot, arm, element) triples for per-option behavior signals.
+      const applyDecided = (): void => {
+        const appliedSlots: AppliedSlot[] = [];
+        reportLocatorMisses(cfg, applyAll(document, {
+          onApplied: (slotId, arm, el) => appliedSlots.push({ slotId, arm, el }),
+        }));
+        applyLayoutOrder(activeLayoutOrder, document);
+        // From here copy/ops are confirmed by the server — a subsequent reapply()
+        // (SPA nav / hydration) may safely restamp content, not just attributes.
+        decided = true;
+        // Per-option behavior signals on the applied slot elements — same privacy
+        // gate as section capture; feeds the dashboard's per-option "how visitors
+        // behave" (componentId = slotId, variantId = arm). Attached here, with
+        // the apply, so a deferred apply binds detectors to the real elements.
+        if (sectionCaptureAllowed()) {
+          try {
+            slotSignalsCleanup?.();
+            slotSignalsCleanup = attachSlotSignals(activeClient!, cfg.apiKey, appliedSlots);
+          } catch { /* fail-safe */ }
+        }
+      };
+      if (document.readyState === 'loading') {
+        // Async/GTM installs can resolve decide while the document is still
+        // parsing: applying now would miss locators for not-yet-parsed elements
+        // and beacon FALSE misses that suspend healthy slots (audit SNIP-2).
+        // The pre-paint snapshot pass above is intentionally that early — it is
+        // attributes-only flash prevention and reports nothing.
+        document.addEventListener('DOMContentLoaded', applyDecided, { once: true });
+      } else {
+        applyDecided();
+      }
+
+      // Install editor-defined goal listeners (registry mode). Never for a
+      // consent-off client; a DNT/consent-gated core client no-ops goal() anyway.
+      // Saved at module scope so grantConsent() after a revoke can re-wire them.
+      activeGoals = outcome.goals ?? null;
+      if (outcome.goals && outcome.goals.length > 0 && cfg.consent !== false && activeClient) {
+        try {
+          goalListeners?.teardown();
+          goalListeners = installGoalListeners(outcome.goals, activeClient, document, cfg.apiKey);
+        } catch { /* fail-safe */ }
+      }
+
+      // Server-classified section map (persona-coverage) → capture typing hook.
+      // Stored at module scope (route-scoped) so an SPA navigation can re-derive the
+      // typeOf hook for the new path when capture restarts. Resolution reuses the
+      // slot locator machinery inside startSectionCapture (resolveLocatorOne: id →
+      // data-attr → selector, must be unique, fingerprint must match — never
+      // guesses). Explicit data-sentient-type markup still wins inside capture.
+      activeSectionMap =
+        (outcome as { sectionMap?: Array<{ urlMatch: string; locator: unknown; type: string }> }).sectionMap ?? null;
+
+      // Section capture (default ON). Hard-gated on the privacy state: never runs
+      // for a DNT/GPC or consent-off visitor. Feeds the persona pipeline.
+      // microSignals: no-code pages have no <Adaptive> components carrying their
+      // own detectors, so the sections take them (rage click, quick exit, …).
+      if (sectionCaptureAllowed()) {
+        startSectionCapture();
+      }
+
+      dbg(cfg, 'applied', { persona: activePersona, slots: activeSlots, matches: matchCounts(cfg) });
+
+      // A revoke that landed while decide was in flight must not re-persist the
+      // snapshot: forget-me means the next visit starts clean, not
+      // re-personalized from a decision the visitor already refused (audit SNIP-3).
+      if (consentRevoked) return;
+      writeSnapshot(cfg.apiKey, {
+        v: 1,
+        persona: activePersona?.persona ?? outcome.persona,
+        band: activePersona?.band ?? 'low',
+        slots: outcome.slots,
+        // Live since B1.1: the next visit's pre-paint applies this order (bounded)
+        // before decide returns, so a learned layout doesn't flash natural-order
+        // first. null (no sections sent / older server) clears the cache.
+        layoutOrder: outcome.layoutOrder,
+        savedAt: Date.now(),
+        ...(activeSlotConfig ? { slotConfig: activeSlotConfig } : {}),
+        ...(outcome.palette ? { palette: outcome.palette } : {}),
+      });
+    };
     if (!outcome) {
       dbg(cfg, 'decide timeout/null — snapshot state stands', matchCounts(cfg));
-      return; // the snapshot state (or bare page) stands
+      // SNIP-18: losing the 5s race used to DISCARD the still-in-flight decide,
+      // so a roundtrip resolving at 6-8s meant TOTAL loss of the view — no
+      // content, no goal wiring, no capture, no snapshot. Chain the late
+      // arrival instead: applyOutcome reuses the whole post-decide path
+      // (including applyDecided's DOM-readiness deferral) but never re-runs
+      // the pre-paint snapshot pass — paint is long past. The snapshot the
+      // late apply writes becomes the next view's state, which is exactly the
+      // "snapshot state stands" contract working as intended: late
+      // personalization beats total loss. Guards: `decided` (something else
+      // already applied — never double-apply), `consentRevoked` (a revoke
+      // that landed while waiting must win, audit SNIP-3), and a client swap
+      // (revoke→grant re-inits; the refused visit's decision stays refused).
+      // A late rejection stays swallowed — the host page must never see it.
+      decidePromise
+        .then((late) => {
+          if (!late || decided || consentRevoked || activeClient !== client) return;
+          applyOutcome(late);
+          dbg(cfg, 'late decide applied', matchCounts(cfg));
+        })
+        .catch(() => undefined);
+      return; // for THIS paint the snapshot state (or bare page) stands
     }
-
-    const persona = client.getPersona();
-    if (persona) activePersona = { persona: persona.persona, band: persona.band };
-    else if (outcome.persona) activePersona = { persona: outcome.persona, band: 'low' };
-    activeSlots = outcome.slots;
-    // Registry mode: adopt the served slotConfig UNCONDITIONALLY (?? null) so a
-    // decide response with no slotConfig CLEARS the cached one — otherwise an
-    // unpublished/removed registry slot from the prior visit's snapshot keeps
-    // being re-applied and re-persisted (audit). Declared-slot mode carries no
-    // server slotConfig, so only overwrite when present.
-    if (registryMode) activeSlotConfig = outcome.slotConfig ?? null;
-    else if (outcome.slotConfig) activeSlotConfig = outcome.slotConfig;
-    // Served palette wins over the snapshot's; an absent one leaves the cached
-    // palette standing for this view (same one-visit-drift rule as layoutOrder
-    // — the snapshot write below persists only what the server said).
-    if (outcome.palette) setBlockPalette(outcome.palette);
-    // Post-decide apply is authoritative — report any locator misses (not from
-    // pre-paint or reapply, which would be noisy/premature). Collect the applied
-    // (slot, arm, element) triples for per-option behavior signals below.
-    const appliedSlots: AppliedSlot[] = [];
-    reportLocatorMisses(cfg, applyAll(document, {
-      onApplied: (slotId, arm, el) => appliedSlots.push({ slotId, arm, el }),
-    }));
-    // Authoritative section order for this visit — corrects a pre-paint from a
-    // stale snapshot (bounded apply is idempotent, so agreeing orders no-op).
-    // An absent/empty layoutOrder deliberately leaves the pre-paint order
-    // standing for this view, same as a decide timeout would; the snapshot
-    // write below persists the server's answer, so it lasts one visit at most.
-    activeLayoutOrder = outcome.layoutOrder ?? activeLayoutOrder;
-    applyLayoutOrder(activeLayoutOrder, document);
-    // From here copy/ops are confirmed by the server — a subsequent reapply()
-    // (SPA nav / hydration) may safely restamp content, not just attributes.
-    decided = true;
-
-    // Install editor-defined goal listeners (registry mode). Never for a
-    // consent-off client; a DNT/consent-gated core client no-ops goal() anyway.
-    // Saved at module scope so grantConsent() after a revoke can re-wire them.
-    activeGoals = outcome.goals ?? null;
-    if (outcome.goals && outcome.goals.length > 0 && cfg.consent !== false && activeClient) {
-      try {
-        goalListeners?.teardown();
-        goalListeners = installGoalListeners(outcome.goals, activeClient, document, cfg.apiKey);
-      } catch { /* fail-safe */ }
-    }
-
-    // Server-classified section map (persona-coverage) → capture typing hook.
-    // Stored at module scope (route-scoped) so an SPA navigation can re-derive the
-    // typeOf hook for the new path when capture restarts. Resolution reuses the
-    // slot locator machinery inside startSectionCapture (resolveLocatorOne: id →
-    // data-attr → selector, must be unique, fingerprint must match — never
-    // guesses). Explicit data-sentient-type markup still wins inside capture.
-    activeSectionMap =
-      (outcome as { sectionMap?: Array<{ urlMatch: string; locator: unknown; type: string }> }).sectionMap ?? null;
-
-    // Section capture (default ON). Hard-gated on the privacy state: never runs
-    // for a DNT/GPC or consent-off visitor. Feeds the persona pipeline.
-    // microSignals: no-code pages have no <Adaptive> components carrying their
-    // own detectors, so the sections take them (rage click, quick exit, …).
-    if (sectionCaptureAllowed()) {
-      startSectionCapture();
-      // Per-option behavior signals on the applied slot elements — same privacy
-      // gate as section capture; feeds the dashboard's per-option "how visitors
-      // behave" (componentId = slotId, variantId = arm).
-      try {
-        slotSignalsCleanup?.();
-        slotSignalsCleanup = attachSlotSignals(activeClient, cfg.apiKey, appliedSlots);
-      } catch { /* fail-safe */ }
-    }
-
-    dbg(cfg, 'applied', { persona: activePersona, slots: activeSlots, matches: matchCounts(cfg) });
-
-    writeSnapshot(cfg.apiKey, {
-      v: 1,
-      persona: activePersona?.persona ?? outcome.persona,
-      band: activePersona?.band ?? 'low',
-      slots: outcome.slots,
-      // Live since B1.1: the next visit's pre-paint applies this order (bounded)
-      // before decide returns, so a learned layout doesn't flash natural-order
-      // first. null (no sections sent / older server) clears the cache.
-      layoutOrder: outcome.layoutOrder,
-      savedAt: Date.now(),
-      ...(activeSlotConfig ? { slotConfig: activeSlotConfig } : {}),
-      ...(outcome.palette ? { palette: outcome.palette } : {}),
-    });
+    applyOutcome(outcome);
   } catch {
-    // fail-safe: never break the host page
+    // fail-safe: never break the host page — but leave a callable no-op API
+    // behind when the failure happened before exposeGlobal() ran (audit
+    // SNIP-6; exposeNoopGlobal never overwrites a live api).
+    exposeNoopGlobal();
   }
 }
 

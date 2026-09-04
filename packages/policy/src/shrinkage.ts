@@ -50,3 +50,51 @@ export function shrunkPosterior(
   const strength = (m * mass) / (mass + m);
   return { alpha: cell.alpha + strength * mu, beta: cell.beta + strength * (1 - mu) };
 }
+
+/**
+ * Pseudo-count for the weights-fallback prior below — the number of imaginary
+ * pulls at reward ZERO mixed into every arm's mean. Large enough to sink a
+ * lucky 1-pull arm, small enough to be negligible once an arm has real traffic.
+ *
+ * Deliberately NOT `SHRINKAGE_M`. This constant shipped as 5 in the React
+ * SDK's degraded fallback and the pick is serving behaviour: raising it to 20
+ * (or adopting `shrunkPosterior`'s parent-mass damping) would change which
+ * variant renders for visitors whose `/assign` hasn't resolved, and that
+ * requires a replay before it ships. Moved here (audit REACT-14) so the
+ * formula is single-sourced, not to change it.
+ */
+export const WEIGHTS_FALLBACK_PRIOR_PULLS = 5;
+
+/** One arm as published on the SDK weights feed (`/v1/weights`). */
+export type WeightsFallbackArm = { variantId: string; pulls?: number | null; avgReward: number };
+
+/**
+ * Degraded-fallback selection from cached bandit weights, used by the SDKs
+ * only while the server assignment hasn't resolved. Ranks arms by a posterior
+ * mean shrunk toward a zero prior — `pulls·avgReward / (pulls + PRIOR)` — so a
+ * lucky small-sample arm (e.g. 1 pull at avgReward 1.0) can't outrank a
+ * well-sampled one (500 pulls at 0.2). With equal pulls the shrinkage is
+ * monotonic in avgReward, preserving plain "highest avgReward wins" behavior.
+ *
+ * This is NOT the pinned read-side shrinkage (`shrunkPosterior`): the prior
+ * mean here is a constant 0, not a parent posterior, and the pseudo-count is
+ * the fixed `WEIGHTS_FALLBACK_PRIOR_PULLS`, undamped — the weights feed
+ * carries no parent to shrink toward. Zero-pull arms score 0, tying with (not
+ * beating) an all-losses arm; ties keep the first arm in weights order
+ * (strict `>` comparison — callers rely on that determinism).
+ */
+export function pickFromWeights(
+  variants: readonly WeightsFallbackArm[],
+  variantIds: readonly string[],
+): string | null {
+  let best: { variantId: string; score: number } | null = null;
+  for (const v of variants) {
+    if (!variantIds.includes(v.variantId)) continue;
+    const pulls = v.pulls ?? 0;
+    const score = pulls > 0 ? (pulls * v.avgReward) / (pulls + WEIGHTS_FALLBACK_PRIOR_PULLS) : 0;
+    if (!best || score > best.score) {
+      best = { variantId: v.variantId, score };
+    }
+  }
+  return best?.variantId ?? null;
+}

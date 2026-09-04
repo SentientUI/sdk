@@ -1,6 +1,8 @@
 'use client';
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+// `type JSX` from react, not the global namespace removed in @types/react@19
+// (peers allow react >=18) — see adaptive-text.tsx.
+import { memo, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react';
 import { attachMicroSignalDetectors, type MicroSignalType } from '@sentientui/core';
 import { useAdaptiveApiKey, useSentient } from './provider.js';
 import { useAssignment } from './use-assignment.js';
@@ -213,6 +215,11 @@ function AdaptiveImpl(props: AdaptiveProps): JSX.Element | null {
   // Attach goal tracking (shared machinery — see adaptive-shared.ts).
   useEffect(() => {
     if (isOverride) return;
+    // Same settle gate as the exposure effect above: before assign() resolves,
+    // variantId is the interim baseline placeholder, which never recorded an
+    // impression — a conversion in that window would attribute to an arm with
+    // zero exposures and corrupt its stats.
+    if (!settled) return;
     if (!client || !variantId) return;
     const node = containerRef.current;
     if (!node) return;
@@ -252,7 +259,7 @@ function AdaptiveImpl(props: AdaptiveProps): JSX.Element | null {
         client.goal(name, { metadata: {}, weight, stepIndex });
       },
     }, goalLabel);
-  }, [client, variantId, apiKey, props.id, goal, goalLabel, isOverride]);
+  }, [client, variantId, apiKey, props.id, goal, goalLabel, isOverride, settled]);
 
   // Decorative slots: empty in SSR HTML and until the client has mounted.
   if (props.clientOnly && (!mounted || !client)) return null;
@@ -290,6 +297,10 @@ export const Adaptive = memo(AdaptiveImpl, (prev, next) => {
   // goal (the common case) skips the stringify entirely.
   if (prev.goal !== next.goal && JSON.stringify(prev.goal) !== JSON.stringify(next.goal)) return false;
   if (prev.microSignalGoals !== next.microSignalGoals) return false;
+  // `funnel` feeds the funnel-declaration effect: omitting it here swallowed a
+  // funnel added or changed after first render (the memo skipped the re-render
+  // that would have re-run the declaration).
+  if (prev.funnel !== next.funnel) return false;
   if (prev.clientOnly !== next.clientOnly) return false;
   if (prev.agentData !== next.agentData) return false;
   if (prev.agentDataByVariant !== next.agentDataByVariant) return false;

@@ -103,6 +103,26 @@ describe('startEngagementCapture', () => {
     expect(() => stop()).not.toThrow();
   });
 
+  // Same validity rule as init() and the graph entry: an invalid non-pk_
+  // (typo'd) key produces a client that discards everything, yet capture used
+  // to check truthiness only — so it still fired /v1/section-map registration
+  // and dwell events into the void.
+  it('invalid non-pk_ apiKey → inert: no section registration fetch, no observers', () => {
+    document.body.innerHTML = '<section id="pricing"><h2>Pricing</h2></section>';
+    vi.spyOn(core, 'isDoNotTrackEnabled').mockReturnValue(false);
+    const observed: Element[] = [];
+    (globalThis as Record<string, unknown>)['IntersectionObserver'] = class {
+      observe(el: Element) { observed.push(el); }
+      disconnect() { /* noop */ }
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch' as never);
+    const client = { track: vi.fn() };
+    const stop = startEngagementCapture(client, { apiKey: 'sk_not_public', apiBase: 'https://api.example.com' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(observed).toHaveLength(0);
+    expect(() => stop()).not.toThrow();
+  });
+
   it('per-element type precedence: data-sentient-type > typeOf > heuristic; markup reported as source', () => {
     document.body.innerHTML =
       '<section data-sentient-type="pricing"><div>plain content</div></section>' +
@@ -126,9 +146,9 @@ describe('startEngagementCapture', () => {
       sections: Array<{ componentId: string; semanticType: string; source: string }>;
     };
     const byId = Object.fromEntries(body.sections.map((s) => [s.componentId, s]));
-    expect(byId['nc-pricing']).toEqual({ componentId: 'nc-pricing', semanticType: 'pricing', source: 'markup' });
-    expect(byId['nc-trust']).toEqual({ componentId: 'nc-trust', semanticType: 'trust', source: 'auto' });
-    expect(byId['nc-generic']).toEqual({ componentId: 'nc-generic', semanticType: 'generic', source: 'auto' });
+    expect(byId['nc-pricing']).toMatchObject({ componentId: 'nc-pricing', semanticType: 'pricing', source: 'markup' });
+    expect(byId['nc-trust']).toMatchObject({ componentId: 'nc-trust', semanticType: 'trust', source: 'auto' });
+    expect(byId['nc-generic']).toMatchObject({ componentId: 'nc-generic', semanticType: 'generic', source: 'auto' });
   });
 
   describe('section-map URL normalization', () => {
@@ -411,6 +431,58 @@ describe('bfcache restore', () => {
       stop();
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+// componentId stays `nc-${type}`, which collapses same-typed sections into one
+// dwell bucket. The section MAP must not collapse with it: the server needs one
+// entry per physical element to derive a distinct section_key for each. Without
+// this, a page whose sections all classify `generic` reports as a single
+// nc-generic and no per-section identity exists at all.
+describe('section-map locator emission', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  function capturePosts(): Array<Record<string, unknown>> {
+    const posts: Array<Record<string, unknown>> = [];
+    vi.spyOn(core, 'isDoNotTrackEnabled').mockReturnValue(false);
+    vi.spyOn(globalThis, 'fetch' as never).mockImplementation(((_u: string, init: RequestInit) => {
+      posts.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return Promise.resolve({ ok: true } as Response);
+    }) as never);
+    (globalThis as Record<string, unknown>)['IntersectionObserver'] = class {
+      observe() {}
+      disconnect() {}
+    };
+    return posts;
+  }
+
+  it('sends one entry per element, each with its own locator', () => {
+    document.body.innerHTML =
+      '<section id="a"><h2>Our Services</h2></section><section id="b"><h2>Our Process</h2></section>';
+    const posts = capturePosts();
+
+    startEngagementCapture({ track: vi.fn() }, { apiKey: 'pk_test123', doc: document });
+
+    const sections = posts[0]!['sections'] as Array<{ componentId: string; locator?: { id?: string } }>;
+    // Both sections classify `generic`, so they share a componentId...
+    expect(sections).toHaveLength(2);
+    // ...but each carries its own identity.
+    expect(sections.map((s) => s.locator?.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('omits locator when nothing resolves uniquely', () => {
+    document.body.innerHTML = '<section><p>same</p><p>same</p></section>';
+    const posts = capturePosts();
+
+    startEngagementCapture({ track: vi.fn() }, { apiKey: 'pk_test123', doc: document });
+
+    const sections = posts[0]!['sections'] as Array<{ locator?: unknown }>;
+    for (const s of sections) {
+      if ('locator' in s) expect(s.locator).toBeTruthy();
     }
   });
 });

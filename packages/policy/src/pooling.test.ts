@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  POOL_ALL, pooledPosterior, posteriorOfCounts, weightCellsFor,
-  type PoolCounts,
+  POOL_ALL, broadestValueCell, pooledPosterior, posteriorOfCounts, weightCellsFor,
+  type PoolCounts, type ValueCellRow,
 } from './pooling';
 import { shrunkPosterior } from './shrinkage';
 
@@ -140,5 +140,77 @@ describe('weightCellsFor', () => {
       { segment: 'mobile:ads', persona: POOL_ALL },
       { segment: POOL_ALL, persona: POOL_ALL },
     ]);
+  });
+});
+
+// Pinned by CONTRACTS.md §4: "The value cell is read from the BROADEST
+// hierarchy row present, never summed across them." weightCellsFor puts each
+// trial in the child, both marginals AND the global row, so summing counted
+// every order 2-4x — the EV shrinkage weight valueCount/(valueCount+K) then
+// detached at ~5 real orders instead of K=20, by a factor that varied with the
+// arm's persona mix.
+describe('broadestValueCell', () => {
+  const row = (segment: string, persona: string, valueSum: number, valueCount: number): ValueCellRow =>
+    ({ segment, persona, valueSum, valueCount });
+
+  it('no rows → zero value evidence (shrunk average falls back to the reference)', () => {
+    expect(broadestValueCell([])).toEqual({ valueSum: 0, valueCount: 0 });
+  });
+
+  it('a lone child row is the broadest row present', () => {
+    expect(broadestValueCell([row('desktop:organic', 'buyer', 120, 3)]))
+      .toEqual({ valueSum: 120, valueCount: 3 });
+  });
+
+  it('a marginal (rank 2) beats the child (rank 1) regardless of row order', () => {
+    const child = row('desktop:organic', 'buyer', 40, 1);
+    const segMarginal = row('desktop:organic', POOL_ALL, 100, 2);
+    expect(broadestValueCell([child, segMarginal])).toEqual({ valueSum: 100, valueCount: 2 });
+    expect(broadestValueCell([segMarginal, child])).toEqual({ valueSum: 100, valueCount: 2 });
+    const perMarginal = row(POOL_ALL, 'buyer', 90, 2);
+    expect(broadestValueCell([child, perMarginal])).toEqual({ valueSum: 90, valueCount: 2 });
+  });
+
+  it('the two marginals tie at rank 2 — strict rank>bestRank keeps the FIRST one', () => {
+    // Both marginals cover their slice exactly once, so either is a valid read;
+    // what must NOT happen is the second overwriting the first (>=) and the
+    // choice silently depending on SQL row order in a way `>` does not.
+    const segMarginal = row('desktop:organic', POOL_ALL, 100, 4);
+    const perMarginal = row(POOL_ALL, 'buyer', 60, 2);
+    expect(broadestValueCell([segMarginal, perMarginal])).toEqual({ valueSum: 100, valueCount: 4 });
+    expect(broadestValueCell([perMarginal, segMarginal])).toEqual({ valueSum: 60, valueCount: 2 });
+  });
+
+  it('the global row (rank 3) beats marginals and child, wherever it sits', () => {
+    const rows = [
+      row('desktop:organic', 'buyer', 40, 1),
+      row('desktop:organic', POOL_ALL, 100, 2),
+      row(POOL_ALL, POOL_ALL, 200, 5),
+      row(POOL_ALL, 'buyer', 90, 2),
+    ];
+    expect(broadestValueCell(rows)).toEqual({ valueSum: 200, valueCount: 5 });
+    expect(broadestValueCell([...rows].reverse())).toEqual({ valueSum: 200, valueCount: 5 });
+  });
+
+  it('missing value columns read as 0 (legacy rows with NULL value_sum/value_count)', () => {
+    const nullish = { segment: POOL_ALL, persona: POOL_ALL } as unknown as ValueCellRow;
+    expect(broadestValueCell([nullish])).toEqual({ valueSum: 0, valueCount: 0 });
+  });
+
+  it('REGRESSION: full 4-row hierarchy reads the global row, NEVER the sum across rows', () => {
+    // The write shape for 10 orders totalling 800 from a known persona: every
+    // order landed in all four cells, so a sum reads 40 orders / 3200 — the
+    // 4x inflation that detached EV shrinkage at ~5 orders instead of K=20.
+    const rows = [
+      row('desktop:organic', 'buyer', 800, 10),
+      row('desktop:organic', POOL_ALL, 800, 10),
+      row(POOL_ALL, 'buyer', 800, 10),
+      row(POOL_ALL, POOL_ALL, 800, 10),
+    ];
+    const got = broadestValueCell(rows);
+    expect(got).toEqual({ valueSum: 800, valueCount: 10 });
+    const summed = rows.reduce((n, r) => n + r.valueCount, 0);
+    expect(got.valueCount).not.toBe(summed);
+    expect(got.valueCount).toBe(summed / rows.length);
   });
 });

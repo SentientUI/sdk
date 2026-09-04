@@ -911,3 +911,88 @@ describe('run — editor/preview modes still expose the page API (stranded globa
     }
   });
 });
+
+describe('run — late decide after the timeout (audit SNIP-18: timeout meant total loss of the view)', () => {
+  function pendingDecide() {
+    let resolveDecide!: (v: unknown) => void;
+    const goal = vi.fn();
+    mockInit.mockReturnValue({
+      decide: vi.fn(() => new Promise((res) => { resolveDecide = res; })),
+      getPersona: vi.fn().mockReturnValue({ persona: 'buyer', confidence: 0.8, band: 'high' }),
+      goal, componentGoal: vi.fn(), destroy: vi.fn(),
+    } as never);
+    return { resolve: (v: unknown) => resolveDecide(v), goal };
+  }
+
+  const LATE_OUTCOME = {
+    layoutOrder: null, assignments: {},
+    slots: { hero: 'urgent' },
+    slotConfig: { hero: { kind: 'arms', target: '#hero', content: 'Act now' } },
+    persona: 'buyer', confidence: 0.8,
+    goals: [{ goalId: 'demo', event: 'click', locator: { id: 'cta' } }],
+  };
+
+  it('applies content, wires goals and writes the snapshot when decide resolves at 6-8s', async () => {
+    vi.useFakeTimers();
+    try {
+      (window as Window).sentient = { apiKey: 'pk_test' }; // registry mode
+      document.body.innerHTML = '<section id="hero"></section><a id="cta">Book</a>';
+      const { resolve, goal } = pendingDecide();
+
+      const running = run();
+      await vi.advanceTimersByTimeAsync(5000); // decide loses the withTimeout race
+      await running;
+
+      // The timed-out view applied nothing yet and persisted nothing.
+      expect(document.getElementById('hero')!.textContent).toBe('');
+      expect(readSnapshot('pk_test')).toBeNull();
+
+      resolve(LATE_OUTCOME); // the roundtrip completes at ~6s
+      await vi.advanceTimersByTimeAsync(0); // flush the late-arrival chain
+
+      // Content applied late — late personalization beats total loss.
+      expect(document.getElementById('hero')!.textContent).toBe('Act now');
+      expect(document.getElementById('hero')!.getAttribute('data-sentient-arm')).toBe('urgent');
+      // Goals wired.
+      document.getElementById('cta')!.dispatchEvent(new Event('click', { bubbles: true }));
+      expect(goal).toHaveBeenCalledWith('demo');
+      // Snapshot written — the late decision becomes the next view's state
+      // (the "snapshot state stands" contract, working as intended).
+      const snap = readSnapshot('pk_test');
+      expect(snap).not.toBeNull();
+      expect(snap!.slots).toEqual({ hero: 'urgent' });
+      expect(snap!.persona).toBe('buyer');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('applies nothing when consent was revoked while the late decide was in flight', async () => {
+    vi.useFakeTimers();
+    try {
+      (window as Window).sentient = { apiKey: 'pk_test' }; // registry mode
+      document.body.innerHTML = '<section id="hero"></section><a id="cta">Book</a>';
+      const { resolve, goal } = pendingDecide();
+
+      const running = run();
+      await vi.advanceTimersByTimeAsync(5000);
+      await running;
+
+      // Visitor revokes during the late window — forget-me must win.
+      const api = (window as unknown as { SentientSnippet: { revokeConsent: () => void } }).SentientSnippet;
+      api.revokeConsent();
+
+      resolve(LATE_OUTCOME);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // No content, no goal wiring, no snapshot.
+      expect(document.getElementById('hero')!.textContent).toBe('');
+      expect(document.getElementById('hero')!.getAttribute('data-sentient-arm')).toBeNull();
+      document.getElementById('cta')!.dispatchEvent(new Event('click', { bubbles: true }));
+      expect(goal).not.toHaveBeenCalled();
+      expect(readSnapshot('pk_test')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

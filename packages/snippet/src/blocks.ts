@@ -58,7 +58,9 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
         if (node.type === 'stack') {
           const s = node as StackBlock;
           styled(el, {
-            display: 'flex', 'flex-direction': s.direction, gap: GAP[s.gap ?? 'md'],
+            // Same unknown-token fallback as the grid below (audit SNIP-11) —
+            // here the styled() undefined-skip only silently dropped the gap.
+            display: 'flex', 'flex-direction': s.direction, gap: GAP[s.gap ?? 'md'] ?? GAP['md'],
             'align-items': s.align ? FLEX_POS[s.align] : undefined,
             'justify-content': s.justify ? FLEX_POS[s.justify] : undefined,
             'flex-wrap': s.wrap ? 'wrap' : undefined,
@@ -71,7 +73,11 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
           // term keeps each item at least an exact 1/columns share, so the
           // grid can never EXCEED the intended count on wide containers. The
           // 200px floor is what triggers the collapse.
-          const gap = GAP[g.gap ?? 'md']!;
+          // Unknown gap token (from a NEWER server): fall back to md. Indexing
+          // GAP with it put the string "undefined" inside grid-template-columns
+          // — an invalid declaration the browser drops, so the grid COLLAPSED
+          // instead of degrading (audit SNIP-11).
+          const gap = GAP[g.gap ?? 'md'] ?? GAP['md']!;
           styled(el, {
             display: 'grid',
             'grid-template-columns':

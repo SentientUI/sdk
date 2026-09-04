@@ -1,5 +1,5 @@
 import type { GoalDefinition } from '@sentientui/core';
-import { resolveLocatorOne } from './locator';
+import { pathname, resolveLocatorOne } from './locator';
 
 // Editor-defined goal wiring (Phase 3, §2.2). One delegated click listener and
 // one submit listener at the document root; url_reached checked on load + on
@@ -22,11 +22,6 @@ type GoalClient = {
 };
 
 export type GoalListeners = { teardown: () => void; checkUrl: () => void };
-
-function pathname(doc: Document): string {
-  const loc = (doc.defaultView ?? (typeof window !== 'undefined' ? window : undefined))?.location;
-  return loc?.pathname ?? '';
-}
 
 // A url_reached pattern matches the current path on an exact hit or a path-segment
 // boundary — never a bare substring. Substring matching made the degenerate '/'
@@ -55,6 +50,20 @@ export function firedGoalsKey(apiKey?: string): string {
 
 /** @deprecated Use firedGoalsKey(apiKey) — kept for the teardown path. */
 export const FIRED_GOALS_KEY = '_snt_fired_goals';
+
+/** Remove the fired-goal latches for this project (and the legacy shared key).
+ *  Called from the snippet's revoke/forget-me path: without it the
+ *  `_snt_fired_goals_*` sessionStorage entry kept naming the visitor's
+ *  conversions after consent was revoked — forget-me wasn't total
+ *  (audit SNIP-12, privacy). */
+export function clearFiredGoals(win: Window | null, apiKey?: string): void {
+  try {
+    win?.sessionStorage.removeItem(firedGoalsKey(apiKey));
+    win?.sessionStorage.removeItem(FIRED_GOALS_KEY);
+  } catch {
+    /* storage unavailable — nothing persisted to clear */
+  }
+}
 
 /**
  * Dedupe identity for one wired goal.

@@ -83,9 +83,13 @@ export function useAdaptive<T>(
   }, []);
 
   const goalKey = typeof config.goal === 'string' ? config.goal : JSON.stringify(config.goal);
+  // Missing-goal misuse fails SOFT in production (dev throws above): the old
+  // unconditional goalLabelOf(config.goal) crashed the whole prod render on
+  // `undefined.type`. Consistent with how the package treats other prod misuse
+  // (unbound bind, failed assigns): serve and expose the variant, wire no goal.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const goal = useMemo(() => normalizeGoal(config.goal), [goalKey]);
-  const goalLabel = goalLabelOf(config.goal);
+  const goal = useMemo(() => (config.goal ? normalizeGoal(config.goal) : null), [goalKey]);
+  const goalLabel = config.goal ? goalLabelOf(config.goal) : '';
 
   useEffect(() => registerComponent({ id, variantIds, goal: goalLabel }), [id, variantIds, goalLabel]);
 
@@ -110,7 +114,8 @@ export function useAdaptive<T>(
   const funnel = config.funnel;
   useEffect(() => {
     if (isOverride || !settled) return;
-    if (!client || !funnel) return;
+    // `goal` is null only on the missing-goal misuse path (fail-soft above).
+    if (!client || !funnel || !goal) return;
     maybeDeclareFunnel(client, apiKey, id, funnel, goal);
   }, [client, apiKey, id, funnel, goal, isOverride, settled]);
 
@@ -121,7 +126,12 @@ export function useAdaptive<T>(
   }, [variant, goalKey]);
   useEffect(() => {
     if (isOverride) return;
-    if (!client || !variant || !node) return;
+    // Same settle gate as the exposure effect above: before assign() resolves,
+    // `variant` is the interim variantIds[0] placeholder, which never recorded
+    // an impression — a conversion in that window would attribute to an arm
+    // with zero exposures and corrupt its stats.
+    if (!settled) return;
+    if (!client || !variant || !node || !goal) return;
     // A static goal-config value rides on both writes (spec §5); steps carry
     // weights, never values (spec §9.4).
     const declaredValue = goalValueOf(goal);
@@ -156,7 +166,7 @@ export function useAdaptive<T>(
         client.goal(name, { metadata: {}, weight, stepIndex });
       },
     }, goalLabel);
-  }, [client, node, variant, apiKey, id, goal, goalLabel, isOverride]);
+  }, [client, node, variant, apiKey, id, goal, goalLabel, isOverride, settled]);
 
   // Micro-signal detectors — the third thing <Adaptive>'s container wires.
   useEffect(() => {
@@ -204,6 +214,9 @@ export function useAdaptive<T>(
       // cross-call latch — keep goal labels unique per conversion (a component
       // that ALSO fires a declared goal on the same action records both).
       const name = goalType ?? goalLabel;
+      // Empty only on the missing-goal misuse path (fail-soft above) with no
+      // explicit goalType — nothing meaningful to record.
+      if (!name) return;
       client?.componentGoal(id, name, opts);
       client?.goal(name, {
         metadata: opts?.metadata ?? {},
