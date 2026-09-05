@@ -348,25 +348,27 @@ describe('locator emission', () => {
     const scanner = createDOMScanner();
     const result = await scanner.scan();
     const node = result.nodes.find((n) => n.componentId === 'pricing-1');
-    // NOTE: data-sentient-id is deliberately NOT in STABLE_DATA_ATTRS — that
-    // list is shared with the server generator and changing it would move
-    // section_key for existing rows. So our own marker attribute does not win
-    // the locator; the element resolves by unique selector instead. Revisit in
-    // Phase 2, changing BOTH generators together.
+    // data-sentient-id entered STABLE_DATA_ATTRS 2026-09-05 (both generators
+    // together, per the original deferral note): our own marker attribute now
+    // wins the locator, because it is exactly what hydration and redesigns do
+    // not rewrite. Ingest-time fingerprint reconciliation aliases pre-change
+    // keys for elements this moved.
     expect(node?.locator).toEqual({
       v: 1,
-      selector: 'div',
+      dataAttr: { name: 'data-sentient-id', value: 'pricing-1' },
       fingerprint: { tag: 'div', text: 'Plans' },
     });
   });
 
-  it('prefers a stable data attribute when one is present', async () => {
+  it('prefers a stable data attribute, our own marker first', async () => {
     document.body.innerHTML =
       '<div data-sentient-id="a" data-testid="pricing"><h2>Plans</h2></div><div>filler</div>';
     const scanner = createDOMScanner();
     const result = await scanner.scan();
     const node = result.nodes.find((n) => n.componentId === 'a');
-    expect(node?.locator?.dataAttr).toEqual({ name: 'data-testid', value: 'pricing' });
+    // data-sentient-id outranks data-testid since 2026-09-05: the attribute a
+    // site authors for us is the strongest identity claim it can make.
+    expect(node?.locator?.dataAttr).toEqual({ name: 'data-sentient-id', value: 'a' });
   });
 
   it('leaves locator undefined when nothing resolves uniquely', async () => {

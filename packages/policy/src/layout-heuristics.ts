@@ -1,5 +1,9 @@
 import { PERSONAS, type Persona } from './personas';
 import { hashLayout } from './hash';
+// Type-only import: the taxonomy subpath is server-only (its topic table costs
+// ~405 bytes gzip the browser never reads), but a type erases at build, so the
+// barrel stays clean of its runtime code.
+import type { SectionRole } from './taxonomy';
 
 export const CLUSTER_PRIORITY: Record<Persona, string[]> = {
   buyer: ['pricing', 'cta', 'hero', 'comparison', 'social_proof', 'trust', 'features', 'faq', 'navigation', 'generic'],
@@ -15,11 +19,20 @@ export const CLUSTER_PRIORITY: Record<Persona, string[]> = {
  * persona (declared/discovered): those have no semantic prior, so they serve
  * the natural order until the layout bandit has learned rows, the same
  * cold-start posture 'unknown' gets.
+ *
+ * With `sectionRoles` (spec 2026-09-04 §1, phase 2d) the ordering projection is
+ * `(role, parent)`: structural sections are PINNED at their original index and
+ * only converters/persuaders re-rank around them. The pin is not cosmetic —
+ * 'navigation' ranks near last in every persona priority, so an unpinned navbar
+ * or footer would sort to the bottom of the page, exactly the visible damage a
+ * reorder must never do. Callers without role data (the client-local fallback)
+ * omit the map and get the pre-2d behaviour unchanged.
  */
 export function applyClusterHeuristic(
   sections: string[],
   sectionTypes: Map<string, string>,
   persona: string,
+  sectionRoles?: Map<string, SectionRole>,
 ): string[] {
   const priority = (CLUSTER_PRIORITY as Partial<Record<string, string[]>>)[persona];
   if (!priority) return sections;
@@ -32,11 +45,17 @@ export function applyClusterHeuristic(
     const i = priority.indexOf(type);
     return i === -1 ? genericRank : i;
   };
-  return [...sections].sort((a, b) => {
+  const movable = sectionRoles
+    ? sections.filter((s) => sectionRoles.get(s) !== 'structural')
+    : [...sections];
+  movable.sort((a, b) => {
     const typeA = sectionTypes.get(a) ?? 'generic';
     const typeB = sectionTypes.get(b) ?? 'generic';
     return rank(typeA) - rank(typeB);
   });
+  if (!sectionRoles) return movable;
+  let m = 0;
+  return sections.map((s) => (sectionRoles.get(s) === 'structural' ? s : movable[m++]!));
 }
 
 /**
@@ -50,10 +69,11 @@ export function candidateLayouts(
   sections: string[],
   sectionTypes: Map<string, string>,
   persona: string,
+  sectionRoles?: Map<string, SectionRole>,
 ): Map<string, string[]> {
   const byHash = new Map<string, string[]>();
   for (const cluster of [...PERSONAS, persona]) {
-    const order = applyClusterHeuristic(sections, sectionTypes, cluster);
+    const order = applyClusterHeuristic(sections, sectionTypes, cluster, sectionRoles);
     byHash.set(hashLayout(order), order);
   }
   return byHash;

@@ -27,6 +27,7 @@ import { getPreviewMode, subscribePreview, createPreviewClient } from './preview
 import { subscribeOverridesChanged } from './override-events.js';
 import { publishDevtoolsConfig } from './devtools-config.js';
 import { registerSections } from './devtools-registry.js';
+import { isDevBuild } from './adaptive-shared.js';
 
 /**
  * Feeds browser globals into core's `deriveSessionSegment` so the cache key
@@ -511,6 +512,35 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       registerSections(props.declaredSections);
     }
   }, [props.initialLayoutOrder, props.declaredSections]);
+
+  // Dev-only: a declared section with no `data-sentient-id="<id>"` element is
+  // invisible to the DOM graph scanner, so the server never learns its semantic
+  // type and every persona gets the identity order — the layout looks "on" but
+  // can never personalize (found on a real site 2026-09-05: nine declared
+  // sections, zero graph rows, one bandit arm). Warn once with the exact fix
+  // rather than leaving the integration silently inert.
+  useEffect(() => {
+    if (!isDevBuild()) return;
+    const declared = props.declaredSections;
+    if (!declared || declared.length === 0 || typeof document === 'undefined') return;
+    const present = new Set(
+      Array.from(document.querySelectorAll('[data-sentient-id]'), (el) =>
+        el.getAttribute('data-sentient-id'),
+      ),
+    );
+    const missing = declared.filter((id) => !present.has(id));
+    if (missing.length > 0) {
+      console.warn(
+        `[SentientUI] Declared section${missing.length > 1 ? 's' : ''} ${missing
+          .map((id) => `"${id}"`)
+          .join(', ')} ${missing.length > 1 ? 'have' : 'has'} no matching ` +
+          'data-sentient-id element, so the layout engine cannot learn what ' +
+          'they are and will serve the same order to every persona. Add ' +
+          'data-sentient-id="<sectionId>" (plus optional data-sentient-type) ' +
+          'to each section\'s element.',
+      );
+    }
+  }, [props.declaredSections]);
 
   // The client exposed to consumers — wrapped to suppress events while previewing.
   const exposedClient = useMemo(

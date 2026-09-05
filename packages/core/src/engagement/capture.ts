@@ -1,4 +1,11 @@
-import { classifySection, SEMANTIC_TYPES, type SemanticType } from './classify';
+import {
+  classifyFeatures,
+  featuresFromElement,
+  CONTENT_PATTERNS,
+  SEMANTIC_TYPES,
+  type SemanticType,
+} from './classify';
+import { fnv1a } from '@sentientui/policy';
 import { isDoNotTrackEnabled } from '../index.js';
 import { attachMicroSignalDetectors } from '../micro-signals.js';
 import { locatorFromElement } from '../locator-from-dom.js';
@@ -21,7 +28,7 @@ export type EngagementCaptureOptions = {
   doc?: Document;
   /**
    * Also attach per-section micro-signal detectors (rage click, text copy,
-   * scroll hesitation, tab loss), attributed to the section's `nc-<type>`
+   * scroll hesitation, tab loss), attributed to the section's per-element `nc-*`
    * component. For the no-code snippet, whose pages have no `<Adaptive>`
    * components carrying their own detectors. Default false — the React SDK
    * keeps its per-component detectors and must not double-attach.
@@ -65,6 +72,20 @@ function selectSections(doc: Document): Element[] {
   return kept.filter((el) => !kept.some((k) => k !== el && k.contains(el)));
 }
 
+/** Client-sensor observation riding each section-map entry (spec 2026-09-04
+ *  §2): structure, headings, and which CONTENT_PATTERNS matched — never body
+ *  text, so nothing beyond headings leaves the page. Lets the server's richer
+ *  topic classifier label pages the crawler cannot fetch (CSR, auth-walled). */
+type SectionObservation = {
+  tag: string;
+  idClass: string;
+  headingText: string;
+  textLength: number;
+  actionCount: number;
+  ariaRole?: string;
+  patternFlags?: SemanticType[];
+};
+
 function registerSections(
   apiKey: string,
   apiBase: string,
@@ -74,6 +95,7 @@ function registerSections(
     semanticType: SemanticType;
     source: 'markup' | 'auto';
     locator?: unknown;
+    observation?: SectionObservation;
   }>,
 ): void {
   try {
@@ -115,39 +137,62 @@ export function startEngagementCapture(
   const els = selectSections(doc);
   if (els.length === 0) return NOOP;
 
-  // Collapse to one component per semantic type per page (the matrix aggregates
-  // by semantic type anyway). Per-element precedence: explicit data-sentient-type
-  // markup → served section map (opts.typeOf) → local heuristic.
+  // One component per ELEMENT (nc-* retirement, 2026-09-05): the id carries a
+  // short locator hash — `nc-<type>-<hash>` — so two same-typed bands no longer
+  // collapse into one row with summed dwell, which is what made "which features
+  // band holds attention?" unanswerable. The hash is over the locator's
+  // identity fields (the same subset section_key hashes server-side), so the id
+  // is stable across visits. An element with no resolvable locator falls back
+  // to the collapsed `nc-<type>` — no identity means no better name exists.
+  // The type-level matrix is unaffected (it aggregates via graph_nodes
+  // semantic_type); pre-change dwell history stays keyed to collapsed ids and
+  // ages out of the reporting windows.
+  // Per-element precedence: explicit data-sentient-type markup → served
+  // section map (opts.typeOf) → local heuristic.
   const componentOf = new Map<Element, string>();
-  // One entry PER ELEMENT for the section map, even though componentId still
-  // collapses by type. The server derives a distinct section_key from each
-  // locator, so a page whose bands all classify `generic` still gets one
-  // identity per band instead of a single nc-generic covering all of them.
-  // Dwell keeps keying on the collapsed componentId — that is unchanged here.
   const entries: Array<{
     componentId: string;
     semanticType: SemanticType;
     source: 'markup' | 'auto';
     locator?: unknown;
+    observation?: SectionObservation;
   }> = [];
   for (const el of els) {
     const explicit = el.getAttribute('data-sentient-type');
     const markup = explicit && (SEMANTIC_TYPES as readonly string[]).includes(explicit)
       ? (explicit as SemanticType)
       : null;
-    const type = markup ?? opts.typeOf?.(el) ?? classifySection(el);
-    const componentId = `nc-${type}`;
+    const f = featuresFromElement(el);
+    const type = markup ?? opts.typeOf?.(el) ?? classifyFeatures(f).type;
+    const locator = locatorFromElement(el, doc) as
+      | { id?: string; dataAttr?: unknown; selector?: string }
+      | null;
+    const componentId = locator
+      ? `nc-${type}-${fnv1a(
+          JSON.stringify({ id: locator.id ?? null, dataAttr: locator.dataAttr ?? null, selector: locator.selector ?? null }),
+        ).toString(36)}`
+      : `nc-${type}`;
     componentOf.set(el, componentId);
-    // `source` is now per ELEMENT, not per collapsed component. Previously,
-    // markup on any one element made the whole collapsed component report as
-    // 'markup'; with one row per section the server can record each section's
-    // real provenance instead of the most-confident of its siblings'.
-    const locator = locatorFromElement(el, doc);
+    // Client-sensor observation: which shipped CONTENT_PATTERNS matched the
+    // body text (booleans — the text itself never leaves the page), plus the
+    // structural features the server classifier keys on.
+    const patternFlags = CONTENT_PATTERNS.filter(([, re]) => re.test(f.bodyText)).map(([t]) => t);
     entries.push({
       componentId,
       semanticType: type,
+      // `source` is per ELEMENT: with one row per section the server records
+      // each section's real provenance, not the most-confident of its siblings'.
       source: markup ? 'markup' : 'auto',
       ...(locator ? { locator } : {}),
+      observation: {
+        tag: f.tag,
+        idClass: f.idClass.slice(0, 200),
+        headingText: f.headingText,
+        textLength: f.textLength,
+        actionCount: f.actionCount,
+        ...(f.ariaRole ? { ariaRole: f.ariaRole } : {}),
+        ...(patternFlags.length > 0 ? { patternFlags } : {}),
+      },
     });
   }
 
@@ -256,12 +301,12 @@ export function startEngagementCapture(
   }, HEARTBEAT_MS);
 
   // Per-section micro-signal detectors (opt-in; see EngagementCaptureOptions).
-  // Attributed to the section's nc-<type> id with no variant — they feed the
+  // Attributed to the section's per-element nc-* id with no variant — they feed the
   // persona attention fallback and auto-discovery, never rewards.
   const detectorCleanups: Array<() => void> = [];
   if (opts.microSignals) {
     // tab_loss is a single document-level `visibilitychange` signal, so enabling
-    // it on every section detector would emit one tab_loss per nc-<type> section
+    // it on every section detector would emit one tab_loss per section
     // on a single tab-hide — attributing one page-level exit to every section
     // (audit M5). Enable it on only the first section so the exit is recorded
     // once, mirroring the per-option path in slot-signals.ts ({ tabLoss: index === 0 }).

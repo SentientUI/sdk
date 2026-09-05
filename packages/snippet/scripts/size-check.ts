@@ -37,13 +37,24 @@ const bundles: Array<{ name: string; file: string; limit: number }> = [
   // content, so the code that puts it back has to be always-on too). ~400 bytes
   // of headroom left for B2's remaining phases — the next addition needs a
   // deliberate decision about this budget.
+  // 23 KiB (was 22): re-baselined 2026-09-05 (operator decision — "increase the
+  // size to fit that") for the semantic-understanding batch, all of it
+  // always-on capture code: per-element nc-* ids (locator-hash suffix, so two
+  // same-typed bands stop collapsing into one dwell row), the client-sensor
+  // observation on every section-map entry (structure + headings + which
+  // shipped CONTENT_PATTERNS matched — the ONLY classification channel for
+  // pages the crawler cannot fetch), the phase-2d structural-pinning branch in
+  // the shared layout heuristic, and data-sentient-id in STABLE_DATA_ATTRS.
+  // Measured 22721 (+819 on the 21902 baseline). ~830 bytes of headroom.
+  //
+  // Previous baseline note, kept for the accounting trail:
   // Re-baselined 21→22 KB for client-side locator generation. The snippet now
   // sends one section-map entry PER ELEMENT with its own compound locator,
   // instead of one per semantic TYPE — which is what gives each section its own
   // section_key. Without it a page whose bands all classify `generic` collapses
   // into a single nc-generic with summed dwell and no per-section identity at
   // all (measured on a real site: 8 of 9 sections generic). Measured 21902.
-  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 22 * 1024 },
+  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 23 * 1024 },
   // Measured 11628 (arrangement picker +521 on a palette-sampling 11107) —
   // 660 bytes of margin. The composition spec expected this budget to need
   // raising for the editor phase; it did NOT (the picker is forms — the server

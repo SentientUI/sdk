@@ -84,7 +84,16 @@ export function structuralTopicOf(f: SectionFeatures): string | null {
   // headline happens to contain a content word loses to the keyword table:
   // "We build brands that move" scored social_proof and "Winter collection"
   // scored features, purely on words inside the hero copy.
-  if (f.tag === 'header') return 'hero';
+  //
+  // …EXCEPT when the header IS the site's navigation. The hold-out corpus
+  // (2026-09-05, six real unseen sites) showed most real pages wrap their nav
+  // in <header> — mega-menus with 10–114 links and almost no prose — and
+  // hero-typing those cost the classifier a 0.11 hero precision. A hero header
+  // carries a headline and one or two calls to action; a nav header is
+  // link-dominated, so the action count is the discriminator. Measured on the
+  // hold-out: nav headers had 10+ actions (one at 4), authored hero headers
+  // have 0–2.
+  if (f.tag === 'header') return f.actionCount >= 5 ? 'navigation' : 'hero';
   const hay = `${f.idClass} ${f.headingText}`.toLowerCase();
   if (/\b(navbar|nav-bar|navigation|site-nav|main-nav|topbar|footer)\b/.test(hay)) {
     return /footer/.test(hay) ? 'footer' : 'navigation';

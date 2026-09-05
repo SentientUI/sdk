@@ -1,5 +1,47 @@
 # @sentientui/core
 
+## 0.25.0
+
+### Minor Changes
+
+- ada7994: Semantic-understanding batch (remaining-work items 2/3/5, 2026-09-05):
+
+  - **Per-element section ids** — engagement capture now names each section
+    `nc-<type>-<hash>` (a short locator-identity hash) instead of the collapsed
+    `nc-<type>`, so two same-typed bands stop sharing one dwell row and
+    "which features band holds attention?" becomes answerable. Elements with no
+    resolvable locator keep the collapsed id. Type-level rollups are unaffected;
+    pre-change dwell history stays on the collapsed ids and ages out of the
+    reporting windows.
+  - **Client-sensor observations** — every section-map entry now carries the
+    section's structural features (tag, id/class, heading, text length, action
+    count, ARIA role) plus booleans for which shipped CONTENT_PATTERNS matched
+    the body text. The body text itself never leaves the page. This is the only
+    classification channel for pages the crawler cannot fetch (CSR, auth-walled),
+    which previously got no topic/role enrichment at all.
+  - **`data-sentient-id` joined `STABLE_DATA_ATTRS`** (both locator generators
+    together, per the original deferral note): the attribute a site authors to
+    name a section for us now wins its locator, ahead of `data-testid`. Elements
+    with a unique `id` are unaffected; for the rest the section key moves once
+    and ingest-time fingerprint reconciliation records the alias.
+  - Snippet always-on budget re-baselined 22→23 KiB for the above (measured
+    22721; the accounting trail lives in `scripts/size-check.ts`).
+  - **Nav-wrapping headers stop classifying as heroes** — a `<header>` with 5+
+    actions is the site's navigation (measured on the hold-out corpus: real nav
+    headers carry 10–114 links, authored heroes 0–2). Shared rule, so browser
+    and crawler agree; hold-out accuracy moved 0.598 → 0.670 with the golden
+    corpus holding at 1.00.
+  - **`CLASSIFIER_VERSION` exported from `@sentientui/core/topics`** — anchors
+    the server's shadow-label rollout: bump it when classification behaviour
+    changes so live projects keep serving their promoted labels until an
+    operator reviews the diff and promotes (with one-click rollback).
+
+### Patch Changes
+
+- Updated dependencies [ada7994]
+- Updated dependencies [ada7994]
+  - @sentientui/policy@0.9.0
+
 ## 0.24.0
 
 ### Minor Changes

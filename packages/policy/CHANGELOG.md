@@ -1,5 +1,32 @@
 # @sentientui/policy
 
+## 0.9.0
+
+### Minor Changes
+
+- ada7994: Factored layout value model (spec 2026-09-04 §3a): `chooseLayoutFactored`,
+  `layoutBucketOf`, `factorCellsForOrder`, `LAYOUT_FACTOR_BUCKETS` and
+  `GLOBAL_FACTOR_PERSONA`. Scores candidate orders as sums of
+  (parent semantic type × position bucket) cell draws — 40 global parameters plus
+  EB-shrunk persona deviations instead of one independent posterior per
+  permutation, so every trial teaches every candidate that shares its structure.
+  Persona cells shrink toward the global cell and global cells toward the
+  all-cells pool (mean-only crossing, per the pooling contract); one Beta draw
+  per cell is shared across candidates so they compare under the same sampled
+  world. Pure functions, tree-shaken out of every client bundle; the server
+  serves it only behind a per-project flag that ships dark.
+- ada7994: Phase 2d ordering projection: `applyClusterHeuristic`, `candidateLayouts` and
+  `chooseLayout` accept an optional `sectionRoles` map. Structural sections
+  (nav/footer/breadcrumb) are pinned at their original index and only
+  converters/persuaders re-rank by the persona's parent priority — without the
+  pin, 'navigation' ranks near last in every priority list, so a reorder would
+  visibly drop the navbar to the bottom of the page. Callers that omit the map
+  (the client-local fallback) get the previous behaviour byte-for-byte; the
+  server passes roles from the unified `page_semantics`/`graph_nodes` read.
+  Candidate layout hashes change for pages where pinning or enriched labels
+  alter an order, so affected `layout_weights` rows cold-start — accepted, the
+  layout bandit had collapsed to one arm on the sites this exists to fix.
+
 ## 0.8.0
 
 ### Minor Changes

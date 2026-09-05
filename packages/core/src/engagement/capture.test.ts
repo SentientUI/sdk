@@ -72,7 +72,8 @@ describe('startEngagementCapture', () => {
       expect(client.track).toHaveBeenCalledTimes(1);
       const evt = client.track.mock.calls[0]![0];
       expect(evt.eventType).toBe('dwell');
-      expect(evt.componentId).toBe('nc-pricing');
+      // Per-element id (nc-* retirement 2026-09-05): type prefix + locator hash.
+      expect(evt.componentId).toMatch(/^nc-pricing-[0-9a-z]+$/);
       expect(evt.payload.dwell_time).toBe(1200);
       expect(evt.payload.scroll_depth).toBe(0.75);
       expect(disconnect).toHaveBeenCalled();
@@ -123,6 +124,33 @@ describe('startEngagementCapture', () => {
     expect(() => stop()).not.toThrow();
   });
 
+  it('sends a client-sensor observation per section: features + pattern flags, never body text', () => {
+    document.body.innerHTML =
+      '<section id="deal"><h2>Membership</h2><p>Starter plan from $29/mo billed monthly for every user on the account.</p></section>';
+    vi.spyOn(core, 'isDoNotTrackEnabled').mockReturnValue(false);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue({ ok: true } as never);
+    (globalThis as Record<string, unknown>)['IntersectionObserver'] = class {
+      observe() { /* noop */ }
+      disconnect() { /* noop */ }
+    };
+
+    startEngagementCapture({ track: vi.fn() }, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+
+    const raw = (fetchSpy.mock.calls[0] as unknown as [string, { body: string }])[1].body;
+    const body = JSON.parse(raw) as {
+      sections: Array<{ observation?: { tag: string; headingText: string; patternFlags?: string[]; textLength: number } }>;
+    };
+    const obs = body.sections[0]!.observation!;
+    expect(obs.tag).toBe('section');
+    expect(obs.headingText).toBe('Membership');
+    expect(obs.textLength).toBeGreaterThan(0);
+    // The shipped pricing CONTENT_PATTERN matches "$29/mo" — transmitted as a
+    // flag only. The body text itself must never leave the page: the whole
+    // request body cannot contain it.
+    expect(obs.patternFlags).toContain('pricing');
+    expect(raw).not.toContain('billed monthly');
+  });
+
   it('per-element type precedence: data-sentient-type > typeOf > heuristic; markup reported as source', () => {
     document.body.innerHTML =
       '<section data-sentient-type="pricing"><div>plain content</div></section>' +
@@ -145,10 +173,11 @@ describe('startEngagementCapture', () => {
     const body = JSON.parse((fetchSpy.mock.calls[0] as unknown as [string, { body: string }])[1].body) as {
       sections: Array<{ componentId: string; semanticType: string; source: string }>;
     };
-    const byId = Object.fromEntries(body.sections.map((s) => [s.componentId, s]));
-    expect(byId['nc-pricing']).toMatchObject({ componentId: 'nc-pricing', semanticType: 'pricing', source: 'markup' });
-    expect(byId['nc-trust']).toMatchObject({ componentId: 'nc-trust', semanticType: 'trust', source: 'auto' });
-    expect(byId['nc-generic']).toMatchObject({ componentId: 'nc-generic', semanticType: 'generic', source: 'auto' });
+    // Ids are per-element (nc-* retirement): find each by its type prefix.
+    const byType = (t: string) => body.sections.find((s) => s.componentId.startsWith(`nc-${t}`));
+    expect(byType('pricing')).toMatchObject({ semanticType: 'pricing', source: 'markup' });
+    expect(byType('trust')).toMatchObject({ semanticType: 'trust', source: 'auto' });
+    expect(byType('generic')).toMatchObject({ semanticType: 'generic', source: 'auto' });
   });
 
   describe('section-map URL normalization', () => {
@@ -206,7 +235,7 @@ describe('startEngagementCapture', () => {
       const micro = client.track.mock.calls.filter(([e]) => e.eventType === 'micro_signal');
       expect(micro).toHaveLength(1);
       expect(micro[0]![0]).toMatchObject({
-        componentId: 'nc-pricing',
+        componentId: expect.stringMatching(/^nc-pricing(-[0-9a-z]+)?$/) as unknown as string,
         eventType: 'micro_signal',
         payload: { signalType: 'rage_click' },
       });
@@ -287,7 +316,9 @@ describe('startEngagementCapture', () => {
     const body = JSON.parse((fetchSpy.mock.calls[0] as unknown as [string, { body: string }])[1].body) as {
       sections: Array<{ componentId: string }>;
     };
-    expect(body.sections.map((s) => s.componentId).sort()).toEqual(['nc-faq', 'nc-pricing']);
+    const ids = body.sections.map((s) => s.componentId).sort();
+    expect(ids[0]).toMatch(/^nc-faq(-[0-9a-z]+)?$/);
+    expect(ids[1]).toMatch(/^nc-pricing(-[0-9a-z]+)?$/);
   });
 
   it('keeps a candidate with exactly ONE nested candidate (header > nav attributes to the header, as before)', () => {

@@ -58,3 +58,32 @@ describe('section registry for devtools', () => {
     expect(getRegisteredSections()).toEqual([]);
   });
 });
+
+describe('declared-section resolvability warning (dev only)', () => {
+  it('warns naming exactly the declared sections with no data-sentient-id element', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    render(
+      <AdaptiveProvider {...BASE} declaredSections={['hero', 'reviews']}>
+        <section data-sentient-id="hero" />
+      </AdaptiveProvider>,
+    );
+    const msg = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(msg).toContain('"reviews"');
+    expect(msg).not.toContain('"hero"');
+    expect(msg).toContain('data-sentient-id');
+    warn.mockRestore();
+  });
+
+  it('stays silent when every declared section resolves', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    render(
+      <AdaptiveProvider {...BASE} declaredSections={['hero']}>
+        <section data-sentient-id="hero" />
+      </AdaptiveProvider>,
+    );
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes('data-sentient-id')),
+    ).toBe(false);
+    warn.mockRestore();
+  });
+});

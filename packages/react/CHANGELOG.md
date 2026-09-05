@@ -1,5 +1,23 @@
 # @sentientui/react
 
+## 0.26.1
+
+### Patch Changes
+
+- ada7994: Dev-only warning when a declared layout section has no
+  `data-sentient-id="<sectionId>"` element. The DOM graph scanner only registers
+  `[data-sentient-id]` elements, so a declared section without one is invisible
+  to the server: it types as `generic`, every persona gets the identity order,
+  and the layout bandit holds a single arm — the integration looks live but can
+  never personalize (found on a real production site: nine declared sections,
+  zero graph rows). The warning names the exact missing ids and the fix.
+  `AdaptiveRoot`'s `sections` docs now state the convention.
+- Updated dependencies [ada7994]
+- Updated dependencies [ada7994]
+- Updated dependencies [ada7994]
+  - @sentientui/policy@0.9.0
+  - @sentientui/core@0.25.0
+
 ## 0.26.0
 
 ### Minor Changes

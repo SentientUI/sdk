@@ -2,6 +2,7 @@ export * from './personas';
 export * from './layout-heuristics';
 export * from './hash';
 export * from './choose-layout';
+export * from './layout-factored';
 export * from './bandit';
 export * from './arm-encoding';
 export * from './shrinkage';

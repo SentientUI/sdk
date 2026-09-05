@@ -188,7 +188,7 @@ Imported from `@sentientui/react/next`.
 | Prop | Type | Description |
 |------|------|-------------|
 | `components` | `Array<{ id: string; variantIds: string[] }>` *(optional, default `[]`)* | Components to preload server-side. `id` must match `<Adaptive id="…">`. Omit when the tree uses only slots/sections or assigns client-side. |
-| `sections` | `string[]` *(optional)* | Page section IDs in default order. When provided, a single `POST /v1/decide` returns both layout order and assignments; `useLayoutOrder()` becomes available. |
+| `sections` | `string[]` *(optional)* | Page section IDs in default order. When provided, a single `POST /v1/decide` returns both layout order and assignments; `useLayoutOrder()` becomes available. Give each section's element `data-sentient-id="<sectionId>"` (optionally an explicit `data-sentient-type`) so the graph scanner can register it — without it the server types the section `generic` and every persona gets the same order. The provider warns about unresolvable ids in development. |
 | `apiKey` | `string` | `pk_…` key — used by both the browser SDK and server-side SSR requests. |
 | `appOrigin` | `string` *(default `http://localhost:3001`)* | Your app origin (e.g. `https://yourapp.com`). Must be on the project's allowed-origins list. Always set in production. |
 | `context` | `'landing' \| 'ecommerce' \| 'saas' \| 'marketplace'` | Type of product. Used for segment weighting and analytics grouping. |

@@ -5,7 +5,14 @@ import type { CompoundLocator } from './snapshot.js';
 // splits one physical section into two identities — a crawl-derived one and a
 // client-derived one — and every per-section number downstream halves.
 // Cross-implementation parity is locked by apps/api/src/domain/locator-parity.test.ts.
-const STABLE_DATA_ATTRS = ['data-testid', 'data-test', 'data-id', 'data-name', 'data-cy'];
+// data-sentient-id FIRST (added 2026-09-05, both generators together): it is
+// the one attribute a site authors specifically to name a section for us, and
+// it is exactly what hydration and redesigns do NOT rewrite. Elements with a
+// unique `id` are unaffected (id outranks data attrs); for the rest the change
+// moves section_key once — ingest-time fingerprint reconciliation
+// (section-key-reconcile.ts) writes the alias, and no offline backfill is
+// possible because pre-change locators never captured the attribute.
+const STABLE_DATA_ATTRS = ['data-sentient-id', 'data-testid', 'data-test', 'data-id', 'data-name', 'data-cy'];
 const FINGERPRINT_TEXT_MAX = 40;
 
 function normalizedText(el: Element): string {

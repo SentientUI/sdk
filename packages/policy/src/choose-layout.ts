@@ -1,5 +1,6 @@
 import { applyClusterHeuristic, candidateLayouts } from './layout-heuristics';
 import { sampleArm, type ArmPosterior } from './bandit';
+import type { SectionRole } from './taxonomy';
 
 /** Learned Beta(alpha,beta) posterior for one candidate layout, keyed by hash. */
 export type LearnedLayout = { layoutHash: string; alpha: number; beta: number };
@@ -13,6 +14,8 @@ export type LearnedLayout = { layoutHash: string; alpha: number; beta: number };
  * @param rand Uniform [0,1) source. Defaults to `Math.random`, which is
  *   NON-DETERMINISTIC. Pass a seeded PRNG when you need a reproducible layout
  *   (tests, replayable decisions) — otherwise the sampled order varies per call.
+ * @param sectionRoles Optional role map (phase 2d): structural sections are
+ *   pinned in place across every candidate; see `applyClusterHeuristic`.
  */
 export function chooseLayout(
   sections: string[],
@@ -20,8 +23,9 @@ export function chooseLayout(
   persona: string,
   learned: Map<string, LearnedLayout>,
   rand: () => number = Math.random,
+  sectionRoles?: Map<string, SectionRole>,
 ): string[] {
-  const candidates = candidateLayouts(sections, sectionTypes, persona);
+  const candidates = candidateLayouts(sections, sectionTypes, persona, sectionRoles);
   const arms: ArmPosterior[] = [];
   for (const hash of candidates.keys()) {
     const w = learned.get(hash);
@@ -29,5 +33,5 @@ export function chooseLayout(
   }
   const chosen = sampleArm(arms, rand);
   const winner = chosen ? candidates.get(chosen) : undefined;
-  return winner ?? applyClusterHeuristic(sections, sectionTypes, persona);
+  return winner ?? applyClusterHeuristic(sections, sectionTypes, persona, sectionRoles);
 }

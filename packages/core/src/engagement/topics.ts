@@ -20,6 +20,22 @@ import {
   type TopicRule,
 } from './classify.js';
 
+/**
+ * Version of the classification BEHAVIOUR (rules + taxonomy + stages), read by
+ * the server's shadow-label rollout (section-classify.ts): a project whose
+ * promoted version differs gets new labels written to SHADOW only, while its
+ * old labels keep serving until an operator promotes (with one-click rollback,
+ * the A4 pattern).
+ *
+ * BUMP THIS whenever a change here or in ./classify.ts alters what any section
+ * would be labelled — rule edits, threshold changes, new stages, taxonomy
+ * moves. Comment-only and refactor-only changes do not bump. The corpus gates
+ * catch accuracy regressions; this constant is what keeps a deliberate
+ * improvement from silently re-labelling every live project's serving rows on
+ * their next audit.
+ */
+export const CLASSIFIER_VERSION = '2026-09-05';
+
 export const CLASSIFIER_TOPICS: readonly TopicRule[] = [
   { topic: 'navigation', parent: 'navigation', role: 'structural' },
   { topic: 'footer', parent: 'navigation', role: 'structural' },

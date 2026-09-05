@@ -57,7 +57,15 @@ export type AdaptiveRootProps = Omit<
    * individual `/v1/assign` calls, and `useLayoutOrder()` returns the
    * persona-specific order on first render.
    *
+   * Give each section's rendered element `data-sentient-id="<sectionId>"`
+   * (optionally with an explicit `data-sentient-type`) so the DOM graph
+   * scanner can register it under the same id. Without it the server never
+   * learns what the section IS, types it `generic`, and serves the identity
+   * order to every persona — the integration looks live but cannot
+   * personalize. The provider warns about unresolvable ids in development.
+   *
    * @example sections={['hero', 'pricing', 'features', 'social_proof']}
+   * // …and in the tree: <section data-sentient-id="pricing" data-sentient-type="pricing">
    */
   sections?: string[];
   /**

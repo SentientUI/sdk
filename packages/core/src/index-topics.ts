@@ -7,6 +7,7 @@
 export {
   classifyTopic,
   CLASSIFIER_TOPICS,
+  CLASSIFIER_VERSION,
   type TopicRule,
 } from './engagement/topics';
 export type { SectionFeatures, SemanticType } from './engagement/classify';
