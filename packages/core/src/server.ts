@@ -33,6 +33,14 @@ export type ServerAssignConfig = {
   referer?: string;
   utmParams?: Record<string, string>;
   /**
+   * Ad-platform click IDs (gclid, fbclid, ttclid, …) from the landing URL.
+   * Derive both this and `utmParams` with `extractTrackedParams(searchParams)`
+   * — the Referer header never carries the landing page's own query string, so
+   * without these two fields SSR-minted sessions have no campaign attribution
+   * until the client SDK hydrates.
+   */
+  clickIds?: Record<string, string>;
+  /**
    * Set true when the request carries a tracking opt-out — `DNT: 1` or
    * `Sec-GPC: 1`. When set, the SSR helpers skip the session upsert and the
    * assign/decide call entirely: the page renders defaults/baseline and no
@@ -121,6 +129,7 @@ export async function preloadAssignments(
       userAgent: config.userAgent,
       referer: config.referer,
       utmParams: config.utmParams,
+      clickIds: config.clickIds,
       appOrigin: config.origin,
     }),
     ...(config.persona ? { persona: config.persona } : {}),
@@ -242,6 +251,7 @@ export async function preloadDecisions(
       userAgent: config.userAgent,
       referer: config.referer,
       utmParams: config.utmParams,
+      clickIds: config.clickIds,
       appOrigin: config.origin,
     }),
     ...(config.persona ? { persona: config.persona } : {}),

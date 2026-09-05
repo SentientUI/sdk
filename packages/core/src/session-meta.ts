@@ -120,6 +120,68 @@ export function referrerDomainFromReferer(referrer: string): string | null {
   }
 }
 
+/**
+ * Ad-platform click-ID query params worth keeping. An ALLOWLIST, unlike the
+ * `utm_` prefix match: unknown query keys here are unbounded-cardinality junk
+ * (session tokens, cache busters) that would bloat the sessions table, so only
+ * the IDs the major ad platforms actually append survive.
+ *
+ *   gclid / gbraid / wbraid — Google Ads auto-tagging (search, YouTube, Display;
+ *     gbraid/wbraid are the iOS-14 privacy variants)
+ *   fbclid  — Meta (Facebook + Instagram). Appended to EVERY outbound Meta
+ *     click, paid and organic alike — it identifies the platform, never spend.
+ *   ttclid  — TikTok Ads
+ *   msclkid — Microsoft Ads (Bing)
+ *   twclid  — X/Twitter Ads
+ *   li_fat_id — LinkedIn Ads
+ */
+export const CLICK_ID_KEYS: readonly string[] = [
+  'gclid',
+  'gbraid',
+  'wbraid',
+  'fbclid',
+  'ttclid',
+  'msclkid',
+  'twclid',
+  'li_fat_id',
+];
+
+/**
+ * Splits a URL query into the attribution params the session upsert carries:
+ * every `utm_`-prefixed key, plus allowlisted ad click IDs (CLICK_ID_KEYS).
+ * Accepts a raw search string ("?a=b" or "a=b"), a URLSearchParams, or a
+ * Next.js `searchParams` object (whose values may be string arrays — the
+ * first occurrence wins, matching URLSearchParams iteration order).
+ * Node-safe: no DOM APIs.
+ */
+export function extractTrackedParams(
+  search: string | URLSearchParams | Record<string, string | string[] | undefined>,
+): { utmParams: Record<string, string>; clickIds: Record<string, string> } {
+  const utmParams: Record<string, string> = {};
+  const clickIds: Record<string, string> = {};
+  try {
+    const entries: Iterable<[string, string]> =
+      typeof search === 'string' || search instanceof URLSearchParams
+        ? new URLSearchParams(search)
+        : Object.entries(search).flatMap(([k, v]): Array<[string, string]> => {
+            const first = Array.isArray(v) ? v[0] : v;
+            return first === undefined ? [] : [[k, first]];
+          });
+    for (const [k, v] of entries) {
+      // First occurrence wins for duplicates — a repeated gclid in a mangled
+      // URL must not let the later value silently replace the real one.
+      if (k.startsWith('utm_')) {
+        if (!(k in utmParams)) utmParams[k] = v;
+      } else if (CLICK_ID_KEYS.includes(k)) {
+        if (!(k in clickIds)) clickIds[k] = v;
+      }
+    }
+  } catch {
+    /* malformed input → empty attribution, never a throw at init() */
+  }
+  return { utmParams, clickIds };
+}
+
 export function detectTimeOfDay(d: Date): string {
   const h = d.getHours();
   if (h < 6) return 'night';
@@ -132,6 +194,8 @@ export type SessionUpsertPayload = {
   sessionId: string;
   ephemeral: boolean;
   utmParams: Record<string, string>;
+  /** Allowlisted ad-platform click IDs from the landing URL (CLICK_ID_KEYS). */
+  clickIds: Record<string, string>;
   deviceClass: string;
   trafficSource: string;
   referrerDomain: string | null;
@@ -166,6 +230,7 @@ export function buildSessionUpsertPayload(
     referer?: string;
     appOrigin?: string;
     utmParams?: Record<string, string>;
+    clickIds?: Record<string, string>;
     now?: Date;
     /** `navigator.webdriver` value from the browser, when available. */
     webdriver?: boolean;
@@ -178,6 +243,7 @@ export function buildSessionUpsertPayload(
     sessionId,
     ephemeral: false,
     utmParams: opts?.utmParams ?? {},
+    clickIds: opts?.clickIds ?? {},
     deviceClass: ua ? detectDeviceClass(ua) : 'desktop',
     trafficSource: referer
       ? detectTrafficSource(referer, opts?.appOrigin)

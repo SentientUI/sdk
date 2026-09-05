@@ -10,6 +10,7 @@ vi.mock('../server.js', () => ({
 vi.mock('./adaptive-root-client.js', () => ({ AdaptiveRootClient: vi.fn(() => null) }));
 vi.mock('@sentientui/core', () => ({
   deriveSessionSegment: vi.fn(() => 'desktop:direct'),
+  extractTrackedParams: vi.fn(() => ({ utmParams: {}, clickIds: {} })),
   renderPrePaintScript: vi.fn(() => '/* snapshot pre-paint */'),
   matchedAgentToken: vi.fn((ua: string) => {
     const m = /GPTBot|ClaudeBot|Claude-User|PerplexityBot/i.exec(ua ?? '');

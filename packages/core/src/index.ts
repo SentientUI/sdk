@@ -24,6 +24,7 @@ import {
   detectDeviceClass,
   detectTrafficSource,
   detectTimeOfDay,
+  extractTrackedParams,
   referrerDomainFromReferer,
   uaTokenMatch,
 } from './session-meta.js';
@@ -52,6 +53,8 @@ export {
   detectTrafficSource,
   detectTimeOfDay,
   deriveSessionSegment,
+  extractTrackedParams,
+  CLICK_ID_KEYS,
   referrerDomainFromReferer,
   uaTokenMatch,
   matchedAgentToken,
@@ -626,16 +629,14 @@ const SSR_CLIENT: SentientClient = {
   destroy: () => undefined,
 };
 
-function readUtmParams(): Record<string, string> {
+function readTrackedParams(): {
+  utmParams: Record<string, string>;
+  clickIds: Record<string, string>;
+} {
   try {
-    const out: Record<string, string> = {};
-    const sp = new URLSearchParams(window.location.search);
-    for (const [k, v] of sp) {
-      if (k.startsWith('utm_')) out[k] = v;
-    }
-    return out;
+    return extractTrackedParams(window.location.search);
   } catch {
-    return {};
+    return { utmParams: {}, clickIds: {} };
   }
 }
 
@@ -1053,12 +1054,17 @@ export function init(config: SentientConfig): SentientClient {
   const sessionId = session.getSessionId();
   if (sessionId) {
     const referrerDomain = referrerDomainFromReferer(document.referrer ?? '');
+    const { utmParams, clickIds } = readTrackedParams();
     const sessionBody = {
       sessionId,
       deviceClass,
       trafficSource,
       referrerDomain,
-      utmParams: readUtmParams(),
+      utmParams,
+      // Ad-platform click IDs (gclid & co). Captured separately from utmParams
+      // because Google Ads auto-tagging appends ONLY gclid — without this,
+      // paid search with no manual UTM template reported as organic.
+      clickIds,
       timeOfDay: detectTimeOfDay(new Date()),
       dayOfWeek: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][new Date().getDay()],
       ephemeral: session.isEphemeral(),

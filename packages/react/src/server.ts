@@ -31,6 +31,15 @@ export type LoadAdaptiveAssignmentsOptions = {
   userAgent?: string;
   /** From Next.js `headers().get('referer')`. */
   referer?: string;
+  /**
+   * `utm_*` params from the landing URL. The Referer header never carries the
+   * page's OWN query string, so without this the SSR-minted session has no
+   * campaign attribution until the client SDK hydrates and re-upserts.
+   * Derive with `extractTrackedParams(searchParams)` from `@sentientui/core/server`.
+   */
+  utmParams?: Record<string, string>;
+  /** Ad-platform click IDs (gclid, fbclid, ttclid, …) from the landing URL — same derivation as `utmParams`. */
+  clickIds?: Record<string, string>;
   /** Set true when the request carries `DNT: 1` or `Sec-GPC: 1` — skips the SSR session upsert + assignment so no session is minted for an opted-out visitor (audit P4). `AdaptiveRoot` sets this automatically from the request headers. */
   doNotTrack?: boolean;
   /** Milliseconds to wait for the API before returning default variants. Defaults to 1000 (typical decide is well under 150 ms; the full budget is only reached on a cold start or a distant API). */
@@ -74,6 +83,8 @@ export async function loadAdaptiveAssignments(
     origin: options.origin,
     userAgent: options.userAgent,
     referer: options.referer,
+    utmParams: options.utmParams,
+    clickIds: options.clickIds,
     doNotTrack: options.doNotTrack,
     timeoutMs: options.timeoutMs,
     persona: options.persona,
@@ -193,6 +204,8 @@ export async function loadAdaptiveDecision(
       origin: options.origin,
       userAgent: options.userAgent,
       referer: options.referer,
+      utmParams: options.utmParams,
+      clickIds: options.clickIds,
       doNotTrack: options.doNotTrack,
       timeoutMs: options.timeoutMs,
       persona: options.persona,

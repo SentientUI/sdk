@@ -12,6 +12,8 @@ export {
   detectDeviceClass,
   detectTrafficSource,
   detectTimeOfDay,
+  extractTrackedParams,
+  CLICK_ID_KEYS,
   referrerDomainFromReferer,
 } from './session-meta.js';
 export type { SessionUpsertPayload } from './session-meta.js';

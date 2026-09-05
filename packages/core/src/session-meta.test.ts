@@ -12,7 +12,53 @@ import {
   classifiedAgents,
   agentUaList,
   AGENT_INTENTS,
+  extractTrackedParams,
+  CLICK_ID_KEYS,
 } from './session-meta.js';
+
+describe('extractTrackedParams', () => {
+  it('splits utm_* and allowlisted click IDs, dropping everything else', () => {
+    const { utmParams, clickIds } = extractTrackedParams(
+      '?utm_source=google&utm_medium=cpc&gclid=abc123&ref=x&sessionToken=zzz',
+    );
+    expect(utmParams).toEqual({ utm_source: 'google', utm_medium: 'cpc' });
+    expect(clickIds).toEqual({ gclid: 'abc123' });
+  });
+
+  it('accepts every documented click-ID key and nothing lookalike', () => {
+    const search = CLICK_ID_KEYS.map((k) => `${k}=v-${k}`).join('&') + '&gclid_src=nope&xclid=nope';
+    const { clickIds } = extractTrackedParams(search);
+    expect(Object.keys(clickIds).sort()).toEqual([...CLICK_ID_KEYS].sort());
+  });
+
+  it('accepts a URLSearchParams instance', () => {
+    const { utmParams, clickIds } = extractTrackedParams(
+      new URLSearchParams({ utm_campaign: 'launch', fbclid: 'IwAR1' }),
+    );
+    expect(utmParams).toEqual({ utm_campaign: 'launch' });
+    expect(clickIds).toEqual({ fbclid: 'IwAR1' });
+  });
+
+  it('accepts a Next.js searchParams record, first array value wins', () => {
+    const { utmParams, clickIds } = extractTrackedParams({
+      utm_source: 'tiktok',
+      ttclid: ['first', 'second'],
+      ignored: undefined,
+    });
+    expect(utmParams).toEqual({ utm_source: 'tiktok' });
+    expect(clickIds).toEqual({ ttclid: 'first' });
+  });
+
+  it('keeps the first occurrence of a duplicated key', () => {
+    const { clickIds } = extractTrackedParams('?gclid=real&gclid=forged');
+    expect(clickIds).toEqual({ gclid: 'real' });
+  });
+
+  it('returns empty maps for empty or junk-only input', () => {
+    expect(extractTrackedParams('')).toEqual({ utmParams: {}, clickIds: {} });
+    expect(extractTrackedParams('?a=b&c=d')).toEqual({ utmParams: {}, clickIds: {} });
+  });
+});
 
 describe('uaTokenMatch — known agent user-agent tokens', () => {
   it('matches passive crawler UAs case-insensitively', () => {

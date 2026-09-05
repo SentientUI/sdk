@@ -1,5 +1,16 @@
 # @sentientui/react
 
+## 0.26.0
+
+### Minor Changes
+
+- d5d49a1: `<AdaptiveRoot>` accepts a `searchParams` prop (the page's own `searchParams`, a query string, or a URLSearchParams) and threads the extracted `utm_*` params and ad click IDs into the SSR session upsert. Server Components cannot read the request URL's query from `headers()`, so without this prop campaign attribution only landed after client hydration — pass it on landing pages that receive ad traffic. `loadAdaptiveAssignments` / `loadAdaptiveDecision` gain matching `utmParams` / `clickIds` options.
+
+### Patch Changes
+
+- Updated dependencies [d5d49a1]
+  - @sentientui/core@0.24.0
+
 ## 0.25.1
 
 ### Patch Changes

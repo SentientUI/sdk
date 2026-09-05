@@ -670,14 +670,25 @@ describe('readUtmParams via session upsert body', () => {
     }
   }
 
-  it('extracts only utm_-prefixed params', async () => {
+  it('extracts only utm_-prefixed params into utmParams', async () => {
     const body = await captureSessionBody('?utm_source=google&utm_medium=cpc&ref=abc&gclid=123');
     expect(body.utmParams).toEqual({ utm_source: 'google', utm_medium: 'cpc' });
+    // gclid is no longer dropped — it rides the separate clickIds field.
+    expect(body.clickIds).toEqual({ gclid: '123' });
   });
 
-  it('returns empty object for a query string with no utm params', async () => {
-    const body = await captureSessionBody('?foo=bar&baz=qux');
+  it('captures allowlisted ad click IDs without any utm params', async () => {
+    // Google Ads auto-tagging appends ONLY gclid — the case that used to be
+    // reported as organic because utmParams arrived empty.
+    const body = await captureSessionBody('?gclid=EAIaIQ&fbclid=IwAR1&ttclid=tt.1&session=abc');
     expect(body.utmParams).toEqual({});
+    expect(body.clickIds).toEqual({ gclid: 'EAIaIQ', fbclid: 'IwAR1', ttclid: 'tt.1' });
+  });
+
+  it('drops non-allowlisted params from clickIds', async () => {
+    const body = await captureSessionBody('?foo=bar&baz=qux&gclid_x=nope');
+    expect(body.utmParams).toEqual({});
+    expect(body.clickIds).toEqual({});
   });
 
   it('decodes percent-encoded and non-ASCII utm values', async () => {

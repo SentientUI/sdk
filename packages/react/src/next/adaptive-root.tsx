@@ -1,4 +1,4 @@
-import { deriveSessionSegment, matchedAgentToken } from '@sentientui/core';
+import { deriveSessionSegment, extractTrackedParams, matchedAgentToken } from '@sentientui/core';
 import type { SlotDeclInput, SlotResult } from '@sentientui/core';
 import { cookies, headers } from 'next/headers';
 // `type JSX` from react, not the global namespace removed in @types/react@19
@@ -68,6 +68,22 @@ export type AdaptiveRootProps = Omit<
   slots?: SlotDeclInput[];
   /** App origin — must be in the project's `allowed_origins`. */
   appOrigin?: string;
+  /**
+   * The page's `searchParams` prop (or an equivalent query string /
+   * URLSearchParams). Server Components cannot read the request URL from
+   * `headers()`, so without this the SSR-minted session carries no `utm_*`
+   * params and no ad click IDs (gclid, fbclid, ttclid, …) — campaign
+   * attribution only lands after client hydration, and never for visits the
+   * client SDK doesn't get to finish (bounce before hydrate). Pass it on
+   * landing pages that receive ad traffic:
+   *
+   * ```tsx
+   * export default async function Page({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+   *   return <AdaptiveRoot ... searchParams={await searchParams}>...</AdaptiveRoot>;
+   * }
+   * ```
+   */
+  searchParams?: Record<string, string | string[] | undefined> | URLSearchParams | string;
   /** Override: when set no network fetch is made. Useful for tests. */
   initialAssignments?: ServerAssignments;
   /**
@@ -149,6 +165,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
     sections,
     slots,
     appOrigin,
+    searchParams,
     initialAssignments: initialAssignmentsOverride,
     ssrSessionId: ssrSessionIdProp,
     timeoutMs,
@@ -173,6 +190,10 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       : 'http://localhost:3001');
   const userAgent = headerStore.get('user-agent') ?? undefined;
   const referer = headerStore.get('referer') ?? undefined;
+  // Landing-URL attribution (utm_* + ad click IDs). Only available when the
+  // page passes its searchParams down — headers() never carries the request's
+  // own query string, and the Referer is the PREVIOUS page, not this one.
+  const { utmParams, clickIds } = extractTrackedParams(searchParams ?? {});
   // Honor a tracking opt-out at SSR: `DNT: 1` or the legally-enforceable
   // `Sec-GPC: 1`. When set we skip the session upsert + assign/decide so no
   // session row is minted for the visitor (audit P4) — matching the client SDK,
@@ -255,6 +276,8 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       origin: resolvedOrigin,
       userAgent,
       referer,
+      utmParams,
+      clickIds,
       // doNotTrack is deliberately not passed: it is necessarily false on this
       // branch — a DNT/GPC or consent-gated request already took the skipSsr
       // arm above and never reaches this loader.
@@ -277,6 +300,8 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       origin: resolvedOrigin,
       userAgent,
       referer,
+      utmParams,
+      clickIds,
       // doNotTrack is deliberately not passed: it is necessarily false on this
       // branch — a DNT/GPC or consent-gated request already took the skipSsr
       // arm above and never reaches this loader.

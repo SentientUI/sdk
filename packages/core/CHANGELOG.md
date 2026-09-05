@@ -1,5 +1,11 @@
 # @sentientui/core
 
+## 0.24.0
+
+### Minor Changes
+
+- d5d49a1: Capture ad-platform click IDs (gclid, gbraid, wbraid, fbclid, ttclid, msclkid, twclid, li_fat_id) from the landing URL alongside `utm_*` params, on a new `clickIds` field of the session upsert. Google Ads auto-tagging appends only `gclid` — no `utm_*` at all — so paid Google/YouTube traffic without manual UTM templates previously reported as organic. New `extractTrackedParams()` and `CLICK_ID_KEYS` exports (browser and server entries) split a query string into `{ utmParams, clickIds }`; `ServerAssignConfig` and `buildSessionUpsertPayload` accept `clickIds` so SSR preloads can carry attribution too. Click IDs are used for paid-vs-organic analytics only — never to decide what a visitor is shown.
+
 ## 0.23.0
 
 ### Minor Changes
