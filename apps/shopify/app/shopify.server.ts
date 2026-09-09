@@ -39,18 +39,19 @@ const shopify = shopifyApp({
   distribution: AppDistribution.AppStore,
   // NO Shopify billing, deliberately.
   //
-  // The merchant pays SentientUI for what SentientUI does — priced on traffic
-  // (session tiers, billed by Stripe on their SentientUI account). This app is
-  // the connector to that account, not a product with its own price. Charging
-  // here would bill the same customer twice for the same service on two rails,
-  // and it would price the connector rather than the value.
+  // The app is free and everything it sets up runs on SentientUI's free plan.
+  // Paid SentientUI plans (traffic beyond the free tier, extra seats, AI
+  // features) are optional upsells on the standalone service — own signup,
+  // own plans, customers with no Shopify store at all — billed by Stripe on
+  // the SentientUI account. Charging here would bill the same customer twice
+  // for the same service on two rails.
   //
-  // Shopify requires the Billing API for charges made *for an app*, with a
-  // carve-out for a service the merchant buys independently and can use off
-  // Shopify — which is exactly this: SentientUI has its own signup, its own
-  // plans, and customers with no Shopify store at all. Expect review to ask;
-  // the answer is that the app itself is free and the subscription is not a
-  // Shopify app charge. See README "Pricing and billing".
+  // Review history (2026-09-06 rejection, 1.2.1/1.2.2): wording that framed
+  // the service as paid-and-required ("priced on the traffic it optimizes")
+  // plus an in-app link to the external billing page was read as MANDATORY
+  // off-platform billing. Keep all merchant-facing copy free-plan-first and
+  // keep billing/account links out of the app. See README "Pricing and
+  // billing".
   future: {
     unstable_newEmbeddedAuthStrategy: true,
     expiringOfflineAccessTokens: true,

@@ -20,6 +20,8 @@ import {
   init,
   type SentientClient,
   type SentientConfig,
+  type SitePalette,
+  type SlotConfigEntry,
   type SlotResult,
 } from '@sentientui/core';
 import { update as updateWeightsStore, type ComponentWeights } from './weights-store.js';
@@ -28,6 +30,7 @@ import { subscribeOverridesChanged } from './override-events.js';
 import { publishDevtoolsConfig } from './devtools-config.js';
 import { registerSections } from './devtools-registry.js';
 import { isDevBuild } from './adaptive-shared.js';
+import { SDK_IDENT } from './sdk-version.js';
 
 /**
  * Feeds browser globals into core's `deriveSessionSegment` so the cache key
@@ -69,6 +72,8 @@ type AdaptiveContextValue = {
   onAssignment: ((componentId: string, variantId: string) => void) | undefined;
   initialLayoutOrder: string[] | null;
   initialSlots: Record<string, SlotResult>;
+  initialSlotConfig: Record<string, SlotConfigEntry>;
+  initialPalette: SitePalette | null;
   initialPersona: { persona: string; confidence: number } | null;
   apiBaseUrl: string;
   debug: boolean;
@@ -83,6 +88,8 @@ const AdaptiveContext = createContext<AdaptiveContextValue>({
   onAssignment: undefined,
   initialLayoutOrder: null,
   initialSlots: {},
+  initialSlotConfig: {},
+  initialPalette: null,
   initialPersona: null,
   apiBaseUrl: DEFAULT_API_BASE_URL,
   debug: false,
@@ -189,6 +196,15 @@ export type AdaptiveProviderProps = {
    * render the decided arm in server HTML — zero flicker, hydration-safe.
    */
   initialSlots?: Record<string, SlotResult>;
+  /**
+   * SSR-preloaded registry slot config from `loadAdaptiveDecision()` (the
+   * `slotConfig` field of its result, registry mode). Lets `AdaptiveSlot`
+   * render server-authored content/blocks in server HTML — zero flicker.
+   */
+  initialSlotConfig?: Record<string, SlotConfigEntry>;
+  /** SSR-preloaded site palette (`palette` field of `loadAdaptiveDecision()`'s
+   *  registry-mode result) for block rendering. */
+  initialPalette?: SitePalette;
   /**
    * Persona decided during SSR (`persona` + `confidence` fields of
    * `loadAdaptiveDecision()`'s result). Adopted by the core client;
@@ -355,8 +371,15 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       persona: props.persona,
       localMode: props.localMode,
       initialSlots: props.initialSlots,
+      initialSlotConfig: props.initialSlotConfig,
+      initialPalette: props.initialPalette,
       initialPersona: props.initialPersona,
       ingestUrl: props.apiBaseUrl ? `${props.apiBaseUrl.replace(/\/$/, '')}/events` : undefined,
+      // Declare which SDK (and which release) is driving this client, so the
+      // dashboard can tell the project when it is running an old one. A React
+      // install cannot self-update the way the snippet's CDN tag does, so this
+      // nudge is the only update path there is.
+      ...(SDK_IDENT ? { sdk: SDK_IDENT } : {}),
     };
 
     // Track the client created by this effect run so cleanup destroys exactly
@@ -560,6 +583,8 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       onAssignment: props.onAssignment,
       initialLayoutOrder: props.initialLayoutOrder ?? null,
       initialSlots: props.initialSlots ?? {},
+      initialSlotConfig: props.initialSlotConfig ?? {},
+      initialPalette: props.initialPalette ?? null,
       initialPersona: props.initialPersona ?? null,
       apiBaseUrl,
       debug: props.debug ?? false,
@@ -573,6 +598,8 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       props.onAssignment,
       props.initialLayoutOrder,
       props.initialSlots,
+      props.initialSlotConfig,
+      props.initialPalette,
       props.initialPersona,
       apiBaseUrl,
       props.debug,
@@ -652,6 +679,16 @@ export function useInitialSlots(): Record<string, SlotResult> {
 /** Internal: SSR-decided persona carried alongside the client. */
 export function useInitialPersona(): { persona: string; confidence: number } | null {
   return useContext(AdaptiveContext).initialPersona;
+}
+
+/** Internal: SSR-preloaded registry slot config for hydration-safe AdaptiveSlot. */
+export function useInitialSlotConfig(): Record<string, SlotConfigEntry> {
+  return useContext(AdaptiveContext).initialSlotConfig;
+}
+
+/** Internal: SSR-preloaded site palette for block rendering. */
+export function useInitialPalette(): SitePalette | null {
+  return useContext(AdaptiveContext).initialPalette;
 }
 
 /** Internal: configured API base URL (devtools fetches /v1/explain against this, never a relative URL). */

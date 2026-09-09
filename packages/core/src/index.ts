@@ -177,6 +177,13 @@ export type SentientConfig = {
    */
   initialSlots?: Record<string, SlotResult>;
   /**
+   * Registry slot config decided outside the browser (SSR). Seeds
+   * `getSlotConfig()` so server-rendered block/content arms survive hydration.
+   */
+  initialSlotConfig?: Record<string, SlotConfigEntry>;
+  /** Site palette decided outside the browser (SSR). Seeds `getSitePalette()`. */
+  initialPalette?: import('./blocks.js').SitePalette;
+  /**
    * Persona decided during SSR. Takes priority over the html-attribute
    * adoption and the local snapshot.
    */
@@ -189,6 +196,19 @@ export type SentientConfig = {
    * `false` restores the silent keyless no-op.
    */
   localMode?: 'auto' | boolean;
+  /**
+   * Which integration surface is driving this client, and its released build
+   * version — `{ name: 'react', version: '0.27.0' }`. Set by the wrapper
+   * package (@sentientui/react, @sentientui/snippet), never by application
+   * code: core is a dependency of both, so its own version says nothing about
+   * what the customer installed.
+   *
+   * Rides the session upsert (the one call EVERY integration makes, unlike
+   * decide, which only the slot paths use) so the dashboard can tell a project
+   * its SDK is behind. Additive and best-effort: older API deployments ignore
+   * the fields, and omitting it changes nothing.
+   */
+  sdk?: { name: string; version: string };
 };
 
 export type AssignResult = { variantId: string; assignmentTtlMs: number; content?: string };
@@ -257,6 +277,14 @@ export type DecideInput = {
    * entirely on older deployments. Omit if the caller has no version to report.
    */
   v?: string;
+  /**
+   * Snippet only: which inline pre-paint contract the install carries
+   * (`window.__sntPP.v`), or 0 for the two-tag install with no inline script.
+   * Sent as `pp` alongside `v`; the server persists it for the dashboard's
+   * install-health nudge and no serving behaviour depends on it. Additive —
+   * older deployments ignore it entirely.
+   */
+  pp?: number;
 };
 
 export type WeightEntry = { variantId: string; pulls: number; avgReward: number | null };
@@ -322,6 +350,15 @@ export type SentientClient = {
   decide(input: DecideInput): Promise<DecideOutcome | null>;
   /** Slot result served this session (decide result, SSR seed, snapshot, or failure baseline). Null when unknown. */
   getSlotResult(slotId: string): SlotResult | null;
+  /** Registry slot config served this session (content/ops/blocks for the slot).
+   *  Null until a registry-mode decide, SSR seed, or snapshot provides it. */
+  getSlotConfig(slotId: string): SlotConfigEntry | null;
+  /** Report mounted AdaptiveSlot ids the server has no config for, so they
+   *  auto-register as draft slots. Fire-and-forget, batched, deduped per
+   *  client — never blocks rendering and never throws. */
+  reportSlots(slotIds: string[]): void;
+  /** Site palette served with registry block decisions. Null when absent. */
+  getSitePalette(): import('./blocks.js').SitePalette | null;
   /** Current persona estimate. Band is always `confidenceBand(confidence)`. Null when nothing is known yet. */
   getPersona(): { persona: string; confidence: number; band: 'low' | 'medium' | 'high' } | null;
   /** Fetches current bandit weights for all components in this project. Used by the provider to keep live-weight polling fresh. */
@@ -622,6 +659,9 @@ const SSR_CLIENT: SentientClient = {
   assign: () => Promise.resolve(null),
   decide: () => Promise.resolve(null),
   getSlotResult: () => null,
+  getSlotConfig: () => null,
+  getSitePalette: () => null,
+  reportSlots: () => undefined,
   getPersona: () => null,
   fetchWeights: () => Promise.resolve([]),
   getGraph: () => ({ pageNodes: [], capturedAt: 0 }),
@@ -773,6 +813,9 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
     },
     decide: () => Promise.resolve(null),
     getSlotResult: () => null,
+    getSlotConfig: () => null,
+    getSitePalette: () => null,
+    reportSlots: () => undefined,
     getPersona: () => null,
     getGraph: () => ({ pageNodes: [], capturedAt: 0 }),
     dispose: () => undefined,
@@ -790,6 +833,9 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
     assign: (c, v, a, av) => inner.assign(c, v, a, av),
     decide: (i) => inner.decide(i),
     getSlotResult: (s) => inner.getSlotResult(s),
+    getSlotConfig: (s) => inner.getSlotConfig(s),
+    getSitePalette: () => inner.getSitePalette(),
+    reportSlots: (ids) => inner.reportSlots(ids),
     getPersona: () => inner.getPersona(),
     fetchWeights: () => inner.fetchWeights(),
     getGraph: () => inner.getGraph(),
@@ -988,7 +1034,17 @@ export function init(config: SentientConfig): SentientClient {
   // Results served for this session, keyed by slot id. Written by decide();
   // read by getSlotResult() (Task 3.3) and componentGoal's slot fallback.
   const slotStore = new Map<string, SlotResult>();
+  // Registry slot config (content/ops/blocks) served this session. Written by
+  // decide() and the SSR/snapshot seeds below; read by getSlotConfig() so SDK
+  // surfaces (AdaptiveSlot) can render server-authored arms — previously the
+  // snippet was the only consumer and this never left the decide outcome.
+  const slotConfigStore = new Map<string, SlotConfigEntry>();
+  let sitePalette: import('./blocks.js').SitePalette | null = null;
   let personaState: { persona: string; confidence: number } | null = null;
+  // First-seen slot registration (reportSlots): once per id per client.
+  const reportedSlotIds = new Set<string>();
+  const pendingSlotReports = new Set<string>();
+  let slotReportTimer: ReturnType<typeof setTimeout> | null = null;
 
   // On decide failure every declared slot must still resolve — to its baseline.
   // Never overwrite a previously served result.
@@ -1004,11 +1060,21 @@ export function init(config: SentientConfig): SentientClient {
       slotStore.set(slotId, result);
     }
   }
+  if (config.initialSlotConfig) {
+    for (const [slotId, entry] of Object.entries(config.initialSlotConfig)) {
+      slotConfigStore.set(slotId, entry);
+    }
+  }
+  if (config.initialPalette) sitePalette = config.initialPalette;
   const seedSnapshot = readSnapshot(config.apiKey);
   if (seedSnapshot) {
     for (const [slotId, result] of Object.entries(seedSnapshot.slots)) {
       if (!slotStore.has(slotId)) slotStore.set(slotId, result);
     }
+    for (const [slotId, entry] of Object.entries(seedSnapshot.slotConfig ?? {})) {
+      if (!slotConfigStore.has(slotId)) slotConfigStore.set(slotId, entry);
+    }
+    if (!sitePalette && seedSnapshot.palette) sitePalette = seedSnapshot.palette;
   }
 
   // Band-only persona sources (html attrs, snapshot) become a band-consistent
@@ -1077,6 +1143,11 @@ export function init(config: SentientConfig): SentientClient {
       ...(config.userId ? { userId: config.userId } : {}),
       ...(config.persona ? { persona: config.persona } : {}),
       ...(config.country ? { country: config.country } : {}),
+      // Version-skew reporting. Only a wrapper that knows its own released
+      // version sets this — a dev-sentinel version is dropped by the caller,
+      // not smuggled through, or the dashboard would read it as "behind"
+      // forever (the same trap the snippet's decide reporting documents).
+      ...(config.sdk ? { sdk: config.sdk.name, sdkVersion: config.sdk.version } : {}),
     };
     // The session row is a PRECONDITION for every conversion: /v1/goals answers
     // 400 session_not_found without it, and the durable queue classifies a 4xx
@@ -1369,6 +1440,9 @@ export function init(config: SentientConfig): SentientClient {
       if (declared.length > 0) body.slots = declared.map(toWireSlot);
       if (input.slotsFrom === 'registry') body.slotsFrom = 'registry';
       if (input.v) body.v = input.v;
+      // 0 is meaningful here (a two-tag snippet install with no inline pre-paint
+      // script), so this is a presence check, not a truthiness one.
+      if (typeof input.pp === 'number') body.pp = input.pp;
       // Declared persona rides on decide too: SSR-first flows can race the
       // session upsert, and the decide-body value wins for this decision.
       if (config.persona) body.persona = config.persona;
@@ -1466,6 +1540,16 @@ export function init(config: SentientConfig): SentientClient {
             });
           }
 
+          // Registry slot config accumulates like slotStore does: a later
+          // decide that omits slotConfig (classic mode, partial response) must
+          // not evict entries an earlier registry decide served.
+          if (data.slotConfig) {
+            for (const [slotId, entry] of Object.entries(data.slotConfig)) {
+              slotConfigStore.set(slotId, entry);
+            }
+          }
+          if (data.palette) sitePalette = data.palette;
+
           // Persist for the next visit's pre-paint (SPA cache-first pattern).
           writeSnapshot(config.apiKey, {
             v: 1,
@@ -1474,8 +1558,8 @@ export function init(config: SentientConfig): SentientClient {
             slots: Object.fromEntries(slotStore),
             layoutOrder: data.layoutOrder ?? null,
             savedAt: Date.now(),
-            ...(data.slotConfig ? { slotConfig: data.slotConfig } : {}),
-            ...(data.palette ? { palette: data.palette } : {}),
+            ...(slotConfigStore.size > 0 ? { slotConfig: Object.fromEntries(slotConfigStore) } : {}),
+            ...(sitePalette ? { palette: sitePalette } : {}),
           });
 
           return {
@@ -1498,6 +1582,38 @@ export function init(config: SentientConfig): SentientClient {
 
     getSlotResult(slotId) {
       return slotStore.get(slotId) ?? null;
+    },
+
+    getSlotConfig(slotId) {
+      return slotConfigStore.get(slotId) ?? null;
+    },
+
+    reportSlots(slotIds) {
+      // Batch a tick's worth of AdaptiveSlot mounts into one request, once per
+      // id per client lifetime — a page of N slots must not fire N registrations
+      // on every navigation.
+      for (const id of slotIds) {
+        if (typeof id === 'string' && id.length > 0 && !reportedSlotIds.has(id)) {
+          reportedSlotIds.add(id);
+          pendingSlotReports.add(id);
+        }
+      }
+      if (pendingSlotReports.size === 0 || slotReportTimer != null) return;
+      slotReportTimer = setTimeout(() => {
+        slotReportTimer = null;
+        const batch = [...pendingSlotReports].slice(0, 20);
+        pendingSlotReports.clear();
+        if (batch.length === 0) return;
+        void fetch(`${baseUrl}/slots/observed`, {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({ slotIds: batch }),
+        }).catch(() => undefined);
+      }, 1000);
+    },
+
+    getSitePalette() {
+      return sitePalette;
     },
 
     getPersona() {

@@ -1,5 +1,152 @@
 # @sentientui/snippet
 
+## 0.24.1
+
+### Patch Changes
+
+- 3188a9d: Refuse block trees containing form nodes whole (no wrapper, originals stay visible) — the snippet cannot render forms yet, and the per-node unknown-type skip would have revealed a section minus its call-to-action
+
+## 0.24.0
+
+### Minor Changes
+
+- 6901498: Inline pre-paint script for the no-code install. The loader is `defer`, so on a return visit
+  a page could show its original section order and baseline styles before the bundle's snapshot
+  pass ran. The install is now three tags — config, a small synchronous inline script, then the
+  loader — and the middle one applies the last served decision from the visitor's own device
+  before the page paints: zero network, no cloak, nothing at all on a first visit or for a
+  Do-Not-Track / GPC / consent-gated visitor.
+
+  New: `renderSnippetPrePaintScript()` and `SNIPPET_PREPAINT_VERSION` on the new
+  `@sentientui/snippet/install` entry point (Node-importable; the browser bundle is unchanged
+  and does not carry the string). The bundle reconciles on boot — anything the inline script
+  stamped that its own authoritative pass does not re-apply is reverted within the same page
+  load — and reports `pp` on decide so the dashboard can nudge two-tag installs. Existing
+  two-tag installs keep working unchanged.
+
+## 0.23.0
+
+### Minor Changes
+
+- 27e1cee: Let the operator tell the AI what to try, instead of only receiving ideas.
+
+  The editor's 💡 Suggest button fired straight at `/v1/editor/suggest` and handed
+  back whatever the model thought of. Saying what you actually _wanted_ was a
+  separate dashboard chat — a second door to the same intent, and the only one of
+  the two that couldn't see the selected element.
+
+  The button is now ✨ Ask AI and opens a short instruction box first: type
+  "shorter and more urgent" and the suggestions serve that; submit it blank and
+  you get the old unprompted ideas. Everything downstream is unchanged — each
+  suggestion still lands in a prefilled form with a live preview that you review
+  and save, and nothing auto-applies.
+
+  The instruction rides an optional `instruction` field on the suggest request. An
+  API that predates it ignores the field and returns unsteered ideas, so a snippet
+  ahead of the API degrades to the previous behaviour rather than failing.
+
+### Patch Changes
+
+- 27e1cee: Only offer a section the layouts it can actually fill from its own content, and
+  never fall back to the catalog's placeholder copy.
+
+  The Layout tab listed all eight catalog arrangements whatever was selected, and
+  any field the section couldn't supply was prefilled with that arrangement's
+  `default`. Those defaults are designer lorem, so "try a different arrangement"
+  on a page with no testimonials produced a live testimonial block quoting
+  "Alex P., Founder, Example Co." — invented praise from people who don't exist,
+  in the merchant's own brand voice.
+
+  Three changes, because the lorem could arrive by three routes:
+
+  - The picker now filters to layouts that fit the selected section. A testimonial
+    layout needs a real quote (`blockquote`/`q`, or a `testimonial`/`review`/
+    `quote` container); hero and call-to-action need a heading _and_ something to
+    click; a feature grid needs repeated titled blurbs. Nothing fits → the panel
+    says so instead of listing eight options.
+  - Fields prefill from the section only. The `default` values are no longer read.
+  - Every field is required before saving. The server substitutes the default for
+    a blank, so an empty box was never "leave this out", it was "publish someone
+    else's words".
+
+  Quotes and attributions (`cite`, `figcaption`, `[class*=author]`) are harvested
+  too, so re-laying-out a section that genuinely has testimonials keeps the site's
+  real names rather than asking for them again.
+
+  This narrows what the Layout tab offers: a section the catalog can't describe
+  now has no alternative layout at all, where before it had eight bad ones. The
+  button is renamed "Try a different layout for this section" to match.
+
+## 0.22.1
+
+### Patch Changes
+
+- 5a62263: Seed a click goal's id from a clean label instead of the element's raw
+  textContent.
+
+  textContent is every descendant glued together with the source's whitespace, so
+  tracking a product card minted ids like
+  `add-to-cartfrom-29-00-sold-outsubscribe-`. The editor now collapses whitespace
+  and, past a label's length, falls back to the element's aria-label or id — the
+  same precedence and the same cutoff the server applies when deriving the goal's
+  display name.
+
+  Note this changes the seed for elements whose text was long: re-tracking such an
+  element mints a new draft beside the old one rather than updating it. Only
+  affects elements whose previous id was unreadable anyway.
+
+## 0.22.0
+
+### Minor Changes
+
+- 4edb1ec: Report which SDK a site is running, so the dashboard can flag an outdated install.
+
+  `init()` accepts an optional `sdk: { name, version }`, forwarded on the session
+  upsert as `sdk` / `sdkVersion`. Both wrappers set it from their own build-time
+  version: `@sentientui/react` via a new tsup `define` (mirroring the snippet's
+  `__SNIPPET_VERSION__`), and `@sentientui/snippet` alongside the build version it
+  already reports on decide.
+
+  The session upsert is the carrier because it is the one call every integration
+  makes — decide covers only the slot paths, which is why React installs were
+  previously invisible. Additive and best-effort: a dev-sentinel version is never
+  reported, an older API ignores the fields, and application code never sets this
+  itself (core is a dependency of both wrappers, so its own version says nothing
+  about what the customer installed).
+
+  The snippet's install tag is now unpinned by default (`@sentientui/snippet/dist/
+snippet.global.js`), so a pasted integration follows releases on its own —
+  matching what the Shopify theme embed has always loaded. Pinning stays supported
+  and is the only way to use Subresource Integrity.
+
+## 0.21.0
+
+### Minor Changes
+
+- e69d91c: Editor audit fixes (2026-09-07). Snippet: startup no longer uses `queueMicrotask` (missing on iOS 12-era engines — the clobber fix's deferral left the whole snippet inert there); AI suggestion responses are guarded against selection changes mid-request (a stale reply could preview and save the previous element's copy onto the new one); a goal suggestion on a non-uniquely-targetable element explains instead of silently saving an ambiguous click goal; non-hex color suggestions and palette swatches can no longer be coerced to `#000000` by `<input type=color>`; re-clicking the active tab no longer wipes an in-progress form; unsaved move previews are undone on tab switch and editor close; "Publish"/"Start tracking" name their target so they can't be misread against a new selection; the Drafts tab and 💡 distinguish load failures (retry, expired-session copy) from genuinely empty results; Esc closes the form then deselects, and the "Page" crumb deselects; a dirty form warns before a stray page click, tab close, or editor close discards it; the panel clamps to the viewport on small screens; telemetry drains its whole queue at pagehide; the editor's keyframes stylesheet is removed on close.
+
+  API: `editor_telemetry` joins the nightly operational prune (90 days); `/v1/editor/suggest` spends from the shared daily AI budget (`project_chat_usage`) and answers `exhausted: true` when it's gone; the suggest style-value guard rejects any parenthesised value that isn't a whole color function (relative `url(x)` no longer passes); the model call is aborted on timeout instead of racing it; new `GET /v1/personas` returns the project's active persona vocabulary for tooling.
+
+- e69d91c: On-site editor: the remaining spec §2.2 and phase-3 items.
+
+  **Post-save review card** — after any slot or goal save the footer says what was created and that nothing is live yet, with Preview / Discard beside the labelled Publish (or Start tracking). Preview is now reachable the moment you save, not only from the Drafts tab.
+
+  **Draft discard, end to end** — new `DELETE /v1/editor/slots/:slotId` and `DELETE /v1/editor/goals/:goalId` (editor-token scope, draft-status rows only, audited as `slot.discard` / `goal.discard`). A published slot or a live goal answers 409 with the dashboard instruction instead of being deleted, so a leaked editor token can never take live content down; discarding a slot also drops any funnel-step attachment it had. In the panel, Discard arms two-step ("Discard" → "Sure?") rather than opening a native confirm, which would freeze the page the editor overlays.
+
+  **Goals in the Drafts tray** — saved goals now list alongside slot drafts with Start tracking and Discard. A saved-but-unactivated goal previously disappeared from view as soon as its footer button was replaced. SDK-fired goals with no definition stay out of the tray: there is nothing to preview, track, or discard.
+
+  **Keyboard** — `Esc` backs out one layer at a time (open form → selection → an armed close, so one reflexive press can't end the session); `ArrowUp`/`ArrowDown` move the selected element under exactly the Move buttons' guards; `Tab`/`Shift+Tab` cycle the audit-detected targets that resolve on the page, which is the first keyboard route into element picking — the editor was mouse-only. With no audit targets `Tab` keeps its normal focus behavior.
+
+  The lazy editor bundle's gzip budget moves 18→20 KiB for this (measured 18799); the always-on bundle visitors load is unchanged.
+
+## 0.20.0
+
+### Minor Changes
+
+- 208791d: On-site editor overhaul: tabbed panel (✏️ Text · 🎨 Style · 🧱 Layout · 🎯 Goals · 🧭 Funnels · 🗂️ Drafts) replacing the single button column; 💡 AI test suggestions (server-validated, proposals only — "Try it" prefills the form, the operator still saves); Drafts tab with in-editor per-arm Preview ("Back to editor" on the preview bar) and Publish; live preview for text and style edits with site-palette swatches; ancestor breadcrumb and one-click recovery when a selection can't be targeted uniquely; failure copy mapped from server machine codes (plan limits, roles, HTTP status) instead of "try again"; Minimize-to-bubble; editor usage telemetry.
+
+  Fixes: `window.SentientSnippet` was clobbered by the bundle's own exports on every load (goal()/getState() missing); `apiBase` now reaches the core client so self-hosted installs stop splitting traffic across two APIs; whitespace-collapsed fingerprint matching lets sections be targeted (moves/arrangements were refused on every multi-node element and saved moves misreported as locator misses); the panel scrolls within the viewport instead of growing past it; arrangement fields prefill from the section's own copy instead of catalog placeholder text.
+
 ## 0.19.0
 
 ### Minor Changes

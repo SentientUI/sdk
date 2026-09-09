@@ -66,7 +66,18 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // case (the React provider uses engagement capture by default), so the
     // shared chunk is the right placement and the lean budget absorbs it.
     // Revisit if a lean-only consumer ever needs those bytes back.
-    limit: 14 * 1024,
+    //
+    // +256 for the AdaptiveSlot surface (empty-cell generation Plans A/B/C):
+    // slotConfig/palette stores + getters, snapshot carry, and reportSlots
+    // (first-seen slot auto-registration, batched fire-and-forget). Measured
+    // 14375 on the prior 14336 limit (over by 39).
+    //
+    // +256 more at the empty-cell merge: the AdaptiveSlot bytes above (measured
+    // alone) landed on top of main's semantic-capture batch (per-element nc-*
+    // ids + client-sensor observations in the shared chunk) — each side fit its
+    // own budget, the union measured 14687 against 14592. Both features are
+    // always-on capture/serving paths; neither can be lazy.
+    limit: 14 * 1024 + 512,
   },
   {
     name: '@sentientui/core/graph (additions only)',
@@ -78,7 +89,11 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // SAME section_key for one physical section. Without it a client-rendered
     // page has no stable section identity at all, so every per-section number
     // downstream splits in two. Budget moves one step and no further.
-    limit: 17 * 1024,
+    //
+    // +256 at the empty-cell merge: the shared chunk this bundle sits on grew
+    // for the same two-sided reason as the lean budget above (AdaptiveSlot
+    // stores + main's semantic capture) — measured 17539 against 17408.
+    limit: 17 * 1024 + 256,
   },
 ];
 

@@ -1,4 +1,15 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'tsup';
+
+// Read the package version at build time and inject it into every bundle, so
+// the version this SDK reports to the dashboard (see src/sdk-version.ts) always
+// matches what's published. Applied to ALL entries, not just the main one: the
+// provider is re-bundled into the next/ entries too, and an entry without the
+// define would ship the dev sentinel and report nothing.
+const pkg = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as { version: string };
+const define = { __REACT_SDK_VERSION__: JSON.stringify(pkg.version) };
 
 const outExtension = ({ format }: { format: string }) => ({
   js: format === 'esm' ? '.mjs' : '.js',
@@ -18,6 +29,7 @@ export default defineConfig([
     banner: { js: "'use client';" },
     external: ['react', '@sentientui/core', '@sentientui/policy'],
     target: 'es2017',
+    define,
     minify: true,
   },
   {
@@ -28,6 +40,7 @@ export default defineConfig([
     sourcemap: true,
     external: ['@sentientui/core', '@sentientui/core/server', '@sentientui/core/local', '@sentientui/policy'],
     target: 'es2017',
+    define,
     minify: true,
   },
   {
@@ -39,6 +52,7 @@ export default defineConfig([
     banner: { js: "'use client';" },
     external: ['react', '@sentientui/core', '@sentientui/react'],
     target: 'es2017',
+    define,
     minify: true,
   },
   {
@@ -56,6 +70,7 @@ export default defineConfig([
       './adaptive-root-client.js',
     ],
     target: 'es2017',
+    define,
     minify: true,
   },
   {
@@ -67,6 +82,7 @@ export default defineConfig([
     banner: { js: "'use client';" },
     external: ['react', '@sentientui/core', '@sentientui/core/local', '@sentientui/policy', '@sentientui/react'],
     target: 'es2017',
+    define,
     minify: true,
   },
   {
@@ -78,6 +94,7 @@ export default defineConfig([
     banner: { js: "'use client';" },
     external: ['react', '@sentientui/core', '@sentientui/react', '@sentientui/policy', '@testing-library/react'],
     target: 'es2017',
+    define,
     minify: true,
   },
   {
@@ -91,6 +108,7 @@ export default defineConfig([
     sourcemap: true,
     external: ['msw'],
     target: 'es2017',
+    define,
     minify: true,
   },
   {
@@ -105,6 +123,7 @@ export default defineConfig([
     banner: { js: "'use client';" },
     external: ['react', '@sentientui/core', '@sentientui/react', '@sentientui/policy', '@testing-library/react'],
     target: 'es2017',
+    define,
     minify: true,
   },
   {
@@ -117,6 +136,7 @@ export default defineConfig([
     sourcemap: true,
     external: ['react', '@sentientui/core', '@sentientui/react', 'msw'],
     target: 'es2017',
+    define,
     minify: true,
   },
 ]);

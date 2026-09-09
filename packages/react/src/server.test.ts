@@ -254,4 +254,38 @@ describe('loadAdaptiveDecision — slots forwarding', () => {
     expect(body.slots).toEqual([{ id: 'hero', dims: { tone: ['calm', 'urgent'] } }]);
     expect(body.sections).toEqual([]); // sections omitted by the caller → empty
   });
+
+  it('forwards slotsFrom: registry and returns slotConfig + palette', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) } as Response); // sessions
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        layoutOrder: [],
+        assignments: {},
+        slots: { hero: 'researcher_v1' },
+        slotConfig: { hero: { kind: 'arms', content: 'Generated headline' } },
+        palette: { primaryBg: '#111827', primaryText: '#ffffff', radius: '4px' },
+        persona: 'researcher',
+        confidence: 0.8,
+      }),
+    } as Response);
+
+    const { loadAdaptiveDecision } = await import('./server.js');
+    const result = await loadAdaptiveDecision({
+      slotsFrom: 'registry',
+      components: [],
+      cookies: { get: () => ({ value: 'sess-registry' }) },
+      apiKey: API_KEY,
+      baseUrl: BASE_URL,
+    });
+
+    expect(result.slots).toEqual({ hero: 'researcher_v1' });
+    expect(result.slotConfig).toEqual({ hero: { kind: 'arms', content: 'Generated headline' } });
+    expect(result.palette).toEqual({ primaryBg: '#111827', primaryText: '#ffffff', radius: '4px' });
+
+    const decideCall = mockFetch.mock.calls.find(([u]) => String(u).endsWith('/decide'));
+    const body = JSON.parse((decideCall![1] as RequestInit).body as string) as Record<string, unknown>;
+    expect(body.slotsFrom).toBe('registry');
+  });
 });

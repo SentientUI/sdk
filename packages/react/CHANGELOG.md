@@ -1,5 +1,58 @@
 # @sentientui/react
 
+## 0.29.0
+
+### Minor Changes
+
+- 3188a9d: `<AdaptiveSlot>` — render server-authored slot arms in React
+
+  - New `AdaptiveSlot` component: baseline JSX children for holdout/unserved/error paths; server `content` strings or validated Composition Block trees when an arm is served
+  - React block renderer (`renderBlocks`) with palette-aware inline styles, snippet-identical token maps, and the fail-safe contract (unknown node types skip, siblings survive)
+  - Form arms render only when `onFormSubmit` is provided — a form tree without a handler is refused whole (children render). Submit fires the form's `submitGoal` (componentGoal + goal, slot shape) before calling the site's handler; field values never reach Sentient
+  - `AdaptiveProvider` accepts `initialSlotConfig`/`initialPalette`; `loadAdaptiveDecision` accepts `slotsFrom: 'registry'` and returns `slotConfig`/`palette` for flicker-free SSR
+  - `applyScenario({ slotConfig })` test override channel for deterministic AdaptiveSlot rendering
+  - First-seen auto-registration: an `AdaptiveSlot` with no server config reports its id (once, batched) so it appears in the dashboard as a draft slot ready to generate into
+
+### Patch Changes
+
+- Updated dependencies [3188a9d]
+  - @sentientui/core@0.27.0
+
+## 0.28.0
+
+### Minor Changes
+
+- 4edb1ec: Report which SDK a site is running, so the dashboard can flag an outdated install.
+
+  `init()` accepts an optional `sdk: { name, version }`, forwarded on the session
+  upsert as `sdk` / `sdkVersion`. Both wrappers set it from their own build-time
+  version: `@sentientui/react` via a new tsup `define` (mirroring the snippet's
+  `__SNIPPET_VERSION__`), and `@sentientui/snippet` alongside the build version it
+  already reports on decide.
+
+  The session upsert is the carrier because it is the one call every integration
+  makes — decide covers only the slot paths, which is why React installs were
+  previously invisible. Additive and best-effort: a dev-sentinel version is never
+  reported, an older API ignores the fields, and application code never sets this
+  itself (core is a dependency of both wrappers, so its own version says nothing
+  about what the customer installed).
+
+  The snippet's install tag is now unpinned by default (`@sentientui/snippet/dist/
+snippet.global.js`), so a pasted integration follows releases on its own —
+  matching what the Shopify theme embed has always loaded. Pinning stays supported
+  and is the only way to use Subresource Integrity.
+
+### Patch Changes
+
+- Updated dependencies [4edb1ec]
+  - @sentientui/core@0.26.0
+
+## 0.27.0
+
+### Minor Changes
+
+- e69d91c: Devtools persona preview now shows the project's own personas. In keyed mode the panel fetches the active vocabulary from `GET /v1/personas` (so promoted/custom personas replace the pinned four; an older API degrades to the previous behavior), and it reads `recognized` from `/v1/explain` — forcing a persona the project doesn't have now says "showing the default experience" instead of highlighting the button as if the preview worked. Personas discovered by clustering are listed separately, greyed out as "Discovered — not serving yet", with no button: shadow sets never serve until promotion, so forcing one would simulate a persona that cannot occur. Local mode keeps the pinned four the local engine simulates.
+
 ## 0.26.1
 
 ### Patch Changes

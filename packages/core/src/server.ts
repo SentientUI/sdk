@@ -12,7 +12,10 @@ import {
   type SlotResult,
 } from './slots.js';
 
-export type { SlotDeclInput, SlotResult };
+import type { SlotConfigEntry } from './snapshot.js';
+import type { SitePalette } from './blocks.js';
+
+export type { SlotDeclInput, SlotResult, SlotConfigEntry, SitePalette };
 
 export type ServerAssignConfig = {
   /** Public API key (pk_...). */
@@ -209,6 +212,10 @@ export type DecideResult = {
   slots: Record<string, SlotResult>;
   persona: string;
   confidence: number;
+  /** Registry mode only: content/ops/blocks for server-defined slots. */
+  slotConfig?: Record<string, SlotConfigEntry>;
+  /** Registry mode only: site palette for block rendering. */
+  palette?: SitePalette;
 };
 
 /**
@@ -223,6 +230,9 @@ export async function preloadDecisions(
     sections?: string[];
     components: Array<{ id: string; variantIds?: string[] }>;
     slots?: SlotDeclInput[];
+    /** 'registry' serves the project's published slot_definitions as if declared
+     *  (and is the only way slotConfig/palette come back). Default 'request'. */
+    slotsFrom?: 'request' | 'registry';
   },
   sessionId: string,
   config: ServerAssignConfig,
@@ -282,6 +292,7 @@ export async function preloadDecisions(
           sections: (params.sections ?? []).map((id) => ({ id })),
           components: params.components,
           ...(declaredSlots.length > 0 ? { slots: declaredSlots.map(toWireSlot) } : {}),
+          ...(params.slotsFrom === 'registry' ? { slotsFrom: 'registry' } : {}),
           ...(config.persona ? { persona: config.persona } : {}),
         }),
       },
@@ -296,6 +307,8 @@ export async function preloadDecisions(
       layoutOrder?: string[];
       assignments?: Record<string, string>;
       slots?: Record<string, SlotResult>;
+      slotConfig?: Record<string, SlotConfigEntry>;
+      palette?: SitePalette;
       persona?: string;
       confidence?: number;
     };
@@ -305,6 +318,17 @@ export async function preloadDecisions(
       // `data.slots === undefined` ⇒ server predates slots: baseline, no retry.
       slots[d.id] = data.slots?.[d.id] ?? baselineResultFor(d);
     }
+    // Registry mode returns slots the request never declared — union them in
+    // (same rule as the browser client), or an SSR page gets results for none
+    // of its registry slots.
+    for (const [slotId, result] of Object.entries(data.slots ?? {})) {
+      if (!(slotId in slots)) slots[slotId] = result;
+    }
+
+    // Plain-object guard only (readSnapshot's rule): the server total-validated
+    // the config at publish; a deep re-validation here would just drift.
+    const slotConfigOk =
+      data.slotConfig !== undefined && typeof data.slotConfig === 'object' && data.slotConfig !== null && !Array.isArray(data.slotConfig);
 
     return {
       layoutOrder: data.layoutOrder ?? params.sections ?? [],
@@ -312,6 +336,8 @@ export async function preloadDecisions(
       slots,
       persona: data.persona ?? 'unknown',
       confidence: data.confidence ?? 0,
+      ...(slotConfigOk ? { slotConfig: data.slotConfig } : {}),
+      ...(data.palette ? { palette: data.palette } : {}),
     };
   } catch (err) {
     console.error('[SentientUI] preloadDecisions: decide threw', err);

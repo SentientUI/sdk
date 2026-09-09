@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { drawTargetHighlights, clearTargetHighlights, buildStyleOps, styleFieldError, type AuditTarget } from './index';
+import { drawTargetHighlights, clearTargetHighlights, buildStyleOps, styleFieldError, sectionTypesFor, type AuditTarget, type SectionCopy } from './index';
 import { resolveLocatorOne } from '../locator';
 
 const TARGET_HIGHLIGHT_SELECTOR = '.sentient-editor-target-highlight';
@@ -676,5 +676,43 @@ describe('editor panel: token expiry mid-session', () => {
     });
     const panelText = document.getElementById('sentient-editor-panel')!.textContent ?? '';
     expect(panelText).not.toContain('try again'); // must not tell them to retry a dead token
+  });
+});
+
+
+describe('sectionTypesFor (which layouts a section may become)', () => {
+  const copy = (over: Partial<SectionCopy> = {}): SectionCopy => ({
+    headings: [], paragraphs: [], links: [], quotes: [], attributions: [], ...over,
+  });
+
+  // The whole point of the gate: the catalog re-arranges what a section HAS.
+  // Offering every layout regardless let a page with no testimonials be turned
+  // into a testimonial block, which the catalog then filled with its own
+  // placeholder quotes from people who do not exist.
+  it('never offers testimonial without a quote', () => {
+    const t = sectionTypesFor(copy({ headings: ['Buy'], paragraphs: ['a', 'b'], links: [{ label: 'Go', href: 'https://x/' }] }));
+    expect(t).not.toContain('testimonial');
+  });
+
+  it('offers testimonial once there is a quote', () => {
+    expect(sectionTypesFor(copy({ quotes: ['It paid for itself.'] }))).toContain('testimonial');
+  });
+
+  // hero and cta_band are both "headline + supporting line + button" shapes.
+  it('needs a heading AND something to click for hero / cta_band', () => {
+    expect(sectionTypesFor(copy({ headings: ['Now'] }))).toEqual([]);
+    expect(sectionTypesFor(copy({ links: [{ label: 'Go', href: 'https://x/' }] }))).toEqual([]);
+    const both = sectionTypesFor(copy({ headings: ['Now'], links: [{ label: 'Go', href: 'https://x/' }] }));
+    expect(both).toContain('hero');
+    expect(both).toContain('cta_band');
+  });
+
+  it('needs repeated titled blurbs for a feature grid', () => {
+    expect(sectionTypesFor(copy({ headings: ['One'], paragraphs: ['a', 'b'] }))).not.toContain('feature_grid');
+    expect(sectionTypesFor(copy({ headings: ['One', 'Two'], paragraphs: ['a', 'b'] }))).toContain('feature_grid');
+  });
+
+  it('offers nothing for a section with nothing in it', () => {
+    expect(sectionTypesFor(copy())).toEqual([]);
   });
 });

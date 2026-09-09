@@ -11,7 +11,12 @@ app embed carrying the snippet one-liner, a web pixel firing funnel-step goals
 and the cart-token → session binding, and app-backend webhooks forwarding
 server-truth orders/refunds to the SentientUI API.
 
-## Status: deployed to Fly (2026-08-30) — not submitted for review
+## Status: submitted 2026-09-05, rejected 2026-09-06 — fixes in flight
+
+Review returned three "Action needed" items: missing test credentials
+(4.5.4 — reviewers found none and could not connect) and the two billing
+requirements (1.2.1/1.2.2 — the old paid-service framing read as mandatory
+off-platform billing; see "Pricing and billing" for how it was reworded).
 
 Every checklist item below passed live on `sentientui-store.myshopify.com`,
 including the pixel path and the three-step checkout funnel, and the backend
@@ -26,14 +31,16 @@ What is left is **operator work, not code**:
 
 - **Re-confirm the protected-customer-data declaration.** Granted for
   development; review evaluates it again at submission.
-- **Set `SETTINGS_ENCRYPTION_KEY`** (`fly secrets set`). Without it the stored
-  `sk_` is written in plaintext exactly as before — the app degrades rather than
-  failing, so this is easy to forget. With it set, rows convert themselves as
-  merchants save; no data migration.
-- **Be ready to answer the billing question.** See "Pricing and billing" below —
-  the app is free and carries no Shopify charge, deliberately. Review will
-  likely ask; the answer is that SentientUI is a standalone service the merchant
-  buys independently.
+- ~~**Set `SETTINGS_ENCRYPTION_KEY`**~~ — set on Fly (verified 2026-09-05,
+  `fly secrets list`); stored rows convert themselves as merchants save.
+- **Fill the listing** from `listing/LISTING.md` — copy, URLs, review
+  instructions, and the screenshot/screencast plan are pre-written there;
+  the 1200×1200 icon is `listing/icon-1200.png`.
+- **Billing wording is free-plan-first.** See "Pricing and billing" below —
+  the app is free, carries no Shopify charge, and everything it does runs on
+  SentientUI's free plan; paid plans (traffic volume, seats, AI features) are
+  optional upsells on the standalone service. Review rejected the earlier
+  "merchant pays, priced on traffic" framing as mandatory off-platform billing.
 
 The operator ran `shopify app init` (Partner org `sentientui-app`,
 client_id in `shopify.app.toml`) and the generated Remix shell is merged in:
@@ -233,17 +240,23 @@ matters beyond taste:
 This repo previously carried "$19 one-time (planned)" as an unmade decision, and
 a charge was briefly implemented against it. It has been removed.
 
-### The review conversation to expect
+### How review actually ruled (rejection 2026-09-06)
 
-Shopify requires the Billing API for charges made **for an app**. The carve-out
-is a service the merchant purchases independently and can use away from Shopify,
-which is what this is: SentientUI has its own signup, its own plans, and
-customers with no Shopify store at all. The install flow reflects that — the
-merchant pastes keys from an account they already have.
+The first submission was rejected on 1.2.1/1.2.2. The carve-out argument as
+written above was never engaged with — what sank it was presentation: the
+settings screen's "What this costs" card said the merchant pays for SentientUI
+"priced on the traffic it optimizes" and linked to the external billing page,
+and the free plan appeared only as a trailing aside. Review read that as a
+*mandatory* service billed off-platform.
 
-Expect a reviewer to raise it anyway. Have ready: the public pricing page, the
-fact that the app requests no charge and gates nothing behind one, and the
-non-Shopify customer base. If Shopify ever rules otherwise, the change is to add
-a `billing` block in `app/shopify.server.ts` and a `billing.require` in
-`app/routes/app.tsx` — but that should replace the Stripe subscription for
-Shopify merchants, not sit alongside it.
+The load-bearing fact was missing: **the free plan is sufficient for
+everything the app does.** Paid plans exist for traffic volume beyond the free
+tier, extra seats, and AI features — optional upsells on the standalone
+service, not a requirement of the app. The resubmission therefore leads with
+free-plan-first wording everywhere (settings screen, listing, review
+instructions) and keeps every billing/account link out of the app itself.
+
+If Shopify ever rules that even the optional plans must go through them, the
+change is to add a `billing` block in `app/shopify.server.ts` and a
+`billing.require` in `app/routes/app.tsx` — but that should replace the Stripe
+subscription for Shopify merchants, not sit alongside it.

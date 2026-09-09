@@ -81,17 +81,24 @@ export async function deleteSettings(shop: string): Promise<void> {
 }
 
 /** Idempotent server-side bootstrap: creates the 'purchase' goal and the
- *  template 'checkout' funnel for the project the sk_ belongs to. A failure is
- *  surfaced to the merchant but does not block saving keys — the endpoint can
- *  be retried by saving again. */
-export async function provisionSentient(secretKey: string): Promise<boolean> {
+ *  template 'checkout' funnel for the project the sk_ belongs to, and
+ *  allowlists the storefront origins so the snippet's ingest passes the Origin
+ *  check without a manual dashboard step (App Store reviewers test on
+ *  freshly-minted myshopify domains nobody can pre-add — the 4.5.4/core-flow
+ *  wall in the 2026-09-06 review). A failure is surfaced to the merchant but
+ *  does not block saving keys — the endpoint can be retried by saving again. */
+export async function provisionSentient(
+  secretKey: string,
+  domains: { shopDomain?: string; primaryDomain?: string } = {},
+): Promise<boolean> {
   try {
-    // The empty JSON body is load-bearing: Fastify 400s a json content-type
-    // with NO body (FST_ERR_CTP_EMPTY_JSON_BODY) before auth even runs.
+    // A JSON body is load-bearing even when domains are absent: Fastify 400s a
+    // json content-type with NO body (FST_ERR_CTP_EMPTY_JSON_BODY) before auth
+    // even runs.
     const res = await fetch(`${sentientApiUrl()}/v1/provision/shopify`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${secretKey}` },
-      body: JSON.stringify({}),
+      body: JSON.stringify(domains),
       // The settings action awaits this, so a hung API used to hang the
       // merchant's save button indefinitely. Abort instead: the catch below
       // returns false, which surfaces as the "save again to retry" warning.

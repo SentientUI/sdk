@@ -1,6 +1,6 @@
 {
   "name": "@sentientui/react",
-  "version": "0.26.1",
+  "version": "0.29.0",
   "private": false,
   "license": "MIT",
   "sideEffects": false,
@@ -28,6 +28,7 @@
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./package.json": "./package.json",
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",

@@ -1,6 +1,6 @@
 {
   "name": "@sentientui/snippet",
-  "version": "0.19.0",
+  "version": "0.24.1",
   "private": false,
   "description": "SentientUI Style-rung snippet for non-React sites — persona attributes and adaptive style tokens from one script tag",
   "license": "MIT",
@@ -13,6 +13,20 @@
   "bugs": "https://github.com/SentientUI/sdk/issues",
   "type": "module",
   "main": "./dist/snippet.global.js",
+  "exports": {
+    ".": "./dist/snippet.global.js",
+    "./install": {
+      "import": {
+        "types": "./dist/install.d.ts",
+        "default": "./dist/install.js"
+      },
+      "require": {
+        "types": "./dist/install.d.cts",
+        "default": "./dist/install.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "README.md"

@@ -2,7 +2,13 @@
   SentientUI snippet — the entire storefront integration (spec §3).
   Mirrors the canonical install from the dashboard's Shopify recipe
   (apps/dashboard/app/lib/nocode-install.ts): the window.sentient config
-  block followed by the published snippet loader.
+  block, the inline pre-paint script, then the published snippet loader.
+
+  The inline script below is a VERBATIM copy of
+  renderSnippetPrePaintScript() from @sentientui/snippet/install — Liquid
+  has no import, so it is pasted. prepaint-embed.test.ts pins the two byte
+  for byte, so a drift makes a test red rather than a storefront stale.
+  Do not hand-edit it; regenerate it from that function.
 
   Subresource Integrity is deliberately NOT used on this tag, matching every
   other SentientUI install surface — the snippet is first-party and
@@ -31,6 +37,7 @@
   })();
 </script>
 {%- endif -%}
+<script>(function(){try{var W=window,D=document,N=navigator,L=W.location,c=W.sentient,n=Date.now();if(!c||typeof c.apiKey!="string"||c.consent===!1||W.__sntPP)return;if(N.doNotTrack=="1"||N.globalPrivacyControl||N.webdriver)return;if(/[?&]sentient_(editor|preview|persona)=/.test(L.search))return;var s=JSON.parse(localStorage.getItem("_snt_snap:"+c.apiKey)),S=s.slots;if(s.v!==1||typeof s.persona!="string"||typeof s.band!="string"||!S||typeof S!="object"||!(2592e6>n-s.savedAt))return;var H=["data-sentient-persona","data-sentient-confidence"],d=D.documentElement,P=W.__sntPP={v:1,at:n,stamped:[],html:[],reordered:!1,done:!1,stop:function(){X()}},b=P.stamped,p=[],i,k,t,e,l,m,x,V=c.sections,O=s.layoutOrder,q=!(V&&V.length>1&&O&&O.length==V.length);if(c.personaAttributes&&!d.hasAttribute(H[0])){d.setAttribute(H[0],s.persona);d.setAttribute(H[1],s.band);P.html=H}var Q=function(v){return(""+v).replace(/["\\]/g,"\\$&")},A=function(t,v,g){if(typeof v=="string"){if(!g||(g.arms||[]).indexOf(v)>-1)p.push([t,"data-sentient-arm",v])}else if(v)for(k in v)if(!g||((g.dims||{})[k]||[]).indexOf(v[k])>-1)p.push([t,"data-"+k,v[k]])},U=function(t){var a=t[3];if(!a)return;a[2]==null?a[0].removeAttribute(a[1]):a[0].setAttribute(a[1],a[2]);x=b.indexOf(a);if(x>-1)b.splice(x,1);t[3]=0},R=function(){var g={},f=[],y,z,a,n=0;for(i in V){try{y=D.querySelectorAll(V[i])}catch(_){return 1}if(y.length==1){g[V[i]]=y[0];n++}}if(n!=V.length)return 0;for(i in O){z=g[O[i]];if(!z||~f.indexOf(z))return 1;f.push(z)}a=f[0].parentNode;if(!a)return 1;for(i in f)if(f[i].parentNode!=a)return 1;y=f.slice().sort(function(u,v){return u.compareDocumentPosition(v)&4?-1:1});for(i=0;i in f;i++){z=f[i];if(y[i]!=z){a.insertBefore(z,y[i]);y.splice(y.indexOf(z),1);y.splice(i,0,z)}}P.reordered=!0;return 1},F=function(){if(P.done)return;for(i=0;i in p;i++){t=p[i];if(!t)continue;try{m=D.querySelectorAll(t[0])}catch(_){p[i]=0;continue}if(m.length>1){U(t);p[i]=0}else if(m.length==1&&(!t[3]||t[3][0]!=m[0])){U(t);e=m[0];t[3]=[e,t[1],e.getAttribute(t[1])];e.setAttribute(t[1],t[2]);b.push(t[3])}}if(!q)q=R()},X=function(){if(P.done)return;P.done=!0;try{o.disconnect()}catch(_){}clearTimeout(T)},G=c.slots,C=s.slotConfig;for(i in G)if(G[i]&&G[i].target)A(G[i].target,S[i],G[i]);for(i in C){e=C[i]||{};l=e.locator;t=e.target;if(l){if(l.urlMatch&&!~L.pathname.indexOf(l.urlMatch))continue;t=l.id?'[id="'+Q(l.id)+'"]':l.dataAttr&&/^[\w-]+$/.test(l.dataAttr.name)?"["+l.dataAttr.name+'="'+Q(l.dataAttr.value)+'"]':l.selector}if(t)A(t,S[i])}var o=new MutationObserver(F),T=setTimeout(X,3e3);o.observe(d,{childList:!0,subtree:!0});D.addEventListener("DOMContentLoaded",function(){F();X()});F();}catch(_){}})();</script>
 <script src="https://unpkg.com/@sentientui/snippet/dist/snippet.global.js" crossorigin="anonymous" defer></script>
 {% endif %}
 

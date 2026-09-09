@@ -15,6 +15,9 @@ export type SentientScenario = {
   confidence?: number;
   /** Forced slot results: slot id → arm id (arms slots) or per-dim values (token slots). */
   slots?: Record<string, string | Record<string, string>>;
+  /** Forced registry slot config (AdaptiveSlot content/blocks): slot id → entry.
+   *  Pair with `slots` to name which arm is "served" (blocks are keyed by arm). */
+  slotConfig?: Record<string, unknown>;
   weights?: Record<string, ScenarioWeight[]>;
   api?: Record<string, ScenarioApiOverride>;
 };
@@ -23,6 +26,7 @@ type ScenarioWindow = {
   __sentient_overrides?: Record<string, string>;
   __sentient_layout_override?: string[];
   __sentient_slot_overrides?: Record<string, string | Record<string, string>>;
+  __sentient_slot_config_overrides?: Record<string, unknown>;
   __sentient_persona_override?: { persona: string; confidence?: number };
 };
 
@@ -44,6 +48,8 @@ export function applyScenario(scenario: SentientScenario = {}): void {
   else delete w.__sentient_layout_override;
   if (scenario.slots) w.__sentient_slot_overrides = { ...scenario.slots };
   else delete w.__sentient_slot_overrides;
+  if (scenario.slotConfig) w.__sentient_slot_config_overrides = { ...scenario.slotConfig };
+  else delete w.__sentient_slot_config_overrides;
   if (scenario.persona) {
     w.__sentient_persona_override = {
       persona: scenario.persona,
@@ -72,6 +78,7 @@ export function resetScenario(): void {
   delete w.__sentient_overrides;
   delete w.__sentient_layout_override;
   delete w.__sentient_slot_overrides;
+  delete w.__sentient_slot_config_overrides;
   delete w.__sentient_persona_override;
   try {
     document.documentElement.removeAttribute('data-sentient-persona');

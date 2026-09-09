@@ -153,15 +153,20 @@ describe('AdaptiveDevtools — keyed mode', () => {
     registerComponent({ id: 'hero_cta', variantIds: ['a', 'b'] });
     registerSlot({ id: 'hero', dims: { tone: ['calm', 'urgent'] } });
     registerSections(['hero', 'pricing']);
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({
-        assignments: { hero_cta: 'b' },
-        layoutOrder: ['pricing', 'hero'],
-        slots: { hero: { tone: 'urgent' } },
-        personaAttributes: { persona: 'buyer', confidence: 'high' },
-      }),
-    })) as unknown as typeof fetch;
+    const fetchMock = vi.fn(async (url: string) => {
+      // Mount also fetches /personas now — answer it with nothing so the
+      // panel keeps the pinned-four fallback this test clicks through.
+      if (String(url).endsWith('/personas')) return { ok: false, json: async () => ({}) };
+      return {
+        ok: true,
+        json: async () => ({
+          assignments: { hero_cta: 'b' },
+          layoutOrder: ['pricing', 'hero'],
+          slots: { hero: { tone: 'urgent' } },
+          personaAttributes: { persona: 'buyer', confidence: 'high' },
+        }),
+      };
+    }) as unknown as typeof fetch;
     vi.stubGlobal('fetch', fetchMock);
 
     render(<AdaptiveDevtools />);
@@ -169,7 +174,10 @@ describe('AdaptiveDevtools — keyed mode', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Buyer' }));
 
     await vi.waitFor(() => expect(getOverrides().hero_cta).toBe('b'));
-    const [url, init] = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    const call = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .find((c) => String(c[0]).endsWith('/explain')) as [string, RequestInit];
+    expect(call).toBeTruthy();
+    const [url, init] = call;
     expect(url).toBe('https://api.example.com/v1/explain');
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
     expect(body.persona).toBe('buyer');
@@ -179,6 +187,68 @@ describe('AdaptiveDevtools — keyed mode', () => {
     expect(w.__sentient_slot_overrides?.hero).toEqual({ tone: 'urgent' });
     expect(document.documentElement.dataset.sentientPersona).toBe('buyer');
     expect(document.documentElement.dataset.sentientConfidence).toBe('high');
+  });
+
+  it("renders the project's OWN vocabulary from /v1/personas in place of the pinned four", async () => {
+    w.__sentient_devtools_config = { apiKey: 'pk_test', apiBaseUrl: 'https://api.example.com/v1', isLocal: false };
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/personas')) {
+        return {
+          ok: true,
+          json: async () => ({
+            personas: [
+              { key: 'contractor', displayName: 'Contractor' },
+              { key: 'homeowner', displayName: 'Homeowner' },
+            ],
+            discovered: [{ key: 'weekend_browser', displayName: 'Weekend browser' }],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<AdaptiveDevtools />);
+    openPanel();
+    // Personas are per-project (persona_sets) — a promoted/custom vocabulary
+    // must replace the pinned-four buttons, not sit behind them.
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Contractor' })).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Homeowner' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Buyer' })).toBeNull();
+    // Discovered shadow personas are DISPLAY-ONLY: shadow sets never serve
+    // until promotion, so there is no button to force one.
+    expect(screen.getByText('Weekend browser')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Weekend browser' })).toBeNull();
+    expect(screen.getByText(/not serving yet/)).toBeTruthy();
+  });
+
+  it('says so when /v1/explain did not recognize the persona (default experience shown)', async () => {
+    w.__sentient_devtools_config = { apiKey: 'pk_test', apiBaseUrl: 'https://api.example.com/v1', isLocal: false };
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/personas')) return { ok: false, json: async () => ({}) };
+      return {
+        ok: true,
+        json: async () => ({
+          recognized: false,
+          persona: 'unknown',
+          personaDisplay: 'unknown',
+          personaAttributes: { persona: 'unknown', confidence: 'low' },
+        }),
+      };
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<AdaptiveDevtools />);
+    openPanel();
+    fireEvent.click(screen.getByRole('button', { name: 'Buyer' }));
+
+    // The page attributes carry the RESOLVED state (unknown/low), and the
+    // panel explains it — a silently highlighted "Buyer" was the old lie.
+    await vi.waitFor(() =>
+      expect(screen.getByText(/isn’t in this project’s personas/)).toBeTruthy(),
+    );
+    expect(document.documentElement.dataset.sentientPersona).toBe('unknown');
+    expect(document.documentElement.dataset.sentientConfidence).toBe('low');
   });
 });
 

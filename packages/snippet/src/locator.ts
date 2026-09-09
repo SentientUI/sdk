@@ -15,10 +15,17 @@ export function pathname(doc: Document): string {
 function fingerprintMatches(el: Element, fp: NonNullable<CompoundLocator['fingerprint']>): boolean {
   if (fp.tag && el.tagName.toLowerCase() !== fp.tag.toLowerCase()) return false;
   if (fp.text) {
-    // Loose text match: trimmed, case-folded, prefix-tolerant so copy variants
-    // (a text op that already changed the label) don't self-invalidate.
-    const a = (el.textContent ?? '').trim().toLowerCase();
-    const b = fp.text.trim().toLowerCase();
+    // Loose text match: whitespace-collapsed, case-folded, prefix-tolerant so
+    // copy variants (a text op that already changed the label) don't
+    // self-invalidate. Collapsing on BOTH sides is load-bearing: locators are
+    // captured with `\s+`→' ' normalization (generateLocator / core's
+    // fingerprintOf), while textContent of any element with nested markup
+    // carries raw newlines/indentation — comparing raw-vs-collapsed made every
+    // multi-node SECTION fail its own fingerprint, so the editor refused to
+    // target sections ("Couldn't target this element uniquely") and the
+    // visitor apply reported false locator misses on saved arrangements.
+    const a = (el.textContent ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const b = fp.text.replace(/\s+/g, ' ').trim().toLowerCase();
     if (!(a === b || a.startsWith(b) || b.startsWith(a))) return false;
   }
   return true;

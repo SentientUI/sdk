@@ -707,6 +707,34 @@ describe('readUtmParams via session upsert body', () => {
   });
 });
 
+describe('sdk identity in session upsert body', () => {
+  async function captureSessionBody(config: Record<string, unknown>): Promise<Record<string, unknown>> {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    const client = init({ ...BASE_CONFIG, ...config });
+    const sessionCall = vi.mocked(fetch).mock.calls.find(([u]) => String(u).includes('/sessions'));
+    const body = JSON.parse((sessionCall![1] as RequestInit).body as string) as Record<string, unknown>;
+    client.destroy();
+    return body;
+  }
+
+  it('forwards the wrapper\'s name and version so the dashboard can flag version skew', async () => {
+    // The session upsert, not decide: it is the one call EVERY integration
+    // makes, which is what makes React (whose main path is assign()) reportable
+    // at all. React cannot self-update, so this is its only update signal.
+    const body = await captureSessionBody({ sdk: { name: 'react', version: '0.27.0' } });
+    expect(body.sdk).toBe('react');
+    expect(body.sdkVersion).toBe('0.27.0');
+  });
+
+  it('omits both fields entirely when no wrapper declared itself', async () => {
+    // Core is a dependency of both wrappers, so its own version says nothing
+    // about what the customer installed — it must never invent one.
+    const body = await captureSessionBody({});
+    expect('sdk' in body).toBe(false);
+    expect('sdkVersion' in body).toBe(false);
+  });
+});
+
 describe('automation flag in session upsert body', () => {
   async function captureSessionBody(): Promise<Record<string, unknown>> {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));

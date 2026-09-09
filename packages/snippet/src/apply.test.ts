@@ -301,3 +301,36 @@ describe('crawlers never see the hidden-arm DOM (composition spec §12)', () => 
     expect((document.getElementById('real') as HTMLElement).style.display).toBe('');
   });
 });
+
+describe('form trees are refused whole (snippet cannot render forms yet)', () => {
+  // Dropping just the form node would reveal a section minus its
+  // call-to-action - looks live, converts nothing. So a tree containing a
+  // form gets no wrapper, and when it is the served arm the originals stay.
+  const PLAIN_TREE = { type: 'stack' as const, direction: 'column' as const, children: [{ type: 'heading' as const, level: 2 as const, value: 'Plain' }] };
+  const FORM_TREE = {
+    type: 'stack' as const,
+    direction: 'column' as const,
+    children: [
+      { type: 'heading' as const, level: 2 as const, value: 'Form arm' },
+      { type: 'form' as const, submitGoal: 'lead_capture', submitLabel: 'Send', fields: [{ kind: 'input' as const, name: 'e', label: 'Email' }] },
+    ],
+  };
+  const CFG = {
+    hero: { kind: 'arms' as const, target: '#hero', blocks: { a: PLAIN_TREE, b: FORM_TREE } },
+  } as never;
+
+  it('serving the form-free arm still works', () => {
+    document.body.innerHTML = '<section id="hero"><h1 id="real">Real</h1></section>';
+    applyRegistrySlots({ hero: 'a' }, CFG, document);
+    const wrappers = Array.from(document.querySelectorAll('[data-sentient-block-arm]'));
+    expect(wrappers.map((w) => w.getAttribute('data-sentient-block-arm'))).toEqual(['a']);
+    expect((document.getElementById('real') as HTMLElement).style.display).toBe('none');
+  });
+
+  it('serving the form arm applies nothing: no wrapper, originals stay visible', () => {
+    document.body.innerHTML = '<section id="hero"><h1 id="real">Real</h1></section>';
+    applyRegistrySlots({ hero: 'b' }, CFG, document);
+    expect(document.querySelector('[data-sentient-block-arm="b"]')).toBeNull();
+    expect((document.getElementById('real') as HTMLElement).style.display).toBe('');
+  });
+});

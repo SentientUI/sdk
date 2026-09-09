@@ -25,6 +25,9 @@ function makeClient() {
     fetchWeights: vi.fn().mockResolvedValue([]),
     decide: vi.fn().mockResolvedValue(null),
     getSlotResult: vi.fn().mockReturnValue(null),
+    getSlotConfig: vi.fn().mockReturnValue(null),
+    getSitePalette: vi.fn().mockReturnValue(null),
+    reportSlots: vi.fn(),
     getPersona: vi.fn().mockReturnValue(null),
   };
 }

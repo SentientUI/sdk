@@ -18,6 +18,13 @@ import {
   MAX_BLOCK_NODES,
   MAX_BLOCK_TEXT_LEN,
 } from './blocks';
+import {
+  containsFormBlock,
+  FORM_FIELD_KINDS,
+  FORM_INPUT_TYPES,
+  MAX_FORM_FIELDS,
+  MAX_FORM_SELECT_OPTIONS,
+} from './blocks';
 
 // Drift pins for the composition-blocks contract. Three parties must agree on
 // these values byte-for-byte: the server validator
@@ -59,5 +66,35 @@ describe('composition blocks — token vocabularies', () => {
     expect(BLOCK_GRID_COLUMNS).toEqual([2, 3, 4]);
     // Never 1 (h1 belongs to the page), never 5-6 (below the visual hierarchy).
     expect(BLOCK_HEADING_LEVELS).toEqual([2, 3, 4]);
+  });
+});
+
+describe('composition blocks — form vocabulary', () => {
+  it('pins the form token lists and caps (drift pin — update renderers/validator together)', () => {
+    // Never password/file/hidden: the closed inputType list is what makes a
+    // generated form arm safe to auto-publish. Widening it is a spec decision,
+    // not a convenience edit.
+    expect(FORM_FIELD_KINDS).toEqual(['input', 'textarea', 'select']);
+    expect(FORM_INPUT_TYPES).toEqual(['text', 'email', 'number', 'tel']);
+    expect(MAX_FORM_FIELDS).toBe(5);
+    expect(MAX_FORM_SELECT_OPTIONS).toBe(8);
+  });
+
+  it('containsFormBlock finds a form at any depth and tolerates garbage', () => {
+    const form = { type: 'form', submitGoal: 'lead', submitLabel: 'Send', fields: [] };
+    expect(containsFormBlock(form)).toBe(true);
+    expect(
+      containsFormBlock({
+        type: 'stack',
+        direction: 'column',
+        children: [{ type: 'spacer', size: 'sm' }, form],
+      }),
+    ).toBe(true);
+    expect(
+      containsFormBlock({ type: 'stack', direction: 'column', children: [{ type: 'text', value: 'hi' }] }),
+    ).toBe(false);
+    expect(containsFormBlock(null)).toBe(false);
+    expect(containsFormBlock('form')).toBe(false);
+    expect(containsFormBlock({ type: 'form' })).toBe(true);
   });
 });

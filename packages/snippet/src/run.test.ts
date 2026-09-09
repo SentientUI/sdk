@@ -996,3 +996,148 @@ describe('run — late decide after the timeout (audit SNIP-18: timeout meant to
     }
   });
 });
+
+describe('run — inline pre-paint hand-off (spec 2026-09-07 §3.4)', () => {
+  /** Seed a window.__sntPP as the inline script would have left it. */
+  function seedPrePaint(over: Partial<Record<string, unknown>> = {}): {
+    stop: ReturnType<typeof vi.fn>;
+    record: Record<string, unknown>;
+  } {
+    const stop = vi.fn();
+    const record = {
+      v: 1, at: Date.now(), stamped: [], html: [], reordered: false, done: false, stop,
+      ...over,
+    };
+    (window as unknown as { __sntPP?: unknown }).__sntPP = record;
+    return { stop, record };
+  }
+
+  function offlineClient(): void {
+    mockInit.mockReturnValue({
+      decide: vi.fn().mockRejectedValue(new Error('offline')),
+      getPersona: vi.fn().mockReturnValue(null),
+    } as never);
+  }
+
+  beforeEach(() => {
+    delete (window as unknown as { __sntPP?: unknown }).__sntPP;
+  });
+
+  it('stops the inline observer before doing anything else', async () => {
+    const { stop } = seedPrePaint();
+    offlineClient();
+    await run();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a stamp alone when its own pass re-applies the same attribute', async () => {
+    const hero = document.getElementById('hero')!;
+    hero.setAttribute('data-tone', 'urgent');
+    seedPrePaint({ stamped: [[hero, 'data-tone', null]] });
+    writeSnapshot('pk_test', {
+      v: 1, persona: 'deal_seeker', band: 'medium',
+      slots: { hero: { tone: 'urgent' } }, layoutOrder: null, savedAt: Date.now(),
+    });
+    offlineClient();
+
+    await run();
+
+    expect(hero.getAttribute('data-tone')).toBe('urgent');
+  });
+
+  it('reverts a stamp this bundle does NOT confirm (the fingerprint the inline could not check)', async () => {
+    // The inline stamped a DIFFERENT element than the one our config targets —
+    // exactly what a mid-parse selector or an unverified fingerprint can produce.
+    const stranger = document.createElement('div');
+    stranger.id = 'stranger';
+    stranger.setAttribute('data-tone', 'urgent');
+    document.body.appendChild(stranger);
+    seedPrePaint({ stamped: [[stranger, 'data-tone', null]] });
+    writeSnapshot('pk_test', {
+      v: 1, persona: 'deal_seeker', band: 'medium',
+      slots: { hero: { tone: 'urgent' } }, layoutOrder: null, savedAt: Date.now(),
+    });
+    offlineClient();
+
+    await run();
+
+    expect(stranger.hasAttribute('data-tone')).toBe(false);
+    // ...and the element we DO own is still stamped.
+    expect(document.getElementById('hero')!.getAttribute('data-tone')).toBe('urgent');
+  });
+
+  it('restores the merchant’s prior value rather than removing the attribute', async () => {
+    const stranger = document.createElement('div');
+    stranger.setAttribute('data-tone', 'urgent');
+    document.body.appendChild(stranger);
+    seedPrePaint({ stamped: [[stranger, 'data-tone', 'calm']] });
+    offlineClient();
+
+    await run();
+
+    expect(stranger.getAttribute('data-tone')).toBe('calm');
+  });
+
+  it('removes <html> persona attributes when this bundle’s gate says they are off', async () => {
+    // personaAttributes is not `true` here, so our pass writes nothing on <html>
+    // — the inline script's looser truthiness check must not outlive it.
+    (window as Window).sentient = { ...CONFIG, personaAttributes: 1 };
+    document.documentElement.setAttribute('data-sentient-persona', 'deal_seeker');
+    document.documentElement.setAttribute('data-sentient-confidence', 'medium');
+    seedPrePaint({ html: ['data-sentient-persona', 'data-sentient-confidence'] });
+    writeSnapshot('pk_test', {
+      v: 1, persona: 'deal_seeker', band: 'medium',
+      slots: {}, layoutOrder: null, savedAt: Date.now(),
+    });
+    offlineClient();
+
+    await run();
+
+    expect(document.documentElement.hasAttribute('data-sentient-persona')).toBe(false);
+    expect(document.documentElement.hasAttribute('data-sentient-confidence')).toBe(false);
+  });
+
+  it('reverts everything when there is no snapshot left to confirm against', async () => {
+    const hero = document.getElementById('hero')!;
+    hero.setAttribute('data-tone', 'urgent');
+    seedPrePaint({ stamped: [[hero, 'data-tone', null]] });
+    offlineClient();
+
+    await run();
+
+    expect(hero.hasAttribute('data-tone')).toBe(false);
+  });
+
+  it('ignores a malformed record without breaking the visit', async () => {
+    (window as unknown as { __sntPP?: unknown }).__sntPP = { v: 1, stamped: 'not an array', html: 7 };
+    writeSnapshot('pk_test', {
+      v: 1, persona: 'deal_seeker', band: 'medium',
+      slots: { hero: { tone: 'calm' } }, layoutOrder: null, savedAt: Date.now(),
+    });
+    offlineClient();
+
+    await expect(run()).resolves.toBeUndefined();
+    expect(document.getElementById('hero')!.getAttribute('data-tone')).toBe('calm');
+  });
+
+  it('tolerates a record with no stop() (a future contract that dropped it)', async () => {
+    (window as unknown as { __sntPP?: unknown }).__sntPP = { v: 2, stamped: [], html: [] };
+    offlineClient();
+    await expect(run()).resolves.toBeUndefined();
+  });
+
+  it('reports the inline contract version on decide, and 0 for a two-tag install', async () => {
+    const decide = vi.fn().mockResolvedValue({
+      layoutOrder: null, assignments: {}, slots: {}, persona: 'buyer', confidence: 0.8,
+    });
+    mockInit.mockReturnValue({ decide, getPersona: vi.fn().mockReturnValue(null) } as never);
+
+    await run();
+    expect(decide.mock.calls[0]![0]).toMatchObject({ pp: 0 });
+
+    decide.mockClear();
+    seedPrePaint();
+    await run();
+    expect(decide.mock.calls[0]![0]).toMatchObject({ pp: 1 });
+  });
+});

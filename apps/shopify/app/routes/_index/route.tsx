@@ -1,16 +1,14 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
-import { Form, useLoaderData } from "@remix-run/react";
-
-import { login } from "../../shopify.server";
 
 import styles from "./styles.module.css";
 
 // The public root, seen outside the embedded admin (app-store listing clicks,
-// health checkers, the curious). It shipped for months with the template's
-// "[your app]" placeholder copy — say what the connector actually does
-// instead, in plain merchant language, and keep the template's shop-domain
-// login form as the way in.
+// health checkers, the curious). Marketing copy only — the template's
+// shop-domain login form is deliberately GONE: App Store requirement 2.3.1
+// forbids asking anyone to type a .myshopify.com domain, and installs always
+// start from a Shopify surface, so the form had no legitimate caller. A visit
+// with ?shop= (how Shopify links in) still routes into OAuth.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
 
@@ -18,12 +16,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
 
-  return { showForm: Boolean(login) };
+  return null;
 };
 
 export default function App() {
-  const { showForm } = useLoaderData<typeof loader>();
-
   return (
     <div className={styles.index}>
       <div className={styles.content}>
@@ -33,18 +29,10 @@ export default function App() {
           revenue goals and experiments are credited with the sales they
           actually made.
         </p>
-        {showForm && (
-          <Form className={styles.form} method="post" action="/auth/login">
-            <label className={styles.label}>
-              <span>Shop domain</span>
-              <input className={styles.input} type="text" name="shop" />
-              <span>e.g: my-shop-domain.myshopify.com</span>
-            </label>
-            <button className={styles.button} type="submit">
-              Log in
-            </button>
-          </Form>
-        )}
+        <p className={styles.text}>
+          Install the app from the Shopify App Store, then paste your project
+          keys on its settings screen.
+        </p>
         <p className={styles.text}>
           New here?{" "}
           <a href="https://sentient-ui.com" target="_blank" rel="noreferrer">

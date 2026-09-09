@@ -51,6 +51,9 @@ export function createPreviewClient(inner: SentientClient): SentientClient {
     // so preview mode never issues it.
     decide: () => Promise.resolve(null),
     getSlotResult: (slotId) => inner.getSlotResult(slotId),
+    getSlotConfig: (slotId) => inner.getSlotConfig(slotId),
+    getSitePalette: () => inner.getSitePalette(),
+    reportSlots: (ids) => inner.reportSlots(ids),
     getPersona: () => inner.getPersona(),
     getGraph: () => inner.getGraph(),
     dispose: () => inner.dispose(),

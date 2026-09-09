@@ -121,6 +121,39 @@ export type SpacerBlock = {
   size: BlockSize;
 };
 
+export const FORM_FIELD_KINDS = ['input', 'textarea', 'select'] as const;
+export const FORM_INPUT_TYPES = ['text', 'email', 'number', 'tel'] as const;
+export const MAX_FORM_FIELDS = 5;
+export const MAX_FORM_SELECT_OPTIONS = 8;
+
+/** One field of a form block. Fields are props, not child blocks, so an input
+ *  can never appear outside a form — the constraint is structural, no
+ *  validator has to chase it. */
+export type FormField = {
+  kind: (typeof FORM_FIELD_KINDS)[number];
+  /** Slug key for the values object handed to onFormSubmit. */
+  name: string;
+  /** Visible label — required, a11y is not optional. */
+  label: string;
+  /** input fields only. Never password/file/hidden — the closed list is the guarantee. */
+  inputType?: (typeof FORM_INPUT_TYPES)[number];
+  required?: boolean;
+  placeholder?: string;
+  /** select fields only: 2–MAX_FORM_SELECT_OPTIONS plain-text options. */
+  options?: string[];
+};
+
+/** Lead/contact form. Submit fires `submitGoal` (a project goal) and hands the
+ *  values to the developer's onFormSubmit — field values never reach Sentient.
+ *  At most one form per tree; a form is a leaf (no children). */
+export type FormBlock = {
+  type: 'form';
+  submitGoal: string;
+  submitLabel: string;
+  fields: FormField[];
+  emphasis?: BlockEmphasis;
+};
+
 export type BlockNode =
   | StackBlock
   | GridBlock
@@ -130,7 +163,8 @@ export type BlockNode =
   | LinkBlock
   | ImageBlock
   | BadgeBlock
-  | SpacerBlock;
+  | SpacerBlock
+  | FormBlock;
 
 /** The derived site palette (spec §4 "Colour and type: derived, not chosen").
  *  Sampled by the on-site editor from the live page's own buttons — computed
@@ -152,3 +186,15 @@ export const MAX_BLOCK_DEPTH = 5;
 export const MAX_BLOCK_CHILDREN = 12;
 export const MAX_BLOCK_ARMS = 4;
 export const MAX_BLOCK_TEXT_LEN = 500;
+
+/** True when the tree contains a form node at any depth. Surfaces that cannot
+ *  render forms (snippet today, React without an onFormSubmit handler) must
+ *  refuse the WHOLE tree — skipping just the form node would render a section
+ *  minus its call-to-action, which looks live while converting nothing. */
+export function containsFormBlock(node: unknown): boolean {
+  if (node == null || typeof node !== 'object' || Array.isArray(node)) return false;
+  const n = node as { type?: unknown; children?: unknown };
+  if (n.type === 'form') return true;
+  if (Array.isArray(n.children)) return n.children.some(containsFormBlock);
+  return false;
+}

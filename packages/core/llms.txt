@@ -40,6 +40,10 @@ POST /v1/decide accepts slots: [{ id, arms?: string[], dims?: Record<string, str
 baseline? }] and returns slots: Record<string, string | Record<string, string>>.
 @sentientui/core: init({ apiKey, context }) → client.decide({ sections?, components?, slots? }),
 client.getPersona(), decision snapshot in localStorage ('_snt_snap:<apiKey>') for pre-paint.
+The no-code snippet install is THREE tags in <head>, in order: window.sentient config, the
+inline pre-paint script (renderSnippetPrePaintScript() from '@sentientui/snippet/install' —
+optional, applies the cached decision before first paint with no network), then the deferred
+snippet.global.js loader.
 
 ## Docs
 

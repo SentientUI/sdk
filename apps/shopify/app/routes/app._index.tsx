@@ -107,7 +107,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   await saveSettings(session.shop, publishableKey, effectiveSecret);
-  const provisioned = await provisionSentient(effectiveSecret);
+  // The storefront may be browsed on the myshopify domain OR the shop's custom
+  // primary domain; the snippet's ingest Origin check needs whichever the
+  // visitor uses, so provision allowlists both. Primary-domain read is
+  // best-effort — worst case only the myshopify origin is registered.
+  let primaryDomain: string | undefined;
+  try {
+    const res = (await (
+      await admin.graphql(`#graphql query sentientPrimaryDomain { shop { primaryDomain { host } } }`)
+    ).json()) as { data?: { shop?: { primaryDomain?: { host?: string } | null } } };
+    const host = res.data?.shop?.primaryDomain?.host;
+    if (host && host !== session.shop) primaryDomain = host;
+  } catch {
+    /* myshopify origin only */
+  }
+  const provisioned = await provisionSentient(effectiveSecret, { shopDomain: session.shop, primaryDomain });
   // Activate/refresh the app's web pixel with the current key (fast browser
   // path + upstream funnel steps), and persist the tag → persona mapping to
   // the shop metafield the theme embed reads. Both fail-soft.
@@ -270,22 +284,22 @@ export default function Index() {
               </BlockStack>
             </Card>
 
-            {/* Say the pricing model plainly here rather than let a merchant
-                discover it at a paywall. The app is free; the subscription is
-                on the SentientUI account and scales with traffic, so a small
-                store pays little and nobody pays twice for the same thing. */}
+            {/* Review rejection 1.2.1/1.2.2 (2026-09-06): the old wording
+                ("you pay for SentientUI… priced on the traffic it optimizes",
+                linking to the external billing page) read as a MANDATORY
+                off-platform charge. The truth is free-first — everything the
+                app sets up runs on the free plan — so say that, and keep any
+                link to external billing/account pages out of the app. */}
             <Card>
               <BlockStack gap="200">
                 <Text as="h2" variant="headingMd">
                   What this costs
                 </Text>
                 <Text as="p" variant="bodySm">
-                  The app is free. You pay for SentientUI itself, on your{" "}
-                  <Link url="https://sentient-ui.com/settings/billing" target="_blank">
-                    SentientUI account
-                  </Link>
-                  , priced on the traffic it optimizes — so it scales with your store rather
-                  than charging a flat fee for the connector. There is a free tier to start.
+                  Nothing. The app is free, and everything it sets up works on SentientUI&apos;s
+                  free plan — orders, refunds, the checkout funnel, audiences. SentientUI offers
+                  optional paid plans for stores that outgrow the free tier&apos;s traffic or want
+                  more seats and AI features; nothing in this app requires one.
                 </Text>
               </BlockStack>
             </Card>

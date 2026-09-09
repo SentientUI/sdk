@@ -144,6 +144,19 @@ export function createLocalModeClient(config: SentientConfig): SentientClient {
       return lastOutcome?.slots[slotId] ?? config.initialSlots?.[slotId] ?? null;
     },
 
+    getSlotConfig(slotId) {
+      // Local mode never talks to the registry; only an SSR seed can supply one.
+      return config.initialSlotConfig?.[slotId] ?? null;
+    },
+
+    getSitePalette() {
+      return config.initialPalette ?? null;
+    },
+
+    reportSlots() {
+      // Local mode has no server to register with.
+    },
+
     getPersona() {
       const p = lastOutcome ?? seedPersona;
       if (!p) return null;

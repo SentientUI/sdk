@@ -38,6 +38,9 @@ export { SentientPersonaScript } from './persona-script.js';
 export type { SentientPersonaScriptProps } from './persona-script.js';
 
 export { useAdaptiveTokens } from './use-adaptive-tokens.js';
+
+export { AdaptiveSlot } from './adaptive-slot.js';
+export type { AdaptiveSlotProps } from './adaptive-slot.js';
 export type { UseAdaptiveTokensOptions, UseAdaptiveTokensResult } from './use-adaptive-tokens.js';
 
 export { useAdaptive } from './use-adaptive.js';

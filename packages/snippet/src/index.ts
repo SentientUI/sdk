@@ -1,15 +1,22 @@
 import { init, grantConsent as coreGrantConsent, isDoNotTrackEnabled, readSnapshot, writeSnapshot, type CompoundLocator, type DecideOutcome, type GoalDefinition, type SentientClient, type SlotConfigEntry } from '@sentientui/core';
 import { startEngagementCapture, type SemanticType } from '@sentientui/core/engagement';
 import { parseSnippetConfig, type SnippetConfig } from './config';
-import { applyPersonaAttributes, applySlotAttributes, applySlotArms, applyRegistrySlots } from './apply';
+import { applyPersonaAttributes, applySlotAttributes, applySlotArms, applyRegistrySlots, type AttrSink } from './apply';
 import { setBlockPalette, sweepOrphanBlocks } from './blocks';
 import { attachSlotSignals, type AppliedSlot } from './slot-signals';
 import { installGoalListeners, clearFiredGoals, type GoalListeners } from './goal-wiring';
 import { resolveLocatorOne } from './locator';
+import { planReorder } from './layout-order';
+import type { PrePaintRecord } from './prepaint-script';
 import { cacheEditorToken, readCachedEditorToken } from './editor-token';
 
 export { parseSnippetConfig } from './config';
 export { applyPersonaAttributes, applySlotAttributes, applySlotArms, applyRegistrySlots } from './apply';
+export { planReorder } from './layout-order';
+// NOT re-exported here on purpose: renderSnippetPrePaintScript's 2.6 KiB string
+// would ride the always-on visitor bundle for the sake of an install-time
+// generator that only ever runs in Node. It lives on '@sentientui/snippet/install'
+// (src/install.ts) instead.
 
 // Injected at build time from package.json (see tsup.config.ts `define`), so the
 // version shipped inside the browser bundle always matches the released version
@@ -18,6 +25,14 @@ export { applyPersonaAttributes, applySlotAttributes, applySlotArms, applyRegist
 declare const __SNIPPET_VERSION__: string;
 export const version: string =
   typeof __SNIPPET_VERSION__ !== 'undefined' ? __SNIPPET_VERSION__ : '0.0.0-dev';
+
+/**
+ * Our identity for the session upsert's version-skew reporting, or undefined
+ * when this is a dev build. Same rule as the decide-path `v` below: the
+ * '0.0.0-dev' sentinel passes the server's semver check and would be persisted
+ * as the project's SDK version, permanently reading as "behind" (audit M12).
+ */
+const SDK_IDENT = version !== '0.0.0-dev' ? { name: 'snippet', version } : undefined;
 
 const DECIDE_TIMEOUT_MS = 5000;
 const REAPPLY_DEBOUNCE_MS = 50;
@@ -104,14 +119,18 @@ function dbg(cfg: SnippetConfig | null, ...args: unknown[]): void {
 
 function applyAll(
   doc: Document,
-  opts?: { contentAndOps?: boolean; onApplied?: (slotId: string, arm: string, el: Element) => void },
+  opts?: {
+    contentAndOps?: boolean;
+    onApplied?: (slotId: string, arm: string, el: Element) => void;
+    onAttr?: AttrSink;
+  },
 ): string[] {
   if (!activeCfg) return [];
   if (activeCfg.personaAttributes && activePersona) {
-    applyPersonaAttributes(activePersona.persona, activePersona.band, doc);
+    applyPersonaAttributes(activePersona.persona, activePersona.band, doc, opts?.onAttr);
   }
-  applySlotAttributes(activeSlots, activeCfg.slots, doc);
-  applySlotArms(activeSlots, activeCfg.slots, doc);
+  applySlotAttributes(activeSlots, activeCfg.slots, doc, opts?.onAttr);
+  applySlotArms(activeSlots, activeCfg.slots, doc, opts?.onAttr);
   // Registry-mode slots carry their own target/content (no page-declared decl).
   // Returns the slot ids whose locator found nothing (a health signal).
   if (activeSlotConfig) return applyRegistrySlots(activeSlots, activeSlotConfig, doc, opts);
@@ -146,38 +165,91 @@ function resolveSections(doc: Document): Map<string, Element> {
  *  order is exactly a permutation of the currently-resolvable section set. Any
  *  mismatch applies nothing, silently — the registry-move rule (a drifted
  *  anchor applies nothing) extended to whole-page order, so a stale snapshot or
- *  an edited `sections` config can never wedge a half-reordered page. */
+ *  an edited `sections` config can never wedge a half-reordered page.
+ *
+ *  The move computation itself lives in planReorder() so the inline pre-paint
+ *  script's hand-minified copy can be tested against the same fixtures — see
+ *  layout-order.ts. */
 function applyLayoutOrder(order: string[] | null | undefined, doc: Document): void {
   try {
+    // Cheap bail before touching the DOM at all: reapply() runs this on every
+    // SPA navigation, and a site with no served order must not pay a
+    // querySelectorAll per configured section for nothing.
     if (!order || order.length < 2) return;
-    if (new Set(order).size !== order.length) return;
-    const resolved = resolveSections(doc);
-    if (resolved.size !== order.length) return;
-    const els: Element[] = [];
-    for (const id of order) {
-      const el = resolved.get(id);
-      if (!el) return;
-      els.push(el);
-    }
-    const parent = els[0]!.parentNode;
-    if (!parent || !els.every((el) => el.parentNode === parent)) return;
     // Successive insertBefore within the shared parent — the registry move-op
-    // primitive. domOrder tracks the sections' current relative order; step i
-    // places the wanted element into the i-th section position, so already-
-    // ordered prefixes are never touched (idempotent on reapply).
-    const domOrder = els
-      .slice()
-      .sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
-    for (let i = 0; i < els.length; i++) {
-      const want = els[i]!;
-      if (domOrder[i] === want) continue;
-      parent.insertBefore(want, domOrder[i]!);
-      domOrder.splice(domOrder.indexOf(want), 1);
-      domOrder.splice(i, 0, want);
+    // primitive. An already-ordered prefix plans no moves, so this is idempotent
+    // on reapply.
+    for (const m of planReorder(order, resolveSections(doc)) ?? []) {
+      m.before.parentNode?.insertBefore(m.el, m.before);
     }
   } catch {
     /* fail-safe */
   }
+}
+
+/**
+ * Undo whatever the inline pre-paint script stamped that this bundle's own
+ * authoritative pre-decide pass did NOT re-apply.
+ *
+ * The inline script (spec 2026-09-07) works with less information than we do: it
+ * runs mid-parse, and it cannot verify a registry locator's fingerprint before
+ * the element's children exist. So it can stamp an element we would not, or an
+ * element that stopped being the right one. This is the correction — the bundle
+ * stays the single authority, and the whole divergence lives inside one page
+ * load.
+ *
+ * `confirmed` is every (element, attribute) our pass just wrote. The comparison
+ * is a linear scan on purpose: both lists are slot-count sized, and a Map keyed
+ * by Element costs more bytes than it saves at this scale.
+ */
+function reconcilePrePaint(pp: PrePaintRecord, confirmed: Array<[Element, string]>, doc: Document): void {
+  const agreed = (el: Element, attr: string): boolean =>
+    confirmed.some(([e, a]) => e === el && a === attr);
+  try {
+    // Tolerate a malformed / higher-version record: read only the fields we know,
+    // and only when they have the shape v1 promised.
+    if (Array.isArray(pp.stamped)) {
+      for (const entry of pp.stamped) {
+        if (!Array.isArray(entry)) continue;
+        const [el, attr, prior] = entry;
+        if (!el || typeof attr !== 'string' || agreed(el, attr)) continue;
+        if (prior === null || prior === undefined) el.removeAttribute(attr);
+        else el.setAttribute(attr, prior);
+      }
+    }
+    // <html> persona attributes: prior is always null (the inline script is
+    // single-writer and only sets them when absent), so disagreement = remove.
+    if (Array.isArray(pp.html)) {
+      for (const attr of pp.html) {
+        if (typeof attr !== 'string' || agreed(doc.documentElement, attr)) continue;
+        doc.documentElement.removeAttribute(attr);
+      }
+    }
+  } catch {
+    /* fail-safe */
+  }
+}
+
+/** The inline pre-paint record, or null when this install has no inline script
+ *  (the two-tag install, which must keep working forever) or left garbage. */
+function readPrePaint(): PrePaintRecord | null {
+  try {
+    const pp = (window as unknown as { __sntPP?: PrePaintRecord }).__sntPP;
+    return pp && typeof pp === 'object' && typeof pp.v === 'number' ? pp : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Core ingest URL for a configured API base. `apiBase` was honored by the
+ * editor overlay, engagement capture, and the locator-miss beacon — but NOT by
+ * core init(), so a self-hosted/local install split its traffic: section-map
+ * hit the configured API while sessions/decide/events silently went to the
+ * hosted default. Undefined (hosted default) when no override is configured.
+ */
+function ingestUrlFrom(cfg: SnippetConfig): string | undefined {
+  return cfg.apiBase ? `${cfg.apiBase.replace(/\/+$/, '')}/v1/events` : undefined;
 }
 
 /** Best-effort beacon of locator misses so the worker can suspend broken slots. */
@@ -664,6 +736,8 @@ function exposeGlobal(cfg: SnippetConfig): void {
             preConsentBehavior: cfg.preConsentBehavior,
             debug: cfg.debug,
             persona: cfg.persona,
+            ingestUrl: ingestUrlFrom(cfg),
+            ...(SDK_IDENT ? { sdk: SDK_IDENT } : {}),
           });
           // Re-install the editor-defined goal listeners revoke tore down —
           // from the visit's served decision, never a new decide.
@@ -902,7 +976,18 @@ export async function run(): Promise<void> {
     // an explicit `registry` flag overrides either way.
     const registryMode = cfg.registry ?? Object.keys(cfg.slots).length === 0;
 
+    // Hand-off from the inline pre-paint script (spec 2026-09-07 §3.4). Null on
+    // a two-tag install — the config-plus-loader install must keep working
+    // unchanged, forever — and on a malformed or higher-version record.
+    const prePaint = readPrePaint();
+    // Stop its observer FIRST: from here this bundle is the authority, and a live
+    // observer would keep stamping behind the reconcile below.
+    try { prePaint?.stop?.(); } catch { /* fail-safe */ }
+
     const snap = readSnapshot(cfg.apiKey);
+    // Every (element, attribute) our own pre-decide pass writes. Collected only
+    // when an inline script actually ran, so the normal path allocates nothing.
+    const confirmed: Array<[Element, string]> = [];
     if (snap) {
       activePersona = { persona: snap.persona, band: snap.band };
       activeSlots = snap.slots;
@@ -914,16 +999,28 @@ export async function run(): Promise<void> {
       // cached snapshot. Copy/ops are withheld until /v1/decide confirms them —
       // a stale snapshot must never flash wrong content that a decide timeout
       // would leave stuck on screen.
-      applyAll(document, { contentAndOps: false });
+      applyAll(document, {
+        contentAndOps: false,
+        ...(prePaint ? { onAttr: (el: Element, attr: string) => confirmed.push([el, attr]) } : {}),
+      });
       // The cached section order, by contrast, IS applied pre-paint: a late
       // reorder is exactly the flash to avoid, and the bounded apply re-verifies
       // against the CURRENT DOM (a stale/foreign order applies nothing). The
-      // post-decide apply below then corrects any drift authoritatively.
+      // post-decide apply below then corrects any drift authoritatively. It is
+      // also idempotent, so an order the inline script already applied plans no
+      // moves at all.
       if (snap.layoutOrder) {
         activeLayoutOrder = snap.layoutOrder;
         applyLayoutOrder(activeLayoutOrder, document);
       }
     }
+    // Revert anything the inline script stamped that the pass above did NOT
+    // re-apply. It runs mid-parse and cannot verify a registry locator's
+    // fingerprint before the element's children exist, so it can stamp an
+    // element we would not. With no snapshot at all the confirmed set is empty
+    // and everything it did is undone — which is the right answer, because our
+    // authority then says nothing should be applied.
+    if (prePaint) reconcilePrePaint(prePaint, confirmed, document);
 
     const client = init({
       apiKey: cfg.apiKey,
@@ -933,6 +1030,8 @@ export async function run(): Promise<void> {
       debug: cfg.debug,
       // Declared persona rides core's session upsert + decide bodies.
       persona: cfg.persona,
+      ingestUrl: ingestUrlFrom(cfg),
+      ...(SDK_IDENT ? { sdk: SDK_IDENT } : {}),
     });
     activeClient = client;
     exposeGlobal(cfg);
@@ -946,6 +1045,15 @@ export async function run(): Promise<void> {
     // in non-tsup builds) passes the server's semver check and would be persisted
     // as the project's snippet_version, permanently reading as "behind" (audit M12).
     const reportVersion = version !== '0.0.0-dev' ? { v: version } : {};
+    // Which inline pre-paint contract this install carries: its version, or 0 for
+    // "the two-tag install, no inline script". Rides the same version-skew report
+    // so the dashboard's install-health surface can nudge sites that pasted the
+    // config + loader and skipped the middle tag. No serving behaviour depends
+    // on it. A record with a HIGHER v than we know reports its own number
+    // verbatim rather than being clamped here — the server owns which versions
+    // it will store, so a bundle that predates a future contract does not have
+    // to be redeployed for that contract to be reportable.
+    const reportPrePaint = { pp: prePaint ? prePaint.v : 0 };
     // Configured sections that resolve on THIS page right now (missing ones are
     // dropped, not errored — the request describes what can actually move).
     // Fewer than two left → nothing to reorder, so the field is omitted and the
@@ -954,6 +1062,7 @@ export async function run(): Promise<void> {
     const decidePromise = client.decide({
       slots,
       ...reportVersion,
+      ...reportPrePaint,
       ...(sectionIds.length >= 2 ? { sections: sectionIds } : {}),
       ...(registryMode ? { slotsFrom: 'registry' as const } : {}),
     });
@@ -1108,6 +1217,17 @@ if (typeof window !== 'undefined' && (window as unknown as { sentient?: unknown 
   const w = window as unknown as { __sentientInitialized?: boolean };
   if (!w.__sentientInitialized) {
     w.__sentientInitialized = true;
-    void run();
+    // Deferred one microtask: run()'s visitor path is synchronous all the way
+    // through exposeGlobal(), so calling it inline ran it during the module
+    // body — and tsup's IIFE footer then assigned the module exports over
+    // window.SentientSnippet, clobbering the runtime API (goal(), getState())
+    // with an object that has neither. A microtask runs after the whole
+    // script statement (footer assignment included), so exposeGlobal wins —
+    // still same-tick and pre-paint, so the snapshot flash guard is unchanged.
+    // Promise.resolve().then, NOT queueMicrotask: that API is missing on the
+    // iOS 12-era engines this bundle still serves (see css-guard's matchAll
+    // note / audit SNIP-5), and a ReferenceError here would leave the whole
+    // snippet inert — worse than the clobber this defers around.
+    Promise.resolve().then(() => void run());
   }
 }

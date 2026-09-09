@@ -1,5 +1,40 @@
 # @sentientui/core
 
+## 0.27.0
+
+### Minor Changes
+
+- 3188a9d: Form block type + client slotConfig/palette getters
+
+  - New `form` composition block (`FormBlock`/`FormField`, `containsFormBlock`) — fields are a validated prop array (`input`/`textarea`/`select` kinds), never free-floating blocks, so an input can never appear outside a form
+  - `SentientClient.getSlotConfig(slotId)` and `getSitePalette()` expose registry slot config to SDK surfaces (previously snippet-only); seeded from the snapshot, `initialSlotConfig`/`initialPalette` config, and decide responses; the snapshot now accumulates slotConfig across decides like slot results
+  - SSR `preloadDecisions` accepts `slotsFrom: 'registry'`, unions undeclared registry slots into the result, and returns `slotConfig`/`palette`
+  - `SentientClient.reportSlots(slotIds)` — fire-and-forget, batched, deduped reporting of mounted AdaptiveSlot ids so unseen slots auto-register server-side as drafts
+
+## 0.26.0
+
+### Minor Changes
+
+- 4edb1ec: Report which SDK a site is running, so the dashboard can flag an outdated install.
+
+  `init()` accepts an optional `sdk: { name, version }`, forwarded on the session
+  upsert as `sdk` / `sdkVersion`. Both wrappers set it from their own build-time
+  version: `@sentientui/react` via a new tsup `define` (mirroring the snippet's
+  `__SNIPPET_VERSION__`), and `@sentientui/snippet` alongside the build version it
+  already reports on decide.
+
+  The session upsert is the carrier because it is the one call every integration
+  makes — decide covers only the slot paths, which is why React installs were
+  previously invisible. Additive and best-effort: a dev-sentinel version is never
+  reported, an older API ignores the fields, and application code never sets this
+  itself (core is a dependency of both wrappers, so its own version says nothing
+  about what the customer installed).
+
+  The snippet's install tag is now unpinned by default (`@sentientui/snippet/dist/
+snippet.global.js`), so a pasted integration follows releases on its own —
+  matching what the Shopify theme embed has always loaded. Pinning stays supported
+  and is the only way to use Subresource Integrity.
+
 ## 0.25.0
 
 ### Minor Changes

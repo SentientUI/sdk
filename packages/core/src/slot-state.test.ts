@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { init } from './index.js';
-import { writeSnapshot } from './snapshot.js';
+import { readSnapshot, writeSnapshot } from './snapshot.js';
 
 const BASE_CONFIG = {
   apiKey: 'pk_test_abc123',
@@ -172,5 +172,97 @@ describe('componentGoal slot fallback', () => {
     client.componentGoal('never_rendered', 'x');
     await flush(client);
     expect(events.filter((e) => e.eventType === 'goal_achieved')).toHaveLength(0);
+  });
+});
+
+describe('slotConfig / palette exposure', () => {
+  const CFG_ENTRY = { kind: 'arms' as const, content: 'Generated headline' };
+  const PALETTE = { primaryBg: '#111827', primaryText: '#ffffff', radius: '4px' };
+
+  it('returns null before any decide, seed, or snapshot', () => {
+    const client = init({ ...BASE_CONFIG });
+    expect(client.getSlotConfig('hero')).toBeNull();
+    expect(client.getSitePalette()).toBeNull();
+    client.destroy();
+  });
+
+  it('seeds from config.initialSlotConfig / initialPalette', () => {
+    const client = init({ ...BASE_CONFIG, initialSlotConfig: { hero: CFG_ENTRY }, initialPalette: PALETTE });
+    expect(client.getSlotConfig('hero')).toEqual(CFG_ENTRY);
+    expect(client.getSitePalette()).toEqual(PALETTE);
+    client.destroy();
+  });
+
+  it('fills from the snapshot but initialSlotConfig wins per slot', () => {
+    writeSnapshot(BASE_CONFIG.apiKey, {
+      v: 1,
+      persona: 'browser',
+      band: 'medium',
+      slots: {},
+      layoutOrder: null,
+      savedAt: Date.now(),
+      slotConfig: { hero: { kind: 'arms', content: 'Snapshot headline' }, faq: { kind: 'arms', content: 'FAQ copy' } },
+      palette: PALETTE,
+    });
+    const client = init({ ...BASE_CONFIG, initialSlotConfig: { hero: CFG_ENTRY } });
+    expect(client.getSlotConfig('hero')).toEqual(CFG_ENTRY);
+    expect(client.getSlotConfig('faq')).toEqual({ kind: 'arms', content: 'FAQ copy' });
+    expect(client.getSitePalette()).toEqual(PALETTE);
+    client.destroy();
+  });
+
+  it('populates from a decide response and persists into the snapshot', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input).endsWith('/decide')
+          ? ({
+              ok: true,
+              json: async () => ({
+                slots: { hero: 'researcher_v1' },
+                slotConfig: { hero: CFG_ENTRY },
+                palette: PALETTE,
+                persona: 'researcher',
+                confidence: 0.8,
+              }),
+            } as Response)
+          : ({ ok: true, json: async () => ({}) } as Response),
+      ),
+    ));
+    const client = init({ ...BASE_CONFIG });
+    await client.decide({ slotsFrom: 'registry' });
+    expect(client.getSlotConfig('hero')).toEqual(CFG_ENTRY);
+    expect(client.getSitePalette()).toEqual(PALETTE);
+
+    // The next visit's pre-paint reads the snapshot — it must carry both.
+    // (destroy() is forget-me and deletes the snapshot, so read it before.)
+    const snap = readSnapshot(BASE_CONFIG.apiKey);
+    expect(snap?.slotConfig).toEqual({ hero: CFG_ENTRY });
+    expect(snap?.palette).toEqual(PALETTE);
+    client.destroy();
+  });
+});
+
+describe('reportSlots (first-seen registration)', () => {
+  it('batches one POST per tick and never re-reports an id', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    fetchMock.mockClear(); // ignore init-time traffic
+
+    client.reportSlots(['hero-headline']);
+    client.reportSlots(['pricing-cta', 'hero-headline']);
+    await vi.advanceTimersByTimeAsync(1100);
+
+    const reports = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'));
+    expect(reports).toHaveLength(1);
+    expect(JSON.parse(String(reports[0]![1]?.body))).toEqual({ slotIds: ['hero-headline', 'pricing-cta'] });
+
+    client.reportSlots(['hero-headline']); // already reported — must not re-fire
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'))).toHaveLength(1);
+
+    client.destroy();
+    vi.useRealTimers();
   });
 });

@@ -383,3 +383,43 @@ describe('preloadDecisions — slots', () => {
     expect(result.assignments).toEqual({ c1: 'a' });
   });
 });
+
+describe('preloadDecisions — registry mode (slotConfig/palette)', () => {
+  const CFG_ENTRY = { kind: 'arms', content: 'Generated headline' };
+  const PALETTE = { primaryBg: '#111827', primaryText: '#ffffff', radius: '4px' };
+
+  async function callRegistry(decideJson: unknown) {
+    const { preloadDecisions } = await import('./server.js');
+    const mockFn = vi.mocked(fetch);
+    mockFn.mockResolvedValueOnce({ ok: true, json: async () => ({}) } as Response); // sessions
+    mockFn.mockResolvedValueOnce({ ok: true, status: 200, json: async () => decideJson } as Response); // decide
+    return preloadDecisions({ components: [], slotsFrom: 'registry' }, SESSION_ID, CONFIG);
+  }
+
+  it('sends slotsFrom on the wire and returns slotConfig, palette, and undeclared served slots', async () => {
+    const result = await callRegistry({
+      layoutOrder: [],
+      assignments: {},
+      slots: { hero: 'researcher_v1' },
+      slotConfig: { hero: CFG_ENTRY },
+      palette: PALETTE,
+      persona: 'researcher',
+      confidence: 0.8,
+    });
+
+    // Registry slots arrive undeclared — they must still land in the result.
+    expect(result.slots).toEqual({ hero: 'researcher_v1' });
+    expect(result.slotConfig).toEqual({ hero: CFG_ENTRY });
+    expect(result.palette).toEqual(PALETTE);
+
+    const decideCall = vi.mocked(fetch).mock.calls.find(([u]) => String(u).endsWith('/decide'));
+    const body = JSON.parse((decideCall![1] as RequestInit).body as string) as Record<string, unknown>;
+    expect(body.slotsFrom).toBe('registry');
+  });
+
+  it('omits slotConfig/palette when the response has none', async () => {
+    const result = await callRegistry({ layoutOrder: [], assignments: {}, persona: 'unknown', confidence: 0 });
+    expect(result.slotConfig).toBeUndefined();
+    expect(result.palette).toBeUndefined();
+  });
+});

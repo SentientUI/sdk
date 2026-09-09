@@ -58,6 +58,12 @@ provider snippet to add to your root layout. Full reference: [`packages/react`](
 <script src="https://unpkg.com/@sentientui/snippet/dist/snippet.global.js" defer crossorigin="anonymous"></script>
 ```
 
+Add the optional **pre-paint tag** between those two — a small inline script that applies the
+last served decision from the visitor's own device before the page paints, with no network
+call. Copy it from your dashboard's Install page (it is identical for every site), or generate
+it with `renderSnippetPrePaintScript()` from `@sentientui/snippet/install`. Without it a
+returning visitor can briefly see your page's original state.
+
 For production, pin an exact version and add a Subresource Integrity hash
 (`integrity="sha384-…"`) or self-host the file — see [`packages/snippet`](./packages/snippet)
 for how to compute it. Don't ship a placeholder `integrity` value: a hash that doesn't match

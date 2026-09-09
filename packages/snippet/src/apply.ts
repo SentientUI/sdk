@@ -1,4 +1,4 @@
-import type { SlotConfigEntry } from '@sentientui/core';
+import { containsFormBlock, type SlotConfigEntry } from '@sentientui/core';
 import type { SnippetSlotDecl } from './config';
 import { isUrlScopedOut, resolveLocatorOne } from './locator';
 import { applyOps } from './ops';
@@ -20,9 +20,20 @@ function declTargets(target: string | undefined, doc: Document): Element[] {
   }
 }
 
-export function applyPersonaAttributes(persona: string, band: string, doc: Document): void {
+/**
+ * Fired for every (element, attribute) an apply pass writes. Exists so run() can
+ * reconcile the inline pre-paint script's stamps against what THIS bundle
+ * considers correct: anything the inline stamped that no pass here re-wrote gets
+ * reverted (see reconcilePrePaint). Nothing else consumes it, and every call
+ * site passes it through optionally, so it costs nothing when absent.
+ */
+export type AttrSink = (el: Element, attr: string) => void;
+
+export function applyPersonaAttributes(persona: string, band: string, doc: Document, onAttr?: AttrSink): void {
   doc.documentElement.setAttribute('data-sentient-persona', persona);
   doc.documentElement.setAttribute('data-sentient-confidence', band);
+  onAttr?.(doc.documentElement, 'data-sentient-persona');
+  onAttr?.(doc.documentElement, 'data-sentient-confidence');
 }
 
 /**
@@ -34,6 +45,7 @@ export function applySlotAttributes(
   results: Record<string, SlotResult>,
   decls: Record<string, SnippetSlotDecl>,
   doc: Document,
+  onAttr?: AttrSink,
 ): void {
   for (const [slotId, decl] of Object.entries(decls)) {
     const result = results[slotId];
@@ -41,7 +53,10 @@ export function applySlotAttributes(
     const targets = declTargets(decl.target, doc);
     for (const el of targets) {
       for (const [dim, value] of Object.entries(result)) {
-        if (decl.dims[dim]?.includes(value)) el.setAttribute(`data-${dim}`, value);
+        if (decl.dims[dim]?.includes(value)) {
+          el.setAttribute(`data-${dim}`, value);
+          onAttr?.(el, `data-${dim}`);
+        }
       }
     }
   }
@@ -59,13 +74,17 @@ export function applySlotArms(
   results: Record<string, SlotResult>,
   decls: Record<string, SnippetSlotDecl>,
   doc: Document,
+  onAttr?: AttrSink,
 ): void {
   for (const [slotId, decl] of Object.entries(decls)) {
     const result = results[slotId];
     if (typeof result !== 'string') continue; // dims results are handled elsewhere
     if (!decl.arms || !decl.arms.includes(result)) continue; // undeclared arm → no change
     const targets = declTargets(decl.target, doc);
-    for (const el of targets) el.setAttribute('data-sentient-arm', result);
+    for (const el of targets) {
+      el.setAttribute('data-sentient-arm', result);
+      onAttr?.(el, 'data-sentient-arm');
+    }
   }
 }
 
@@ -86,6 +105,8 @@ export function applyRegistrySlots(
      *  pass — the attach point for per-option behavior signals. Never fires on
      *  the pre-paint (contentAndOps:false) pass or for dims results. */
     onApplied?: (slotId: string, arm: string, el: Element) => void;
+    /** Every (element, attribute) written — the inline pre-paint reconcile feed. */
+    onAttr?: AttrSink;
   },
 ): string[] {
   const blockContainers = new Set<Element>();
@@ -123,9 +144,13 @@ export function applyRegistrySlots(
       if (result !== undefined) {
         if (typeof result === 'string') {
           el.setAttribute('data-sentient-arm', result);
+          opts?.onAttr?.(el, 'data-sentient-arm');
           if (contentAndOps) opts?.onApplied?.(slotId, result, el);
         } else {
-          for (const [dim, value] of Object.entries(result)) el.setAttribute(`data-${dim}`, value);
+          for (const [dim, value] of Object.entries(result)) {
+            el.setAttribute(`data-${dim}`, value);
+            opts?.onAttr?.(el, `data-${dim}`);
+          }
         }
       }
       // Composition Blocks apply on BOTH passes, pre-paint included: rendering
@@ -140,8 +165,19 @@ export function applyRegistrySlots(
       // merchant's own content behind hidden arms, which is a cloaking signal —
       // so when the client can see it is automation, leave the page alone.
       if (cfg.blocks && !isLikelyAutomation(doc)) {
-        applySlotBlocks(el, cfg.blocks, typeof result === 'string' ? result : undefined, doc);
-        blockContainers.add(el);
+        // The snippet cannot render forms yet. Dropping just the form node
+        // (renderBlock's unknown-type skip) would reveal a section minus its
+        // call-to-action — looks live, converts nothing — so a tree containing
+        // a form is refused WHOLE: filtered out BEFORE applySlotBlocks, which
+        // means no wrapper is created AND the reveal check cannot hide the
+        // originals with nothing to show for the served arm.
+        const renderable = Object.fromEntries(
+          Object.entries(cfg.blocks).filter(([, tree]) => !containsFormBlock(tree)),
+        );
+        if (Object.keys(renderable).length > 0) {
+          applySlotBlocks(el, renderable, typeof result === 'string' ? result : undefined, doc);
+          blockContainers.add(el);
+        }
       }
       if (!contentAndOps) continue;
       // Phase-2 content, then Phase-3 ops (ops.text wins if both set).

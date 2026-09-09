@@ -114,8 +114,52 @@ function slotDecls(): Array<{ id: string; arms?: string[]; dims?: RegisteredSlot
   }));
 }
 
-/** Keyed mode: simulate via /v1/explain (read-only, event-free). */
-async function forcePersonaKeyed(apiKey: string, apiBaseUrl: string, persona: string): Promise<void> {
+/** One member of the project's persona vocabulary, as /v1/personas serves it. */
+type VocabMember = { key: string; displayName: string };
+
+const DEFAULT_PERSONA_CHOICES: VocabMember[] = PERSONAS.map((key) => ({
+  key,
+  displayName: PERSONA_DISPLAY[key],
+}));
+
+/**
+ * Keyed mode: the project's ACTIVE vocabulary from /v1/personas. Personas are
+ * per-project (persona_sets, migration 113) — discovery can promote new ones
+ * and retire the pinned four — so hardcoding PERSONAS here offered buttons
+ * that silently simulated the default experience on any project whose
+ * vocabulary differs. null on any failure → the caller keeps the pinned-four
+ * fallback (an old API without the endpoint degrades to today's behavior).
+ */
+async function fetchPersonaVocabulary(
+  apiKey: string,
+  apiBaseUrl: string,
+): Promise<{ personas: VocabMember[]; discovered: VocabMember[] } | null> {
+  try {
+    const res = await fetch(`${apiBaseUrl}/personas`, {
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { personas?: VocabMember[]; discovered?: VocabMember[] };
+    const valid = (list: VocabMember[] | undefined): VocabMember[] =>
+      Array.isArray(list)
+        ? list.filter((p) => p && typeof p.key === 'string' && typeof p.displayName === 'string')
+        : [];
+    const personas = valid(data.personas);
+    return personas.length > 0 ? { personas, discovered: valid(data.discovered) } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keyed mode: simulate via /v1/explain (read-only, event-free). Returns how
+ *  the persona RESOLVED so the panel can say when the project didn't
+ *  recognize it — the page then shows the default experience, and a silently
+ *  highlighted button claiming otherwise was the old lie. */
+async function forcePersonaKeyed(
+  apiKey: string,
+  apiBaseUrl: string,
+  persona: string,
+): Promise<{ recognized: boolean; resolvedDisplay: string } | null> {
   const res = await fetch(`${apiBaseUrl}/explain`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
@@ -126,12 +170,21 @@ async function forcePersonaKeyed(apiKey: string, apiBaseUrl: string, persona: st
       slots: slotDecls(),
     }),
   });
-  if (!res.ok) return;
-  const data = (await res.json()) as OutcomeToApply;
+  if (!res.ok) return null;
+  const data = (await res.json()) as OutcomeToApply & {
+    recognized?: boolean;
+    persona?: string;
+    personaDisplay?: string;
+  };
   applyOutcome({
     ...data,
     personaAttributes: data.personaAttributes ?? { persona, confidence: 'high' },
   });
+  return {
+    // An older API omits the field — treat as recognized (no basis to warn).
+    recognized: data.recognized !== false,
+    resolvedDisplay: data.personaDisplay ?? data.persona ?? persona,
+  };
 }
 
 /** Local mode: simulate via the deterministic local engine — zero network. */
@@ -212,6 +265,18 @@ function SentientMark({ size = 26 }: { size?: number } = {}): JSX.Element {
 export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const [activePersona, setActivePersona] = useState<string | null>(null);
+  // The project's vocabulary (keyed mode); null = not loaded → pinned-four
+  // fallback. Local mode never fetches: the local engine only knows the
+  // pinned four, and its banner already frames everything as simulated.
+  const [vocab, setVocab] = useState<VocabMember[] | null>(null);
+  // Discovered SHADOW personas — display-only. They never serve until
+  // promotion, so there is no button: forcing one would simulate a persona
+  // that cannot occur on this project.
+  const [discovered, setDiscovered] = useState<VocabMember[]>([]);
+  // Set when a forced persona did NOT resolve against the project's
+  // vocabulary — the page is showing the default experience and the panel
+  // must say so instead of highlighting the button as if the preview worked.
+  const [personaNote, setPersonaNote] = useState<string | null>(null);
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [mounted, setMounted] = useState(false);
   const [, force] = useReducer((n: number) => n + 1, 0);
@@ -224,6 +289,19 @@ export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Elem
   // never reads `window` on the server. Lets consumers drop `<AdaptiveDevtools/>`
   // straight into a tree without a `dynamic(..., { ssr: false })` wrapper.
   useEffect(() => setMounted(true), []);
+  // Load the project's persona vocabulary once (keyed mode only).
+  useEffect(() => {
+    if (IS_PROD) return;
+    const cfg = readDevtoolsConfig() ?? { apiKey: apiKey ?? '', apiBaseUrl: DEFAULT_API_BASE_URL, isLocal: false };
+    if (cfg.isLocal || !cfg.apiKey) return;
+    let cancelled = false;
+    void fetchPersonaVocabulary(cfg.apiKey, cfg.apiBaseUrl).then((v) => {
+      if (cancelled || !v) return;
+      setVocab(v.personas);
+      setDiscovered(v.discovered);
+    });
+    return () => { cancelled = true; };
+  }, [apiKey]);
 
   // Never render in production, even if imported by mistake. (Hooks run first
   // so the rules of hooks hold regardless of these early returns.)
@@ -304,15 +382,26 @@ export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Elem
     notifyOverridesChanged();
     force();
   }
-  function choosePersona(persona: string): void {
-    setActivePersona(persona);
-    const apply = useLocalEngine
-      ? forcePersonaLocal(persona, config.apiKey)
-      : forcePersonaKeyed(config.apiKey, config.apiBaseUrl, persona);
+  function choosePersona(member: VocabMember): void {
+    setActivePersona(member.key);
+    setPersonaNote(null);
     // .catch: a failed simulate (offline /v1/explain, bad key, failed local
     // dynamic import) is a preview no-op — without the handler it surfaced as
     // an unhandled promise rejection in the console.
-    apply.then(force).catch(() => {});
+    if (useLocalEngine) {
+      forcePersonaLocal(member.key, config.apiKey).then(force).catch(() => {});
+      return;
+    }
+    forcePersonaKeyed(config.apiKey, config.apiBaseUrl, member.key)
+      .then((r) => {
+        if (r && !r.recognized) {
+          setPersonaNote(
+            `“${member.displayName}” isn’t in this project’s personas — the page is showing the default experience.`,
+          );
+        }
+        force();
+      })
+      .catch(() => {});
   }
 
   return (
@@ -346,9 +435,12 @@ export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Elem
           <div style={{ borderBottom: '1px solid #333', paddingBottom: 8, marginBottom: 8 }}>
             <div style={{ opacity: .7, marginBottom: 4 }}>Preview persona</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-              {PERSONAS.map((p) => (
-                <button key={p} onClick={() => choosePersona(p)} style={btn(activePersona === p)}>
-                  {PERSONA_DISPLAY[p]}
+              {/* Keyed mode renders the project's OWN vocabulary (falling back
+                  to the pinned four until /v1/personas answers); local mode
+                  keeps the pinned four the local engine simulates. */}
+              {(useLocalEngine ? DEFAULT_PERSONA_CHOICES : vocab ?? DEFAULT_PERSONA_CHOICES).map((p) => (
+                <button key={p.key} onClick={() => choosePersona(p)} style={btn(activePersona === p.key)}>
+                  {p.displayName}
                 </button>
               ))}
               {(activePersona !== null || Object.keys(overrides).length > 0 || Object.keys(slotOverrides).length > 0) && (
@@ -357,6 +449,27 @@ export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Elem
                 </button>
               )}
             </div>
+            {personaNote && (
+              <div style={{ marginTop: 6, fontSize: 11, color: '#fbbf24' }}>{personaNote}</div>
+            )}
+            {!useLocalEngine && discovered.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ opacity: .5, fontSize: 11, marginBottom: 4 }}>
+                  Discovered — not serving yet (promote from the dashboard)
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {discovered.map((p) => (
+                    <span
+                      key={p.key}
+                      title="Found by clustering your traffic; it starts serving only after promotion."
+                      style={{ ...btn(false), opacity: .45, cursor: 'default', display: 'inline-block' }}
+                    >
+                      {p.displayName}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           {sections.length > 0 && (
             <div style={{ borderBottom: '1px solid #333', paddingBottom: 8, marginBottom: 8 }}>

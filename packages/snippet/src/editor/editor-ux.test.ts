@@ -50,24 +50,29 @@ describe('selection persistence', () => {
   });
 });
 
-describe('panel sections', () => {
-  it('groups actions under Content & style / Track a goal / Move labels once selected', () => {
+describe('panel tabs (one concern at a time)', () => {
+  it('renders the six tabs and auto-opens the text form for an eligible selection', () => {
     document.body.innerHTML = '<h1 id="hero">Welcome</h1>';
     mount({ token: 'tok', apiBase: 'https://api.example.com' });
+    for (const tab of ['Text', 'Style', 'Layout', 'Goals', 'Funnels', 'Drafts']) {
+      expect(panelText()).toContain(tab);
+    }
     selectByClick(document.getElementById('hero')!);
-    const text = panelText();
-    expect(text).toContain('Content & style');
-    expect(text).toContain('Track a goal');
-    expect(text).toContain('Move');
+    // Default tab is Text; an eligible leaf selection opens the form directly —
+    // a tab whose whole content was one button cost an extra click for nothing.
+    expect(panelText()).toContain('Alternative wording to test');
   });
 
-  it('hides element actions until something is selected (only the hint + page goal show)', () => {
+  it('shows a guiding hint until something is selected; the trigger buttons stay headless', () => {
     document.body.innerHTML = '<h1 id="hero">Welcome</h1>';
     mount({ token: 'tok', apiBase: 'https://api.example.com' });
-    expect(panelButton('Test different text here').style.display).toBe('none');
+    expect(panelText()).toContain('Click any text on the page');
+    // Page-level goals never needed a selection — their button keeps its own
+    // visibility semantics inside the Goals tab.
     expect(panelButton('Track page visits as a goal').style.display).not.toBe('none');
     selectByClick(document.getElementById('hero')!);
-    expect(panelButton('Test different text here').style.display).not.toBe('none');
+    // Text/Style are headless: their TAB opens the form, the buttons never render.
+    expect(panelButton('Test different text here').style.display).toBe('none');
   });
 });
 
@@ -86,6 +91,37 @@ describe('goal tracking beyond clicks', () => {
     expect(String(call[0])).toMatch(/\/v1\/editor\/goals\/request-a-demo-/); // slug + uniqueness suffix
     const body = JSON.parse((call[1] as RequestInit).body as string);
     expect(body.event).toBe('click');
+  });
+
+  it('seeds the goal id from a clean label, never a container\'s glued-together text', async () => {
+    // A card's textContent is every descendant run together, which used to
+    // slugify into `add-to-cartfrom-29-00-sold-out-...`. Past a label's length
+    // it is page content, so fall back to a name the element carries — the same
+    // rule the server applies to the display name.
+    document.body.innerHTML =
+      '<div id="product-card" aria-label="Product card">Add to cart<span>From $29.00</span><span>Sold out</span><span>Subscribe and save 10% on every order</span></div>';
+    const fetchMock = vi.mocked(fetch);
+    mount({ token: 'tok', apiBase: 'https://api.example.com' });
+    selectByClick(document.getElementById('product-card')!);
+    clickBtn('Track clicks as a goal');
+
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/v1/editor/goals/'))).toBe(true));
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/v1/editor/goals/'))!;
+    expect(String(call[0])).toMatch(/\/v1\/editor\/goals\/product-card-/);
+    expect(String(call[0])).not.toContain('sold-out');
+  });
+
+  it('collapses whitespace in the goal id seed', async () => {
+    // textContent carries the source's newlines and indentation between spans.
+    document.body.innerHTML = '<button id="b">Request\n\n      a demo</button>';
+    const fetchMock = vi.mocked(fetch);
+    mount({ token: 'tok', apiBase: 'https://api.example.com' });
+    selectByClick(document.getElementById('b')!);
+    clickBtn('Track clicks as a goal');
+
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/v1/editor/goals/'))).toBe(true));
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/v1/editor/goals/'))!;
+    expect(String(call[0])).toMatch(/\/v1\/editor\/goals\/request-a-demo-/);
   });
 
   it('two same-text elements get DISTINCT goal ids (no silent overwrite)', async () => {
@@ -161,8 +197,9 @@ describe('goal tracking beyond clicks', () => {
     clickBtn('Track clicks as a goal');
     // Wait for the save RESPONSE to be handled (not just the request sent) —
     // that's when the activation button reveals.
-    await vi.waitFor(() => expect(panelButton('Start tracking now').style.display).toBe('block'));
-    clickBtn('Start tracking now');
+    // The button NAMES its goal so a later selection can't make it ambiguous.
+    await vi.waitFor(() => expect(panelButton('Start tracking “Request a demo” now').style.display).toBe('block'));
+    clickBtn('Start tracking “Request a demo” now');
     await vi.waitFor(() =>
       expect(fetchMock.mock.calls.some((c) => /\/goals\/request-a-demo-[a-z0-9]+\/publish/.test(String(c[0])))).toBe(true),
     );
