@@ -17,7 +17,7 @@ npx @sentientui/cli init
 # then follow its printed instructions: wrap your app with <AdaptiveRoot> (or
 # <AdaptiveProvider>) and mount the generated components/adaptive-example.tsx
 npm run dev
-# open http://localhost:3000?sentient_persona=buyer — the example adapts
+# open http://localhost:3000?sentient_persona=a, then ?sentient_persona=b — the example adapts
 ```
 
 The CLI installs the package, writes `.env.local`, and generates an example component — it does
@@ -47,7 +47,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AdaptiveRoot
           apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!}
           appOrigin={process.env.NEXT_PUBLIC_APP_URL!}
-          context="saas"
         >
           {children}
         </AdaptiveRoot>
@@ -86,24 +85,21 @@ data-sentient-confidence = low | medium | high
 ```
 
 The persona value is a key from the project's persona vocabulary (dashboard → Settings →
-Personas) — declared by your app via the `persona` prop, or inferred from behavior. The
-default vocabulary is `buyer | researcher | deal_seeker | browser`. Renaming a persona in
+Personas) — declared by your app via the `persona` prop, or discovered from behavior. The
+vocabulary starts empty (every visitor is `unknown` until a persona exists). Renaming a persona in
 the dashboard keeps the old key resolving as an alias, so existing CSS stays intact.
 
-Write plain CSS against them (the canonical block — safe defaults for every persona):
+Write plain CSS against them (the canonical block — swap in your own persona keys):
 
 ```css
 /* Show each visitor type what it cares about. Confidence-gate bold treatments. */
-html[data-sentient-persona='buyer'] .cta-primary { font-weight: 700; }
-html[data-sentient-persona='researcher'] .spec-details { display: block; }
-html[data-sentient-persona='deal_seeker'] .discount-banner { display: block; }
-html[data-sentient-persona='browser'] .newsletter-nudge { display: block; }
-html[data-sentient-confidence='low'] .discount-banner,
-html[data-sentient-confidence='low'] .newsletter-nudge { display: none; }
+html[data-sentient-persona='admin'] .admin-tools { display: block; }
+html[data-sentient-persona='evaluator'] .spec-details { display: block; }
+html[data-sentient-confidence='low'] .spec-details { display: none; }
 ```
 
 In keyless local mode (development without a `pk_` key), force any persona with
-`?sentient_persona=deal_seeker`. The override is not read in hosted (`pk_`) mode.
+`?sentient_persona=evaluator` (any key works locally). The override is not read in hosted (`pk_`) mode.
 
 **1b. Adaptive tokens — learned.** Declare a bounded design space; the optimizer picks per
 visitor type; values arrive as element-scoped `data-*` props (SSR-serialized — zero flicker):
@@ -137,6 +133,41 @@ Optional `{ goal: 'buy_click' }` third argument credits conversions to this elem
 
 ### Rung 2 — Swap (alternate content)
 
+`<Adaptive>` fills a region one of two ways.
+
+**Generated versions (start here).** Wrap what you show today — the children are the original:
+
+```tsx
+import { Adaptive } from '@sentientui/react';
+
+<Adaptive id="hero-cta" goal="signup_click">
+  <a href="/signup">Start free trial</a>
+</Adaptive>
+```
+
+Mounting it and deploying registers the region. SentientUI then writes versions per visitor type
+in the dashboard ("Who sees what") — no redeploy. The children render for holdout/control
+traffic, unknown visitor types, visitor types with no version yet, and every error path, so the
+worst case is always "nothing changed". This works in any React app under `<AdaptiveRoot>` or
+`<AdaptiveProvider>` as-is — no server preload: the regions mounted on a page are requested in
+one batched call scoped to exactly those ids. A first visit shows the original briefly, then
+swaps; return visits start from the last version served. Keyless local mode renders the
+originals only. (Formerly `<AdaptiveSlot>`.)
+
+**Code variants.** When you want to write the alternatives yourself, pass `variants` instead of
+children:
+
+```tsx
+<Adaptive
+  id="buy-box"
+  goal="buy_click"                                                // required
+  variants={{ control: <CalmBuyBox />, urgent: <UrgentBuyBox /> }} // first key = baseline
+/>
+```
+
+Use one or the other on a given `<Adaptive>`, not both. `useAdaptive` is the hook form of code
+variants:
+
 ```tsx
 import { useAdaptive } from '@sentientui/react';
 
@@ -150,8 +181,8 @@ function BuyBox() {
 ```
 
 `bind` (ref + data attributes) wires exposure tracking, goal listeners, and engagement signals —
-attach it or the slot cannot learn (dev mode warns loudly if you don't). `<Adaptive>` is the
-wrapper form of the same rung; `<AdaptiveText>` swaps dashboard-managed text.
+attach it or the component cannot learn (dev mode warns loudly if you don't). `<AdaptiveText>`
+swaps dashboard-managed text.
 
 ### Rung 3 — Reorder (structure)
 
@@ -187,21 +218,22 @@ Imported from `@sentientui/react/next`.
 
 | Prop | Type | Description |
 |------|------|-------------|
-| `components` | `Array<{ id: string; variantIds: string[] }>` *(optional, default `[]`)* | Components to preload server-side. `id` must match `<Adaptive id="…">`. Omit when the tree uses only slots/sections or assigns client-side. |
-| `sections` | `string[]` *(optional)* | Page section IDs in default order. When provided, a single `POST /v1/decide` returns both layout order and assignments; `useLayoutOrder()` becomes available. Give each section's element `data-sentient-id="<sectionId>"` (optionally an explicit `data-sentient-type`) so the graph scanner can register it — without it the server types the section `generic` and every persona gets the same order. The provider warns about unresolvable ids in development. |
+| `components` | `Array<{ id: string; variantIds: string[] }>` *(optional, default `[]`)* | Code-variant components to preload server-side. `id` must match `<Adaptive id="…" variants={…}>`; generated-version `<Adaptive>` regions need no entry. Omit when the tree uses only slots/sections or assigns client-side. |
+| `sections` | `string[]` *(optional)* | Page section IDs in default order. When provided, a single `POST /v1/decide` returns both layout order and assignments; `useLayoutOrder()` becomes available. Give each section's element `data-sentient-id="<sectionId>"` — the only attribute a section needs — so the graph scanner can register it; without it the server types the section `generic` and every persona gets the same order. The provider warns about unresolvable ids in development. |
+| `registrySlotIds` | `string[]` *(optional)* | The generated-mode `<Adaptive id>`s this page renders. Decides their published versions in the same SSR round trip and serializes the served content into the HTML, so first paint shows the version instead of the original children. Scoped to exactly these ids — an unscoped registry decide would record a trial for every published slot on every page. Omit and the regions decide client-side after mount. |
+| `sectionTypes` | `Partial<Record<string, SemanticType>>` *(optional)* | What each section is, keyed by `data-sentient-id`: `{ about: 'trust', contact: 'cta' }`. Sections are classified from their content, so declare only the ones it gets wrong — a band with little signal-bearing copy (an "About us" block, a contact form) reads `generic` and is ordered the same for every persona. Any section with a `data-sentient-id` can appear, reorderable or not. Also accepted by `AdaptiveProvider`. |
 | `apiKey` | `string` | `pk_…` key — used by both the browser SDK and server-side SSR requests. |
 | `appOrigin` | `string` *(default `http://localhost:3001`)* | Your app origin (e.g. `https://yourapp.com`). Must be on the project's allowed-origins list. Always set in production. |
-| `context` | `'landing' \| 'ecommerce' \| 'saas' \| 'marketplace'` | Type of product. Used for segment weighting and analytics grouping. |
+| `context` | `'landing' \| 'ecommerce' \| 'saas' \| 'marketplace'` *(optional, deprecated)* | Unused — the project's type is set in the dashboard. Safe to omit. |
 | `persona` | `string` *(optional)* | Declared persona — the role your app already knows for this visitor (e.g. from your auth context). Must be a key in the project's persona vocabulary (dashboard → Settings → Personas); unrecognized values are ignored server-side. Served at full confidence, overriding the inferred persona; forwarded through both SSR paths. Stable for the session — remount to apply a new value. Never a user id or email. |
 | `consent` | `boolean` *(default `true`)* | Set `false` to skip SDK init (no cookies, no events). Flip to `true` after the visitor accepts. |
 | `respectDoNotTrack` | `boolean` *(default `true`)* | Honor the browser's Do Not Track signal. When on and DNT is enabled, the SDK sets no cookies and sends no tracking data (overriding `consent: true`), and `grantConsent()` won't re-enable it. Set `false` to make your own consent gate authoritative. |
-| `ssrFallback` | `'first' \| 'none'` *(default `'first'`)* | What to render in SSR HTML for components not in `components`. `'first'` is safe for SEO. |
 | `timeoutMs` | `number` *(default `1000`)* | Server-side fetch timeout before falling back to the first variant. Typical decide is well under 150 ms; the full budget is only reached on a cold start or an API distant from your SSR host. |
 | `debug` | `boolean` | Log assignment and event activity to the console. |
 
 ### `<AdaptiveProvider>` (any React app)
 
-Accepts the same `apiKey`, `context`, `persona`, `consent`, `ssrFallback`, `debug` props as `<AdaptiveRoot>`, plus `onAssignment` (not available on `<AdaptiveRoot>` — function props can't cross the RSC boundary) and:
+Accepts the same `apiKey`, `persona`, `consent`, `debug` props as `<AdaptiveRoot>`, plus `onAssignment` (not available on `<AdaptiveRoot>` — function props can't cross the RSC boundary) and:
 
 | Prop | Type | Description |
 |------|------|-------------|
@@ -212,14 +244,32 @@ Accepts the same `apiKey`, `context`, `persona`, `consent`, `ssrFallback`, `debu
 
 ### `<Adaptive>`
 
+One component, two modes — pass `children` (generated versions) or `variants` (code variants),
+never both. `AdaptiveProps` is the union of the two exported prop types below.
+
+**Generated versions** — `AdaptiveGeneratedProps`:
+
+| Prop | Type | Description |
+|------|------|-------------|
+| `id` | `string` | Unique region identifier within your project. |
+| `children` | `ReactNode` | The original. Renders for holdout/control traffic, unknown visitor types, visitor types with no version, and every error path. |
+| `goal` | `string \| GoalConfig` *(optional)* | Conversion goal credited to this region. |
+| `onFormSubmit` | `(values: Record<string, string>) => void` *(optional)* | Receives the values when a generated form version submits. Form versions are only offered when this is present; values never reach SentientUI. |
+| `className` | `string` *(optional)* | Class for the wrapper `<div>`. |
+| `reportBaselineText` | `boolean` *(default `true`)* | At first registration, send this region's rendered text (capped at 400 chars) so generated versions are grounded in what they replace. Set `false` for a region wrapping personalized or account content. |
+
+**Code variants** — `AdaptiveVariantsProps`:
+
 | Prop | Type | Description |
 |------|------|-------------|
 | `id` | `string` | Unique component identifier within your project. |
-| `variants` | `Record<string, ReactNode>` | Map of variant ID → content. Any two or more keys; the bandit explores them all. |
-| `goal` | `string \| GoalConfig` | Conversion goal. A string is a click-goal label; an object is an explicit `GoalConfig`. |
+| `variants` | `Record<string, ReactNode>` | Map of variant ID → content. Any two or more keys; the first key is the control, and the bandit explores them all. |
+| `goal` | `string \| GoalConfig` | Conversion goal (required). A string is a click-goal label; an object is an explicit `GoalConfig`. |
+| `funnel` | `string` *(optional)* | Funnel this component serves — see [Funnels](#funnels--funnel-prop). |
+| `microSignalGoals` | `MicroSignalGoals` *(optional)* | When a passive micro-signal fires on this component, also record a named goal: micro-signal type → goal name (or `{ name, weight?, stepIndex? }`), e.g. `{ rage_click: 'confused_by_hero' }`. |
 | `agentDataByVariant` | `Record<string, unknown>` *(optional)* | Structured data keyed by variant ID that AI agents can consume via `GET /v1/agent/layout`. Only the assigned variant's entry is sent to the server. Preferred over `agentData`. |
 | `agentData` | `unknown` *(optional, deprecated)* | Deprecated in favour of `agentDataByVariant`. Single value stored once regardless of which variant is shown; kept for backward compatibility. |
-| `clientOnly` | `boolean` | Render nothing on the server; resolve on the client only. Use for cookie-dependent slots. |
+| `clientOnly` | `boolean` | Render nothing on the server; resolve on the client only. Use for cookie-dependent components. Without it, a component with no preloaded assignment server-renders its first variant. (This replaces the deprecated provider-level `ssrFallback="none"`, which is still accepted.) |
 
 #### Goal types
 
@@ -289,13 +339,13 @@ The funnel id is stable — a funnel created in the dashboard or chat is referen
 
 ### `<AdaptiveText>`
 
-Lightweight text-only variant (renders an inline `<span>` wrapper by default — change it via the `component` prop; no automatic goal wiring). Useful when you publish text variants from the dashboard WYSIWYG.
+Lightweight text-only variant (renders an inline `<span>` wrapper by default — change it via the `component` prop). Useful when you publish text variants from the dashboard WYSIWYG. Pass `goal` (a name or a goal config, exactly like `<Adaptive>`) to score the copy — without it the wording is served and logged but never learns.
 
 ```tsx
 import { AdaptiveText } from '@sentientui/react';
 
 <h1>
-  <AdaptiveText id="hero_headline" default="Ship faster with SentientUI" />
+  <AdaptiveText id="hero_headline" default="Ship faster with SentientUI" goal="signup_click" />
 </h1>
 ```
 
@@ -319,7 +369,12 @@ hydration mismatch. Renaming a value is a cold start for that value's learning.
 ```ts
 function useAdaptive<T>(
   id: string,
-  config: { variants: Record<string, T>; goal: string | GoalConfig },  // first key = baseline
+  config: {
+    variants: Record<string, T>;         // first key = baseline
+    goal: string | GoalConfig;
+    funnel?: string;
+    microSignalGoals?: MicroSignalGoals; // same mapping as <Adaptive microSignalGoals>
+  },
 ): {
   variant: string;
   value: T;
@@ -329,7 +384,9 @@ function useAdaptive<T>(
 ```
 
 Headless Swap-rung hook. `goal` is required and `bind` must be attached to a rendered element —
-learning needs both. Supersedes `useAssignment`.
+learning needs both. Supersedes `useAssignment`. It runs the same exposure, goal, funnel and
+micro-signal tracking as `<Adaptive variants>` (everything waits for the real assignment, not the
+first-key placeholder), minus the wrapper `<div>` and the hover `cursor_signal`.
 
 ### `<AdaptiveGroup>`
 
@@ -411,8 +468,8 @@ Prefer this over a click goal on the link that led here. Arrival survives the na
 
 Two failure modes it exists to prevent, both silent if you hand-roll this with `useAdaptiveGoal` in a `useEffect`:
 
-- **Double counting.** `useAdaptiveGoal` has no latch, so a remount — or React's double-invoked effects in development — records the same arrival twice.
-- **Losing the goal to a consent gate.** Behind a cookie banner the client doesn't exist when the page mounts, so firing on mount drops the arrival for every visitor who accepts a moment later. `usePageGoal` holds it until the SDK is running.
+- **Double counting.** A hand-rolled effect re-runs — React's double-invoked effects in development, or the client arriving — and records the arrival again unless you pass `useAdaptiveGoal`'s `{ once: true }`. Both latches are per mounted component, so a genuine remount records again with either.
+- **Losing the goal to a consent gate.** Behind a cookie banner the client doesn't exist when the page mounts, so firing on mount drops the arrival for every visitor who accepts a moment later (and `once` spends its latch on that dropped call). `usePageGoal` holds it until the SDK is running.
 
 ### `useLayoutOrder()`
 
@@ -457,7 +514,6 @@ Pass `assignments` as `initialAssignments` **and `sessionId` as `ssrSessionId`**
 ```tsx
 <AdaptiveProvider
   apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!}
-  context="saas"
   onAssignment={(componentId, variantId) => {
     posthog.capture('$feature_flag_called', { $feature_flag: componentId, $feature_flag_response: variantId });
     mixpanel.register({ [`variant_${componentId}`]: variantId });
@@ -487,7 +543,7 @@ Overrides bypass the bandit entirely — no events recorded, weights unchanged.
 
 DOM graph scanning and behavioral engagement capture are **on by default** — no props needed. The SDK:
 
-- captures your page structure and auto-detects what each section is (pricing, hero, social proof, …) — explicit `data-sentient-type` attributes always win over the heuristic;
+- captures your page structure and auto-detects what each section is (pricing, hero, social proof, …) — types declared in `sectionTypes` always win over the heuristic;
 - records per-section attention (visible time + scroll depth), which is what powers audience profiles with zero tagging.
 
 Both modules are loaded on demand after init, so the base bundle stays lean, and neither ever runs for a Do-Not-Track, Global Privacy Control, or consent-gated visitor (see Consent below).
@@ -495,7 +551,7 @@ Both modules are loaded on demand after init, so the base bundle stays lean, and
 Opt out per feature:
 
 ```tsx
-<AdaptiveProvider apiKey="pk_…" context="saas" enableGraph={false} engagement={false}>
+<AdaptiveProvider apiKey="pk_…" enableGraph={false} engagement={false}>
   <App />
 </AdaptiveProvider>
 ```
@@ -509,7 +565,6 @@ By default the SDK initialises with `consent: true`, so tracking starts on first
 ```tsx
 <AdaptiveProvider
   apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!}
-  context="saas"
   consent={hasConsent}
   preConsentBehavior="statistical_winner"
 >
@@ -526,7 +581,6 @@ import { init, grantConsent } from '@sentientui/core';
 
 const client = init({
   apiKey: 'pk_...',
-  context: 'saas',
   consent: false,
   preConsentBehavior: 'statistical_winner',
 });
@@ -535,26 +589,54 @@ const client = init({
 grantConsent(); // upgrades client in place — no need to reassign
 ```
 
-### OneTrust integration
+### OneTrust and Cookiebot
 
-```ts
-window.addEventListener('OneTrustGroupsUpdated', () => {
-  // C0002 = Analytics/Performance category in OneTrust
-  if (window.OnetrustActiveGroups?.includes('C0002')) {
-    grantConsent();
-  }
-});
+In React, don't wire a CMP callback to `grantConsent()`: with `consent={false}` and no
+`preConsentBehavior`, `<AdaptiveProvider>` never creates a client, so there is nothing to
+upgrade — `grantConsent()` just warns "called before init()" and tracking never starts. Point
+`consentFrom` at the CMP instead. The source is re-read every time the event fires, so a later
+withdrawal gates the SDK again too:
+
+```tsx
+// OneTrust — C0002 = Analytics/Performance category
+<AdaptiveProvider
+  apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!}
+  consentFrom={{
+    check: () => window.OnetrustActiveGroups?.includes('C0002') === true,
+    event: 'OneTrustGroupsUpdated',
+  }}
+>
+  {children}
+</AdaptiveProvider>
+
+// Cookiebot — re-read on accept AND decline, so withdrawal is honoured
+<AdaptiveProvider
+  apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!}
+  consentFrom={{
+    check: () => window.Cookiebot?.consent?.statistics === true,
+    event: 'CookiebotOnConsentReady',
+  }}
+>
+  {children}
+</AdaptiveProvider>
 ```
 
-### Cookiebot integration
+`<AdaptiveRoot>` is a Server Component and accepts only the cookie form — a `check` function
+cannot cross the server→client boundary. Point it at a cookie your CMP (or a one-line listener)
+writes, and it also resolves the cookie on the server for already-consented visitors:
 
-```ts
-window.addEventListener('CookiebotOnAccept', () => {
-  if (window.Cookiebot?.consent?.statistics) {
-    grantConsent();
-  }
-});
+```tsx
+<AdaptiveRoot
+  apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!}
+  consentFrom={{ cookie: 'analytics_consent', value: 'granted', event: 'consent-decided' }}
+>
+  {children}
+</AdaptiveRoot>
 ```
+
+For a `check()` predicate in the App Router, render `<AdaptiveProvider>` from a client component
+instead. `grantConsent()` remains correct for direct `@sentientui/core` users (above), whose
+`init({ consent: false })` does create an upgradeable client.
 
 When `consent: false` without `preConsentBehavior`, the SDK is a complete no-op — no API calls, no cookies, nothing. The `preConsentBehavior: 'statistical_winner'` mode calls only `GET /v1/winner`, a read-only endpoint that returns the best variant without storing any visitor data.
 

@@ -112,9 +112,17 @@ export type LoadAdaptiveDecisionOptions = LoadAdaptiveAssignmentsOptions & {
   components?: Array<{ id: string; variantIds?: string[] }>;
   /** Adaptive-slot declarations (useAdaptiveTokens / AdaptiveGroup) to decide server-side. */
   slots?: import('@sentientui/core/server').SlotDeclInput[];
-  /** 'registry' serves the project's published slot definitions (AdaptiveSlot)
-   *  and is the only way `slotConfig`/`palette` come back. Default 'request'. */
+  /** 'registry' serves the project's published slot definitions (`<Adaptive id>`)
+   *  and is the only way `slotConfig`/`palette` come back. Default 'request'.
+   *  Requires `registrySlotIds`. */
   slotsFrom?: 'request' | 'registry';
+  /**
+   * Registry mode: the `<Adaptive id>`s THIS page renders — the decide is
+   * scoped to exactly these. Required with `slotsFrom: 'registry'`; without it
+   * the call downgrades to request mode (with a console.error) instead of
+   * recording a close-out trial for every published slot on every page.
+   */
+  registrySlotIds?: string[];
 };
 
 /**
@@ -200,6 +208,7 @@ export async function loadAdaptiveDecision(
       components: options.components ?? [],
       slots: options.slots ?? [],
       slotsFrom: options.slotsFrom,
+      registrySlotIds: options.registrySlotIds,
     },
     sessionId,
     {

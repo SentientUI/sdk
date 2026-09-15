@@ -1,40 +1,34 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-const EXAMPLE = `'use client';
-import { useAdaptiveTokens } from '@sentientui/react';
+// The example used to be a useAdaptiveTokens hero. With a real key a tokens
+// slot only decides when it is also declared in `slots` on AdaptiveRoot — which
+// the printed wrap snippet never did — so the scaffold looked live and silently
+// served its baseline forever. A generated <Adaptive> needs no declaration: the
+// id alone registers it and the dashboard supplies the versions.
+const EXAMPLE = `import { Adaptive } from '@sentientui/react';
 
 /**
- * SentientUI example — Rung 1 (Style): a hero that adapts per visitor persona.
+ * SentientUI example — an adaptive hero.
  *
- * The optimizer picks one value per dim ('tone' here) for each visitor and
- * serializes it as data attributes; your CSS does the rest. With no API key
- * the SDK runs in local mode: decisions are simulated deterministically so
- * you can build and style every state before creating an account.
+ * The markup inside <Adaptive> is your original. Versions of it are generated
+ * and published from the dashboard (no redeploy), and each visitor is served
+ * the one that best drives \`goal\` for visitors like them. Until a version is
+ * published — and always in keyless local mode, which has no dashboard — every
+ * visitor sees exactly this original.
  *
- * Try it: append ?sentient_persona=buyer (or researcher / deal_seeker /
- * browser) to any URL to preview that persona.
- *
- * Canonical persona CSS hooks — copy into your global stylesheet:
- *
- *   .adaptive-hero[data-tone='urgent'] .adaptive-hero-cta { background: #dc2626; }
- *   .adaptive-hero[data-tone='calm']   .adaptive-hero-cta { background: #2563eb; }
- *
- *   html[data-sentient-persona='buyer']       .adaptive-hero-sub::after { content: ' Start in minutes.'; }
- *   html[data-sentient-persona='researcher']  .adaptive-hero-sub::after { content: ' Compare every feature first.'; }
- *   html[data-sentient-persona='deal_seeker'] .adaptive-hero-sub::after { content: ' See what it costs.'; }
- *   html[data-sentient-persona='browser']     .adaptive-hero-sub::after { content: ' Take a look around.'; }
+ * Mount it on any page, visit that page once with your API key set, and the
+ * "hero-cta" component appears in the dashboard ready to generate versions.
  */
 export function AdaptiveExampleHero() {
-  const t = useAdaptiveTokens('example-hero', {
-    tone: ['calm', 'urgent'], // first value = baseline
-  });
   return (
-    <section {...t.props} className="adaptive-hero">
-      <h1>This hero adapts to every visitor</h1>
-      <p className="adaptive-hero-sub">Current tone: {t.tokens.tone}.</p>
-      <button className="adaptive-hero-cta">Get started</button>
-    </section>
+    <Adaptive id="hero-cta" goal="signup_click">
+      <section className="adaptive-hero">
+        <h1>Ship faster with less guesswork</h1>
+        <p>Your original copy stays the baseline every version is measured against.</p>
+        <button type="button">Get started</button>
+      </section>
+    </Adaptive>
   );
 }
 `;

@@ -17,7 +17,12 @@ describe('scaffoldExample', () => {
     const written = scaffoldExample(dir);
     expect(written).toBe(path.join(dir, 'components', 'adaptive-example.tsx'));
     expect(existsSync(path.join(dir, 'components', 'adaptive-example.tsx'))).toBe(true);
-    expect(readFileSync(written!, 'utf-8')).toContain('useAdaptiveTokens');
+    const src = readFileSync(written!, 'utf-8');
+    // A generated <Adaptive> (children = original, no variants). The old tokens
+    // example never decided with a real key unless `slots` was also declared.
+    expect(src).toContain('<Adaptive id="hero-cta" goal="signup_click">');
+    expect(src).not.toContain('variants=');
+    expect(src).not.toContain('useAdaptiveTokens');
   });
 
   it('writes src/components/adaptive-example.tsx when the app uses a src/ dir', () => {

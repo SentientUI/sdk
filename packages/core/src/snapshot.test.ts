@@ -12,7 +12,7 @@ const API_KEY = 'pk_test_abc123';
 function validSnap(): DecisionSnapshot {
   return {
     v: 1,
-    persona: 'buyer',
+    persona: 'admin',
     band: 'high',
     slots: { hero: { tone: 'urgent' }, 'pricing-area': 'social_first' },
     layoutOrder: ['pricing', 'hero'],
@@ -78,7 +78,7 @@ describe('renderPrePaintScript', () => {
   it('sets both html attributes from the stored snapshot when evaluated', () => {
     writeSnapshot(API_KEY, validSnap());
     (0, eval)(renderPrePaintScript(API_KEY));
-    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('buyer');
+    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('admin');
     expect(document.documentElement.getAttribute('data-sentient-confidence')).toBe('high');
   });
 
@@ -95,11 +95,11 @@ describe('renderPrePaintScript', () => {
   });
 
   it('never overwrites attributes that are already set (single-writer)', () => {
-    document.documentElement.setAttribute('data-sentient-persona', 'researcher');
+    document.documentElement.setAttribute('data-sentient-persona', 'evaluator');
     document.documentElement.setAttribute('data-sentient-confidence', 'low');
     writeSnapshot(API_KEY, validSnap());
     (0, eval)(renderPrePaintScript(API_KEY));
-    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('researcher');
+    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('evaluator');
     expect(document.documentElement.getAttribute('data-sentient-confidence')).toBe('low');
   });
 

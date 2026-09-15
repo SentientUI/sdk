@@ -30,6 +30,71 @@ describe('renderBlocks', () => {
     expect(btn.style.borderRadius).toBe('4px');
   });
 
+  it('brand tokens resolve tone and non-primary emphasis; bare palettes keep the neutral fallbacks', () => {
+    const tokens: SitePalette = { ...PALETTE, accent: 'rgb(225, 29, 72)', muted: 'rgb(107, 114, 128)', border: 'rgb(229, 231, 235)' };
+    const tree: BlockNode = {
+      type: 'stack',
+      direction: 'column',
+      children: [
+        { type: 'button', label: 'Compare', href: 'https://shop.example/c', emphasis: 'secondary' },
+        { type: 'text', value: 'small print', tone: 'muted' },
+        { type: 'badge', value: 'New', tone: 'accent' },
+      ],
+    };
+    const { container } = render(<div>{renderBlocks(tree, { palette: tokens })}</div>);
+    const btn = container.querySelector('a')! as HTMLAnchorElement;
+    expect(btn.style.color).toBe('rgb(225, 29, 72)');
+    expect(btn.style.border).toContain('rgb(225, 29, 72)');
+    const p = container.querySelector('p')!;
+    expect((p as HTMLElement).style.color).toBe('rgb(107, 114, 128)');
+    const badge = container.querySelector('span')! as HTMLElement;
+    expect(badge.style.color).toBe('rgb(225, 29, 72)');
+    expect(badge.style.fontWeight).toBe('600');
+    expect(badge.style.border).toContain('rgb(229, 231, 235)');
+
+    // Without tokens, the same tree keeps the pre-token neutral look.
+    const { container: bare } = render(<div>{renderBlocks(tree, { palette: PALETTE })}</div>);
+    const bareBtn = bare.querySelector('a')! as HTMLAnchorElement;
+    expect(bareBtn.style.color).toBe('inherit');
+    expect(bareBtn.style.border.toLowerCase()).toContain('currentcolor');
+    expect((bare.querySelector('p') as HTMLElement).style.opacity).toBe('0.7');
+  });
+
+  it('rung 1: raised surface, pad, divider, maxWidth mirror the snippet renderer', () => {
+    const tokens: SitePalette = {
+      ...PALETTE,
+      surface: 'rgb(243, 244, 246)', surfaceText: 'rgb(17, 24, 39)', border: 'rgb(229, 231, 235)',
+    };
+    const tree: BlockNode = {
+      type: 'stack',
+      direction: 'column',
+      surface: 'raised',
+      children: [
+        { type: 'heading', value: 'Pro plan', level: 3, maxWidth: 'measure' },
+        { type: 'divider' },
+        { type: 'text', value: 'Everything in Starter.' },
+      ],
+    };
+    const { container } = render(<div>{renderBlocks(tree, { palette: tokens })}</div>);
+    const card = container.firstElementChild!.firstElementChild as HTMLElement;
+    expect(card.style.background).toBe('rgb(243, 244, 246)');
+    expect(card.style.color).toBe('rgb(17, 24, 39)');
+    expect(card.style.border).toContain('rgb(229, 231, 235)');
+    expect(card.style.borderRadius).toBe('4px');
+    // Raised without an explicit pad defaults to md — same rule as the snippet.
+    expect(card.style.padding).toBe('16px');
+    expect((card.querySelector('h3') as HTMLElement).style.maxWidth).toBe('65ch');
+    const hr = card.querySelector('hr') as HTMLElement;
+    expect(hr.style.borderTop).toContain('rgb(229, 231, 235)');
+
+    // Without surface tokens: no color guess — hairline + radius only.
+    const { container: bare } = render(<div>{renderBlocks(tree, { palette: null })}</div>);
+    const bareCard = bare.firstElementChild!.firstElementChild as HTMLElement;
+    expect(bareCard.style.background).toBe('');
+    expect(bareCard.style.color).toBe('');
+    expect(bareCard.style.border.toLowerCase()).toContain('currentcolor');
+  });
+
   it('renders hostile text as inert literal text — never markup', () => {
     const hostile = '<img src=x onerror=alert(1)>';
     const { container } = render(<div>{renderBlocks({ type: 'text', value: hostile }, { palette: null })}</div>);

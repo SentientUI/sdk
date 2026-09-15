@@ -217,3 +217,79 @@ describe('useAdaptive â€” fireGoal and goal requirement', () => {
     errSpy.mockRestore();
   });
 });
+
+describe('useAdaptive — micro-signals (shared engine with <Adaptive>)', () => {
+  function MicroBox(props: { microSignalGoals?: Record<string, string>; tick?: number }) {
+    const { variant, value, bind } = useAdaptive('micro-box', {
+      variants: { calm: 'Calm', urgent: 'URGENT' },
+      goal: 'buy_click',
+      // Inline literal on purpose: a fresh object every render.
+      ...(props.microSignalGoals ? { microSignalGoals: { ...props.microSignalGoals } } : {}),
+    });
+    return createElement('div', { ...bind }, `${variant}:${value}:${props.tick ?? 0}`);
+  }
+
+  it('attaches no detectors (no micro_signal) before the assignment settles', async () => {
+    // The hook's micro-signal effect used to lack <Adaptive>'s settled gate: a
+    // rage-click during the interim-baseline window (variantIds[0] shown while
+    // assign() is in flight) recorded a micro_signal on an arm never served.
+    let resolveAssign!: (r: unknown) => void;
+    const client = makeClient({
+      getAssignment: vi.fn().mockReturnValue(null),
+      assign: vi.fn().mockReturnValue(new Promise((res) => { resolveAssign = res; })),
+    });
+    mockedInit.mockReturnValue(client as never);
+    let emit: ((signalType: string) => void) | undefined;
+    vi.mocked(attachMicroSignalDetectors).mockImplementation((emitter) => {
+      emit = emitter as (signalType: string) => void;
+      return () => undefined;
+    });
+
+    const { findByText } = render(createElement(MicroBox), { wrapper });
+    await findByText('calm:Calm:0');
+    expect(vi.mocked(attachMicroSignalDetectors)).not.toHaveBeenCalled();
+
+    resolveAssign({ variantId: 'urgent', assignmentTtlMs: 0 });
+    await findByText('urgent:URGENT:0');
+    await waitFor(() => expect(vi.mocked(attachMicroSignalDetectors)).toHaveBeenCalled());
+
+    emit!('rage_click');
+    const micro = client.track.mock.calls.filter(
+      (call: unknown[]) => (call[0] as Record<string, unknown>).eventType === 'micro_signal',
+    );
+    expect(micro).toHaveLength(1);
+    expect(micro[0]![0]).toMatchObject({ componentId: 'micro-box', variantId: 'urgent' });
+  });
+
+  it('records a mapped named goal once per variant via microSignalGoals', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    let emit: ((signalType: string, extra?: Record<string, unknown>) => void) | undefined;
+    vi.mocked(attachMicroSignalDetectors).mockImplementation((emitter) => {
+      emit = emitter as typeof emit;
+      return () => undefined;
+    });
+
+    render(createElement(MicroBox, { microSignalGoals: { rage_click: 'confused_by_buy_box' } }), { wrapper });
+    emit!('rage_click');
+    emit!('rage_click');
+    emit!('text_copy', { selectionLength: 3 });
+
+    expect(client.goal).toHaveBeenCalledTimes(1);
+    expect(client.goal).toHaveBeenCalledWith('confused_by_buy_box', {
+      metadata: { signalType: 'rage_click' }, weight: 1.0, stepIndex: 0,
+    });
+  });
+
+  it('does not re-attach detectors when an inline microSignalGoals literal re-renders', () => {
+    // attachMicroSignalDetectors latches each signal once per attach; keying the
+    // effect on mapping identity re-attached every render and re-emitted signals.
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const goals = { rage_click: 'confused_by_buy_box' };
+    const { rerender, getByText } = render(createElement(MicroBox, { microSignalGoals: goals, tick: 0 }), { wrapper });
+    rerender(createElement(MicroBox, { microSignalGoals: goals, tick: 1 }));
+    expect(getByText('calm:Calm:1')).toBeTruthy();
+    expect(vi.mocked(attachMicroSignalDetectors)).toHaveBeenCalledTimes(1);
+  });
+});

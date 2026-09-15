@@ -5,7 +5,13 @@ import { AdaptiveProvider, useSentient } from './provider.js';
 import { init } from '@sentientui/core';
 import { init as initGraph } from '@sentientui/core/graph';
 
-vi.mock('@sentientui/core', () => ({ init: vi.fn() }));
+vi.mock('@sentientui/core', () => ({
+  init: vi.fn(),
+  // AdaptiveSlot imports `reveal` from core (the adaptation reveal). These
+  // mocks are deliberately minimal — they exist so the suite never loads real
+  // core — so every core import the component tree makes has to be listed here.
+  reveal: vi.fn(),
+}));
 vi.mock('@sentientui/core/graph', () => ({ init: vi.fn() }));
 vi.mock('@sentientui/core/engagement', () => ({ startEngagementCapture: vi.fn() }));
 
@@ -299,6 +305,30 @@ describe('AdaptiveProvider — engagement capture', () => {
       client,
       expect.objectContaining({ apiKey: 'pk_test_key_1234' }),
     );
+  });
+
+  it('hands the same sectionTypes map to the graph scanner and to capture', async () => {
+    // Both consumers type sections independently; handing the map to only one
+    // would let graph_nodes and the section map disagree about the same element.
+    const client = makeClient();
+    mockedInitGraph.mockReturnValue(client as ReturnType<typeof init>);
+    mockedStartEngagement.mockReturnValue(vi.fn());
+    const sectionTypes = { about: 'trust', contact: 'cta' } as const;
+
+    renderHook(() => useSentient(), {
+      wrapper: ({ children }) =>
+        createElement(AdaptiveProvider, {
+          apiKey: 'pk_test_key_1234',
+          context: 'saas',
+          consent: true,
+          sectionTypes,
+          children,
+        }),
+    });
+
+    await waitFor(() => expect(mockedStartEngagement).toHaveBeenCalled());
+    expect(mockedInitGraph).toHaveBeenCalledWith(expect.objectContaining({ sectionTypes }));
+    expect(mockedStartEngagement).toHaveBeenCalledWith(client, expect.objectContaining({ sectionTypes }));
   });
 
   it('does not start engagement when engagement={false}', async () => {

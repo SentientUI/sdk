@@ -57,6 +57,13 @@ describe('AdaptiveDevtools — variants (existing behavior preserved)', () => {
   });
 });
 
+/** Preview an arbitrary key through the free-text field — the panel no longer
+ *  ships persona buttons of its own (the seeded four were removed 2026-09-13). */
+function previewKey(key: string): void {
+  fireEvent.change(screen.getByLabelText('Persona key'), { target: { value: key } });
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+}
+
 describe('AdaptiveDevtools — local mode', () => {
   it('shows the banner, forces a persona through the local engine, applies everything, never fetches', async () => {
     document.cookie = '_snt_uid=devtools-sess';
@@ -71,16 +78,18 @@ describe('AdaptiveDevtools — local mode', () => {
     openPanel();
     expect(screen.getByText('Local mode — decisions are simulated; add a key to learn from real traffic')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Buyer' }));
+    // No vocabulary in local mode: only `unknown` is offered as a button.
+    expect(screen.getByRole('button', { name: 'Unknown' })).toBeTruthy();
+    previewKey('admin');
     await vi.waitFor(() =>
-      expect(document.documentElement.dataset.sentientPersona).toBe('buyer'),
+      expect(document.documentElement.dataset.sentientPersona).toBe('admin'),
     );
     expect(document.documentElement.dataset.sentientConfidence).toBe('medium');
     expect(w.__sentient_slot_overrides?.hero).toEqual({
-      tone: pickDeterministicArm('devtools-sess:buyer', 'hero.tone', ['calm', 'urgent']),
+      tone: pickDeterministicArm('devtools-sess:admin', 'hero.tone', ['calm', 'urgent']),
     });
     expect(w.__sentient_slot_overrides?.['pricing-area']).toBe(
-      pickDeterministicArm('devtools-sess:buyer', 'pricing-area', ['standard', 'social_first']),
+      pickDeterministicArm('devtools-sess:admin', 'pricing-area', ['standard', 'social_first']),
     );
     expect(getOverrides().hero_cta).toBe(pickDeterministicArm('devtools-sess', 'hero_cta', ['a', 'b']));
     expect(getPreviewMode()).toBe(true);
@@ -154,8 +163,8 @@ describe('AdaptiveDevtools — keyed mode', () => {
     registerSlot({ id: 'hero', dims: { tone: ['calm', 'urgent'] } });
     registerSections(['hero', 'pricing']);
     const fetchMock = vi.fn(async (url: string) => {
-      // Mount also fetches /personas now — answer it with nothing so the
-      // panel keeps the pinned-four fallback this test clicks through.
+      // Mount also fetches /personas now — answer it with nothing, so the
+      // panel has no vocabulary and the key goes through the free-text field.
       if (String(url).endsWith('/personas')) return { ok: false, json: async () => ({}) };
       return {
         ok: true,
@@ -163,7 +172,7 @@ describe('AdaptiveDevtools — keyed mode', () => {
           assignments: { hero_cta: 'b' },
           layoutOrder: ['pricing', 'hero'],
           slots: { hero: { tone: 'urgent' } },
-          personaAttributes: { persona: 'buyer', confidence: 'high' },
+          personaAttributes: { persona: 'admin', confidence: 'high' },
         }),
       };
     }) as unknown as typeof fetch;
@@ -171,7 +180,7 @@ describe('AdaptiveDevtools — keyed mode', () => {
 
     render(<AdaptiveDevtools />);
     openPanel();
-    fireEvent.click(screen.getByRole('button', { name: 'Buyer' }));
+    previewKey('admin');
 
     await vi.waitFor(() => expect(getOverrides().hero_cta).toBe('b'));
     const call = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls
@@ -180,16 +189,16 @@ describe('AdaptiveDevtools — keyed mode', () => {
     const [url, init] = call;
     expect(url).toBe('https://api.example.com/v1/explain');
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-    expect(body.persona).toBe('buyer');
+    expect(body.persona).toBe('admin');
     expect(body.sections).toEqual([{ id: 'hero' }, { id: 'pricing' }]);
     expect(body.slots).toEqual([{ id: 'hero', dims: { tone: ['calm', 'urgent'] } }]);
     expect(w.__sentient_layout_override).toEqual(['pricing', 'hero']);
     expect(w.__sentient_slot_overrides?.hero).toEqual({ tone: 'urgent' });
-    expect(document.documentElement.dataset.sentientPersona).toBe('buyer');
+    expect(document.documentElement.dataset.sentientPersona).toBe('admin');
     expect(document.documentElement.dataset.sentientConfidence).toBe('high');
   });
 
-  it("renders the project's OWN vocabulary from /v1/personas in place of the pinned four", async () => {
+  it("renders the project's OWN vocabulary from /v1/personas, and invents none", async () => {
     w.__sentient_devtools_config = { apiKey: 'pk_test', apiBaseUrl: 'https://api.example.com/v1', isLocal: false };
     const fetchMock = vi.fn(async (url: string) => {
       if (String(url).endsWith('/personas')) {
@@ -210,11 +219,11 @@ describe('AdaptiveDevtools — keyed mode', () => {
 
     render(<AdaptiveDevtools />);
     openPanel();
-    // Personas are per-project (persona_sets) — a promoted/custom vocabulary
-    // must replace the pinned-four buttons, not sit behind them.
+    // Personas are per-project (persona_sets): the buttons are exactly the
+    // project's vocabulary plus `unknown`.
     await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Contractor' })).toBeTruthy());
     expect(screen.getByRole('button', { name: 'Homeowner' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Buyer' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Unknown' })).toBeTruthy();
     // Discovered shadow personas are DISPLAY-ONLY: shadow sets never serve
     // until promotion, so there is no button to force one.
     expect(screen.getByText('Weekend browser')).toBeTruthy();
@@ -240,10 +249,10 @@ describe('AdaptiveDevtools — keyed mode', () => {
 
     render(<AdaptiveDevtools />);
     openPanel();
-    fireEvent.click(screen.getByRole('button', { name: 'Buyer' }));
+    previewKey('staff');
 
     // The page attributes carry the RESOLVED state (unknown/low), and the
-    // panel explains it — a silently highlighted "Buyer" was the old lie.
+    // panel explains it — a silently highlighted button was the old lie.
     await vi.waitFor(() =>
       expect(screen.getByText(/isn’t in this project’s personas/)).toBeTruthy(),
     );

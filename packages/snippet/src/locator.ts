@@ -1,4 +1,4 @@
-import type { CompoundLocator } from '@sentientui/core';
+import { PAGE_SCOPE_RE, pageScopeMatches, type CompoundLocator } from '@sentientui/core';
 
 // Compound-locator resolution (Phase 3). Resolve id → dataAttr → selector, then
 // verify against the fingerprint. Zero matches, multiple matches, or a
@@ -46,10 +46,9 @@ export function isUrlScopedOut(loc: CompoundLocator | undefined, doc: Document):
 // only ident chars, no selector metacharacters. All real names are `data-*`.
 const SAFE_ATTR_NAME = /^[a-zA-Z_][-a-zA-Z0-9_]*$/;
 
-/** Resolve a compound locator to exactly one element, or null. */
-export function resolveLocatorOne(loc: CompoundLocator, doc: Document): Element | null {
-  if (loc.urlMatch && !pathname(doc).includes(loc.urlMatch)) return null;
-
+/** Every element the locator's id → dataAttr → selector chain finds, before
+ *  the uniqueness and fingerprint checks. */
+function candidatesOf(loc: CompoundLocator, doc: Document): Element[] {
   let candidates: Element[] = [];
   if (loc.id) {
     const el = doc.getElementById(loc.id);
@@ -70,9 +69,66 @@ export function resolveLocatorOne(loc: CompoundLocator, doc: Document): Element 
       candidates = [];
     }
   }
+  return candidates;
+}
 
+/** Resolve a compound locator to exactly one element, or null. */
+export function resolveLocatorOne(loc: CompoundLocator, doc: Document): Element | null {
+  if (loc.urlMatch && !pathname(doc).includes(loc.urlMatch)) return null;
+  const candidates = candidatesOf(loc, doc);
   if (candidates.length !== 1) return null; // zero or ambiguous → no change
   const el = candidates[0]!;
   if (loc.fingerprint && !fingerprintMatches(el, loc.fingerprint)) return null;
   return el;
+}
+
+/**
+ * Whether a published component is ON this page for deciding purposes (the
+ * page-scoped decide only asks the server about ids that are).
+ *
+ * A compound locator must resolve to exactly one element, as apply() will.
+ * A bare selector — what the server synthesizes (`{ selector: target }`) for
+ * a legacy Phase-2 string target — keeps Phase-2 semantics: apply() writes
+ * EVERY match for that target (declTargets), so any match is "on". Holding it
+ * to exactly-one silently stopped serving every legacy component whose
+ * selector matched more than one element (`.cta` on a page with three CTAs)
+ * — never decided, never applied, and never a miss either since it is
+ * unscoped.
+ */
+export function locatorOnPage(loc: CompoundLocator, doc: Document): boolean {
+  if (isUrlScopedOut(loc, doc)) return false;
+  const bare = !!loc.selector && !loc.dataAttr && !loc.id && !loc.fingerprint && loc.page === undefined;
+  return bare ? locatorCandidateExists(loc, doc) : resolveLocatorOne(loc, doc) !== null;
+}
+
+/** True when the locator finds at least one element that resolveLocatorOne
+ *  then REJECTS (ambiguous, or the fingerprint no longer matches). That is a
+ *  broken locator on whatever page it happens — the element is visibly there
+ *  and we refused it — unlike plain absence, which is only a miss where the
+ *  component is expected (see isLocatorMiss). */
+export function locatorCandidateExists(loc: CompoundLocator, doc: Document): boolean {
+  return candidatesOf(loc, doc).length > 0;
+}
+
+/**
+ * Whether an UNRESOLVED locator is a health miss (the /v1/locator-miss feed that
+ * auto-suspends a component). Call only after resolveLocatorOne returned null.
+ *
+ * Absence used to be reported unconditionally, so on a multi-page site a
+ * component living only on /pricing collected a miss from every other page view
+ * and was suspended as "element not found" while working. Now:
+ *  - URL-scoped to another page (urlMatch) → silent, as before;
+ *  - page-scoped (`page`) to ANOTHER path → silent, whatever the selector
+ *    finds here. A scoped component with a generic selector (`h1`, `.hero`)
+ *    used to collect a "candidate rejected" miss from every page that had one
+ *    such element — the very false-suspension the scope exists to prevent;
+ *  - page-scoped to THIS path and absent → miss;
+ *  - unscoped: a candidate exists but was rejected → miss on any page;
+ *  - otherwise (an unscoped component simply not on this page) → not a miss.
+ */
+export function isLocatorMiss(loc: CompoundLocator, doc: Document): boolean {
+  if (isUrlScopedOut(loc, doc)) return false;
+  const scoped = loc.page !== undefined && PAGE_SCOPE_RE.test(loc.page);
+  if (scoped) return pageScopeMatches(loc.page, pathname(doc));
+  return locatorCandidateExists(loc, doc);
 }

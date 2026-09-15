@@ -9,7 +9,7 @@ type Snap = Record<string, unknown>;
 function snapshot(over: Snap = {}): Snap {
   return {
     v: 1,
-    persona: 'deal_seeker',
+    persona: 'trial_user',
     band: 'high',
     slots: {},
     layoutOrder: null,
@@ -139,7 +139,7 @@ describe('gates — each one produces no __sntPP and no attributes', () => {
     }
   });
 
-  for (const param of ['sentient_editor=tok', 'sentient_preview=hero:urgent', 'sentient_persona=buyer']) {
+  for (const param of ['sentient_editor=tok', 'sentient_preview=hero:urgent', 'sentient_persona=admin']) {
     it(`?${param}`, () => {
       history.replaceState(null, '', `/?${param}`);
       seed({ apiKey: KEY, personaAttributes: true }, snapshot());
@@ -163,7 +163,7 @@ describe('persona attributes', () => {
   it('stamps <html> when personaAttributes is on, and records what it set', () => {
     seed({ apiKey: KEY, personaAttributes: true }, snapshot());
     run();
-    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('deal_seeker');
+    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('trial_user');
     expect(document.documentElement.getAttribute('data-sentient-confidence')).toBe('high');
     expect(pp()!.html).toEqual(['data-sentient-persona', 'data-sentient-confidence']);
   });
@@ -176,10 +176,10 @@ describe('persona attributes', () => {
   });
 
   it('never overwrites an attribute an SSR pass already set (single writer)', () => {
-    document.documentElement.setAttribute('data-sentient-persona', 'researcher');
+    document.documentElement.setAttribute('data-sentient-persona', 'evaluator');
     seed({ apiKey: KEY, personaAttributes: true }, snapshot());
     run();
-    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('researcher');
+    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('evaluator');
     expect(pp()!.html).toEqual([]);
   });
 });

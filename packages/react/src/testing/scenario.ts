@@ -9,7 +9,7 @@ export type ScenarioApiOverride =
 export type SentientScenario = {
   variants?: Record<string, string>;
   layout?: string[];
-  /** Forced persona (canonical PersonaKey). Also sets the persona html attributes. */
+  /** Forced persona key (any project vocabulary key). Also sets the persona html attributes. */
   persona?: string;
   /** Persona confidence 0–1; buckets to low/medium/high for the html attribute. Default 1. */
   confidence?: number;

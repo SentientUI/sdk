@@ -120,7 +120,11 @@ export function useAdaptiveTokens(
     // exposure — recording it would train the optimizer on the override, the
     // same "no events, weights unchanged" contract <Adaptive> honors for
     // component overrides.
-    if (!client || source === 'baseline' || source === 'override' || exposedArmRef.current === arm) return;
+    // `seeded` is the core holding a snapshot arm or a failure baseline: it
+    // renders, but no slot_decisions row exists for it this session, so an
+    // impression would train an arm the server never served — and a failed
+    // decide batch used to yield one phantom baseline exposure per slot.
+    if (!client || source === 'baseline' || source === 'seeded' || source === 'override' || exposedArmRef.current === arm) return;
     exposedArmRef.current = arm;
     trackExposure(client, apiKey, id, arm);
   }, [client, apiKey, id, arm, source]);
@@ -142,7 +146,7 @@ export function useAdaptiveTokens(
     // source never recorded an impression (see the exposure effect above) — a
     // conversion attached in that state would attribute to an arm with zero
     // exposures. Same source gates as the exposure.
-    if (!client || !opts?.goal || source === 'override' || source === 'baseline') return;
+    if (!client || !opts?.goal || source === 'override' || source === 'baseline' || source === 'seeded') return;
     const node = document.querySelector(`[data-sentient-slot="${cssEscape(id)}"]`);
     if (!node) {
       if (isDevBuild()) {

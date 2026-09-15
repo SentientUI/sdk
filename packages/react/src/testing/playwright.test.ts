@@ -71,10 +71,10 @@ describe('mockSentient — slots + persona (adaptive ladder)', () => {
     };
     await mockSentient(page as never, {
       slots: { hero: { tone: 'urgent' } },
-      persona: 'buyer',
+      persona: 'admin',
       confidence: 0.9,
     });
-    expect(initArg).toMatchObject({ slots: { hero: { tone: 'urgent' } }, persona: 'buyer', confidence: 0.9 });
+    expect(initArg).toMatchObject({ slots: { hero: { tone: 'urgent' } }, persona: 'admin', confidence: 0.9 });
 
     const decide = fakeRoute(
       'POST',
@@ -84,6 +84,6 @@ describe('mockSentient — slots + persona (adaptive ladder)', () => {
     await routeHandler(decide.route);
     const body = JSON.parse(decide.calls.fulfill!.body!) as Record<string, unknown>;
     expect(body.slots).toEqual({ hero: { tone: 'urgent' } });
-    expect(body.persona).toBe('buyer');
+    expect(body.persona).toBe('admin');
   });
 });

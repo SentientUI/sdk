@@ -9,6 +9,10 @@ vi.mock('../server.js', () => ({
 }));
 vi.mock('./adaptive-root-client.js', () => ({ AdaptiveRootClient: vi.fn(() => null) }));
 vi.mock('@sentientui/core', () => ({
+  // AdaptiveSlot imports `reveal` from core. These mocks are deliberately
+  // minimal — they exist so the suite never loads real core — so every core
+  // import the rendered tree makes has to be listed here.
+  reveal: vi.fn(),
   deriveSessionSegment: vi.fn(() => 'desktop:direct'),
   extractTrackedParams: vi.fn(() => ({ utmParams: {}, clickIds: {} })),
   renderPrePaintScript: vi.fn(() => '/* snapshot pre-paint */'),
@@ -22,7 +26,7 @@ vi.mock('./log-agent-fetch.js', () => ({ logAgentFetch: vi.fn() }));
 import { headers, cookies } from 'next/headers';
 import { loadAdaptiveAssignments, loadAdaptiveDecision } from '../server.js';
 import { AdaptiveRootClient } from './adaptive-root-client.js';
-import { AdaptiveRoot } from './adaptive-root.js';
+import { AdaptiveRoot, type AdaptiveRootProps } from './adaptive-root.js';
 import { logAgentFetch } from './log-agent-fetch.js';
 
 const mockedLog = vi.mocked(logAgentFetch);
@@ -273,7 +277,7 @@ describe('AdaptiveRoot — persona script + slots (adaptive ladder)', () => {
       assignments: {},
       layoutOrder: ['hero'],
       slots: { hero: { tone: 'urgent' } },
-      persona: 'buyer',
+      persona: 'admin',
       confidence: 0.8,
       sessionId: 'sess-3',
     } as never);
@@ -301,7 +305,40 @@ describe('AdaptiveRoot — persona script + slots (adaptive ladder)', () => {
     expect(mockedDecision.mock.calls[0]![0]).toMatchObject({ slots: SLOTS, sections: [] });
     const client = clientEl(el as never);
     expect(client.props.initialSlots).toEqual({ hero: { tone: 'urgent' } });
-    expect(client.props.initialPersona).toEqual({ persona: 'buyer', confidence: 0.8 });
+    expect(client.props.initialPersona).toEqual({ persona: 'admin', confidence: 0.8 });
+  });
+
+  it('decides registry slots server-side and preloads slotConfig/palette into the provider', async () => {
+    // loadAdaptiveDecision accepted registrySlotIds long before AdaptiveRoot
+    // passed them, so generated-mode <Adaptive id> regions rendered their
+    // original children on first paint until the client decide answered.
+    mockedDecision.mockResolvedValue({
+      assignments: {},
+      layoutOrder: [],
+      slots: {},
+      slotConfig: { 'hero-headline': { target: 'text', kind: 'text', content: 'Hi' } },
+      palette: { primary: '#000' },
+      persona: 'admin',
+      confidence: 0.8,
+      sessionId: 'sess-1',
+    } as never);
+    const el = await AdaptiveRoot(baseProps({ registrySlotIds: ['hero-headline'], appOrigin: 'https://x.com' }));
+    expect(mockedDecision).toHaveBeenCalledOnce();
+    expect(mockedAssign).not.toHaveBeenCalled();
+    expect(mockedDecision.mock.calls[0]![0]).toMatchObject({
+      slotsFrom: 'registry',
+      registrySlotIds: ['hero-headline'],
+    });
+    const client = clientEl(el as never);
+    expect(client.props.initialSlotConfig).toEqual({ 'hero-headline': { target: 'text', kind: 'text', content: 'Hi' } });
+    expect(client.props.initialPalette).toEqual({ primary: '#000' });
+  });
+
+  it('never sends slotsFrom: registry without ids (an unscoped decide trials every published slot)', async () => {
+    await AdaptiveRoot(baseProps({ registrySlotIds: [], slots: SLOTS, appOrigin: 'https://x.com' }));
+    expect(mockedDecision).toHaveBeenCalledOnce();
+    expect(mockedDecision.mock.calls[0]![0]).not.toHaveProperty('slotsFrom');
+    expect(mockedDecision.mock.calls[0]![0]).not.toHaveProperty('registrySlotIds');
   });
 
   it('uses the decide path when only slots are declared (no sections)', async () => {
@@ -318,7 +355,7 @@ describe('AdaptiveRoot — persona script + slots (adaptive ladder)', () => {
              String((c as { props?: { dangerouslySetInnerHTML?: { __html?: string } } }).props?.dangerouslySetInnerHTML?.__html ?? '').includes('data-sentient-persona'),
     );
     expect(scripts).toHaveLength(1); // single writer
-    expect(String((scripts[0] as unknown as { props: { dangerouslySetInnerHTML: { __html: string } } }).props.dangerouslySetInnerHTML.__html)).toContain('"buyer"');
+    expect(String((scripts[0] as unknown as { props: { dangerouslySetInnerHTML: { __html: string } } }).props.dangerouslySetInnerHTML.__html)).toContain('"admin"');
   });
 });
 
@@ -436,13 +473,15 @@ describe('AdaptiveRoot — server-resolved consentFrom', () => {
     expect(mockedDecision).not.toHaveBeenCalled();
   });
 
-  // A predicate runs in the browser and cannot be evaluated here.
-  it('stays gated for a check()-only source even if some cookie exists', async () => {
-    mockedCookies.mockResolvedValue(cookieStore({ cookie_consent: 'accepted' }));
-    await AdaptiveRoot(
-      baseProps({ consentFrom: { check: () => true, event: 'e' }, sections: ['hero'] }),
-    );
-    expect(mockedDecision).not.toHaveBeenCalled();
+  // A predicate would have to cross the server→client boundary, which throws at
+  // render; the type rejects it so it can never reach this component.
+  it('rejects a check() source at the type level', () => {
+    const consentFrom: AdaptiveRootProps['consentFrom'] = {
+      // @ts-expect-error — function props cannot cross the RSC boundary
+      check: () => true,
+      event: 'e',
+    };
+    expect(consentFrom).toBeDefined();
   });
 
   it('lets an explicit consent prop win over the cookie', async () => {

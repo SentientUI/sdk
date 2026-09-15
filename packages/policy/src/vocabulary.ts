@@ -1,10 +1,9 @@
-import { PERSONAS, PERSONA_DISPLAY, UNKNOWN_PERSONA, LEGACY_PERSONA_MAP, canonicalPersona } from './personas';
+import { UNKNOWN_PERSONA } from './personas';
 
 /**
  * Per-project persona vocabularies (spec: 2026-08-27-declared-personas-design.md).
  *
- * The persona axis stops being the closed global union in `personas.ts` and
- * becomes a per-project member list (persona_sets / persona_set_members,
+ * The persona axis is a per-project member list (persona_sets / persona_set_members,
  * migration 113). This module owns resolution: which persona a decision is
  * keyed on, given what the customer's app declared and what clustering
  * inferred. The weight tables and pooling are already string-generic —
@@ -43,19 +42,33 @@ export function normalizeDeclaredPersona(raw: string | null | undefined): string
 }
 
 /**
- * Keys no vocabulary member may claim. 'unknown' and '__all__' are structural
- * in weightCellsFor / CONTRACTS §4; the plural forms are pre-069 legacy labels
- * that canonicalPersona still remaps, so a member claiming one would be
- * silently rewritten at resolve time. MUST stay in sync with migration 113.
+ * Keys no vocabulary member may claim: 'unknown' and '__all__' are structural
+ * in weightCellsFor / CONTRACTS §4. MUST stay in sync with the CHECK constraint
+ * on persona_set_members.key (migration 113, relaxed by 153).
+ *
+ * This also reserved four plural labels until 2026-09-13, because the
+ * name-specific alias map that remapped them at resolve time would have
+ * silently rewritten a member claiming one. That map went with the seeded
+ * personas, so those strings are ordinary keys now.
  */
-export const RESERVED_PERSONA_KEYS: readonly string[] = [
-  'unknown',
-  '__all__',
-  'buyers',
-  'researchers',
-  'deal-seekers',
-  'browsers',
-];
+export const RESERVED_PERSONA_KEYS: readonly string[] = ['unknown', '__all__'];
+
+/**
+ * Canonicalizes any persona/cluster label to a persona KEY: trimmed,
+ * lowercased, and shaped like one (`PERSONA_KEY_RE`). Null, empty, and
+ * anything that could never be a key become 'unknown' — "we don't know" is
+ * always a safe answer.
+ *
+ * Generic on purpose. This used to be a lookup in a table of four seeded
+ * persona names, so every OTHER label — including every key a customer
+ * declared — folded to 'unknown': a registry pin scoped to `admin` was stored
+ * under 'unknown' and then applied to every unidentified visitor. It says
+ * nothing about membership; callers that serve must still check the project's
+ * vocabulary (resolvePersona does).
+ */
+export function canonicalPersona(label: string | null | undefined): string {
+  return normalizeDeclaredPersona(label) ?? UNKNOWN_PERSONA;
+}
 
 export type PersonaVocabularyMember = {
   key: string;
@@ -67,13 +80,36 @@ export type PersonaVocabularyMember = {
 };
 
 /**
- * The pinned four as a vocabulary — what every project's version-1 default set
- * contains, and the fallback when a project has no active set (a missed
- * app-code insert degrades to today's behaviour, never an error).
+ * The vocabulary a project has when it has declared nothing: EMPTY.
+ *
+ * This shipped as a hardcoded four seeded personas, which the product then
+ * presented as if it knew the customer's audience.
+ * Earned rows (2026-09-12) demoted them to a `starter` state; this removes them.
+ *
+ * The measurement that settled it, across all of production history:
+ * `unknown` served 10,882 decisions, the four seeded personas served **18
+ * between them**. They were not a taxonomy, they were decoration on an axis
+ * that was 99.8% empty — and every one of them was an assertion about visitors
+ * nobody had met.
+ *
+ * A persona now has exactly two honest origins:
+ *
+ *   - **declared** — the customer's own code tells us (a role, a plan tier).
+ *     Ground truth; no evidence gate, because eligibility is their decision.
+ *   - **discovered** — `persona-discovery.ts` finds it in real behaviour and it
+ *     clears the interaction gate (the RANKING of arms must differ inside vs
+ *     outside the segment, not merely the conversion rate).
+ *
+ * Everything else resolves to `unknown`, which is where day-0 value accrues and
+ * where the pooled bandit has always done the actual work.
+ *
+ * THIS IS ONLY SAFE BECAUSE SERVING NO LONGER NEEDS A PERSONA. The factored
+ * model (migration 149) conditions on device, source and visit count as
+ * first-class factors — measured, not guessed — so a project with no personas
+ * still adapts per visitor. Before that landed, emptying this would have meant
+ * no personalization at all.
  */
-export const DEFAULT_PERSONA_VOCABULARY: readonly PersonaVocabularyMember[] = PERSONAS.map(
-  (key) => ({ key, displayName: PERSONA_DISPLAY[key] }),
-);
+export const DEFAULT_PERSONA_VOCABULARY: readonly PersonaVocabularyMember[] = [];
 
 export type PersonaResolution = {
   /** Vocabulary key, or 'unknown'. This is what decisions/weights key on. */
@@ -118,8 +154,7 @@ function buildLookup(members: readonly PersonaVocabularyMember[]): Lookup {
  * Resolves the persona a decision is keyed on.
  *
  * Precedence, in order:
- * 1. Declared value matching an active member (directly, via alias, or via a
- *    legacy plural label whose canonical form is a member) → that key,
+ * 1. Declared value matching an active member (directly or via alias) → that key,
  *    confidence 1. Declared skips reliability gating: it is ground truth from
  *    the customer's app, the same trust level as everything else the pk_ key
  *    sends.
@@ -144,17 +179,14 @@ export function resolvePersona(
   let unrecognizedDeclared: string | undefined;
   const declaredRaw = input.declared?.trim().toLowerCase() ?? '';
   if (declaredRaw !== '') {
-    // Direct/alias hit first; then the legacy plural map, gated on the
-    // canonical form actually being a member ('buyers' works iff 'buyer' does).
-    const direct = lookup.get(declaredRaw);
-    const viaLegacy = direct === undefined ? lookup.get(canonicalPersona(declaredRaw)) : undefined;
-    const match = direct ?? viaLegacy;
+    const match = lookup.get(declaredRaw);
     if (match !== undefined) {
       return { persona: match, source: 'declared', confidence: 1 };
     }
     unrecognizedDeclared = declaredRaw.slice(0, UNRECOGNIZED_MAX_LEN);
   }
 
+  // Membership is what gates serving; canonicalPersona only shapes the key.
   const inferred = canonicalPersona(input.clusterLabel);
   if (inferred !== UNKNOWN_PERSONA && lookup.has(inferred)) {
     return { persona: lookup.get(inferred)!, source: 'inferred', confidence: inferredConfidence, ...(unrecognizedDeclared !== undefined && { unrecognizedDeclared }) };
@@ -167,14 +199,16 @@ export function resolvePersona(
  * Normalizes a DECISION-TIME persona (slot_decisions / layout_decisions rows)
  * for training. Unlike `canonicalPersona`, this trusts the stored value
  * verbatim: it was validated against the project vocabulary when the decision
- * was written, and re-squashing it through the closed global union at close-out
+ * was written, and re-squashing it through a closed global union at close-out
  * silently rerouted every declared-persona trial onto the 'unknown' marginals
- * (the double-squash bug, spec §4.3). Only the legacy plural labels are still
- * remapped — pre-069 rows carry them.
+ * (the double-squash bug, spec §4.3).
+ *
+ * It also remapped four pre-069 plural labels until 2026-09-13; migration 069
+ * had already rewritten those rows, and the remap was keyed on the retired
+ * seeded names, so it went with them.
  */
 export function decisionPersona(label: string | null | undefined): string {
   if (label == null) return UNKNOWN_PERSONA;
   const normalized = label.trim().toLowerCase();
-  if (normalized === '') return UNKNOWN_PERSONA;
-  return LEGACY_PERSONA_MAP[normalized] ?? normalized;
+  return normalized === '' ? UNKNOWN_PERSONA : normalized;
 }

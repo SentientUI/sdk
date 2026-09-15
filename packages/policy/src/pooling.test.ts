@@ -85,7 +85,7 @@ describe('pooledPosterior — shrinkage behavior', () => {
 // used a child larger than its own global row, which cannot happen in
 // production — and that gap is what let STAT-01 survive review.
 describe('pooledPosterior — with global as the sum of its children (real write shape)', () => {
-  // One arm: a 'buyer'/'desktop:organic' cell truly converting at 20%, inside a
+  // One arm: a 'admin'/'desktop:organic' cell truly converting at 20%, inside a
   // project whose other traffic converts at 2%.
   const child = c(2_000, 400);
   const seg = c(20_000, 400 + 18_000 * 0.02);
@@ -121,10 +121,10 @@ describe('pooledPosterior — with global as the sum of its children (real write
 
 describe('weightCellsFor', () => {
   it('known persona → 4 cells (child, segment marginal, persona marginal, global)', () => {
-    expect(weightCellsFor('desktop:organic', 'buyer')).toEqual([
-      { segment: 'desktop:organic', persona: 'buyer' },
+    expect(weightCellsFor('desktop:organic', 'admin')).toEqual([
+      { segment: 'desktop:organic', persona: 'admin' },
       { segment: 'desktop:organic', persona: POOL_ALL },
-      { segment: POOL_ALL, persona: 'buyer' },
+      { segment: POOL_ALL, persona: 'admin' },
       { segment: POOL_ALL, persona: POOL_ALL },
     ]);
   });
@@ -158,16 +158,16 @@ describe('broadestValueCell', () => {
   });
 
   it('a lone child row is the broadest row present', () => {
-    expect(broadestValueCell([row('desktop:organic', 'buyer', 120, 3)]))
+    expect(broadestValueCell([row('desktop:organic', 'admin', 120, 3)]))
       .toEqual({ valueSum: 120, valueCount: 3 });
   });
 
   it('a marginal (rank 2) beats the child (rank 1) regardless of row order', () => {
-    const child = row('desktop:organic', 'buyer', 40, 1);
+    const child = row('desktop:organic', 'admin', 40, 1);
     const segMarginal = row('desktop:organic', POOL_ALL, 100, 2);
     expect(broadestValueCell([child, segMarginal])).toEqual({ valueSum: 100, valueCount: 2 });
     expect(broadestValueCell([segMarginal, child])).toEqual({ valueSum: 100, valueCount: 2 });
-    const perMarginal = row(POOL_ALL, 'buyer', 90, 2);
+    const perMarginal = row(POOL_ALL, 'admin', 90, 2);
     expect(broadestValueCell([child, perMarginal])).toEqual({ valueSum: 90, valueCount: 2 });
   });
 
@@ -176,17 +176,17 @@ describe('broadestValueCell', () => {
     // what must NOT happen is the second overwriting the first (>=) and the
     // choice silently depending on SQL row order in a way `>` does not.
     const segMarginal = row('desktop:organic', POOL_ALL, 100, 4);
-    const perMarginal = row(POOL_ALL, 'buyer', 60, 2);
+    const perMarginal = row(POOL_ALL, 'admin', 60, 2);
     expect(broadestValueCell([segMarginal, perMarginal])).toEqual({ valueSum: 100, valueCount: 4 });
     expect(broadestValueCell([perMarginal, segMarginal])).toEqual({ valueSum: 60, valueCount: 2 });
   });
 
   it('the global row (rank 3) beats marginals and child, wherever it sits', () => {
     const rows = [
-      row('desktop:organic', 'buyer', 40, 1),
+      row('desktop:organic', 'admin', 40, 1),
       row('desktop:organic', POOL_ALL, 100, 2),
       row(POOL_ALL, POOL_ALL, 200, 5),
-      row(POOL_ALL, 'buyer', 90, 2),
+      row(POOL_ALL, 'admin', 90, 2),
     ];
     expect(broadestValueCell(rows)).toEqual({ valueSum: 200, valueCount: 5 });
     expect(broadestValueCell([...rows].reverse())).toEqual({ valueSum: 200, valueCount: 5 });
@@ -202,9 +202,9 @@ describe('broadestValueCell', () => {
     // order landed in all four cells, so a sum reads 40 orders / 3200 — the
     // 4x inflation that detached EV shrinkage at ~5 orders instead of K=20.
     const rows = [
-      row('desktop:organic', 'buyer', 800, 10),
+      row('desktop:organic', 'admin', 800, 10),
       row('desktop:organic', POOL_ALL, 800, 10),
-      row(POOL_ALL, 'buyer', 800, 10),
+      row(POOL_ALL, 'admin', 800, 10),
       row(POOL_ALL, POOL_ALL, 800, 10),
     ];
     const got = broadestValueCell(rows);

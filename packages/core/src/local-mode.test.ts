@@ -4,7 +4,7 @@ import {
   __resetLocalModeLogGuards,
   LOCAL_MODE_BANNER,
 } from './local-mode.js';
-import { PERSONAS, fnv1a, pickDeterministicArm, confidenceBand } from '@sentientui/policy';
+import { pickDeterministicArm, confidenceBand } from '@sentientui/policy';
 
 const HERO_SLOT = { id: 'hero', dims: { tone: ['calm', 'urgent'] as const } };
 
@@ -37,7 +37,7 @@ describe('init() localMode gating — development condition (engine resolves)', 
 
     const outcome = await client.decide({ slots: [HERO_SLOT] });
     expect(outcome).not.toBeNull();
-    expect(outcome!.persona).toBe(PERSONAS[fnv1a('sess-local-1') % PERSONAS.length]);
+    expect(outcome!.persona).toBe('unknown');
     expect(outcome!.confidence).toBe(0.5);
     expect(outcome!.slots.hero).toEqual({
       tone: pickDeterministicArm(`sess-local-1:${outcome!.persona}`, 'hero.tone', ['calm', 'urgent']),
@@ -81,10 +81,10 @@ describe('init() localMode gating — development condition (engine resolves)', 
   });
 
   it('?sentient_persona= URL override forces the local persona', async () => {
-    window.history.replaceState(null, '', '/?sentient_persona=deal_seeker');
+    window.history.replaceState(null, '', '/?sentient_persona=trial_user');
     const client = init({ apiKey: '', context: 'landing', ssrSessionId: 'sess-local-3' });
     const outcome = await client.decide({});
-    expect(outcome!.persona).toBe('deal_seeker');
+    expect(outcome!.persona).toBe('trial_user');
   });
 
   it('assign() resolves deterministically without network in local mode', async () => {
@@ -113,10 +113,10 @@ describe('init() localMode gating — development condition (engine resolves)', 
       apiKey: '',
       context: 'landing',
       ssrSessionId: 'sess-local-p1',
-      initialPersona: { persona: 'buyer', confidence: 0.8 },
+      initialPersona: { persona: 'admin', confidence: 0.8 },
     });
     expect(client.getPersona()).toEqual({
-      persona: 'buyer',
+      persona: 'admin',
       confidence: 0.8,
       band: confidenceBand(0.8),
     });
@@ -126,22 +126,22 @@ describe('init() localMode gating — development condition (engine resolves)', 
   it('getPersona() falls back to the persisted snapshot before the first decide', () => {
     localStorage.setItem(
       '_snt_snap:local',
-      JSON.stringify({ v: 1, persona: 'researcher', band: 'medium', slots: {}, layoutOrder: null, savedAt: Date.now() }),
+      JSON.stringify({ v: 1, persona: 'evaluator', band: 'medium', slots: {}, layoutOrder: null, savedAt: Date.now() }),
     );
     const client = init({ apiKey: '', context: 'landing', ssrSessionId: 'sess-local-p2' });
     const p = client.getPersona();
-    expect(p?.persona).toBe('researcher');
+    expect(p?.persona).toBe('evaluator');
     // Band-only source maps to a band-consistent confidence.
     expect(p?.band).toBe('medium');
     client.destroy();
   });
 
   it('adopts pre-written persona attributes instead of rewriting (single-writer)', async () => {
-    document.documentElement.dataset.sentientPersona = 'buyer';
+    document.documentElement.dataset.sentientPersona = 'admin';
     document.documentElement.dataset.sentientConfidence = 'high';
     const client = init({ apiKey: '', context: 'landing', ssrSessionId: 'sess-local-5' });
     await client.decide({});
-    expect(document.documentElement.dataset.sentientPersona).toBe('buyer');
+    expect(document.documentElement.dataset.sentientPersona).toBe('admin');
     expect(document.documentElement.dataset.sentientConfidence).toBe('high');
   });
 });

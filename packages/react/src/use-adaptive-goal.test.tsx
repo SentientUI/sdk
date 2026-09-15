@@ -5,7 +5,13 @@ import { AdaptiveProvider } from './provider.js';
 import { useAdaptiveGoal } from './use-adaptive-goal.js';
 import { init } from '@sentientui/core';
 
-vi.mock('@sentientui/core', () => ({ init: vi.fn() }));
+vi.mock('@sentientui/core', () => ({
+  init: vi.fn(),
+  // AdaptiveSlot imports `reveal` from core. These mocks are deliberately
+  // minimal — they exist so the suite never loads real core — so every core
+  // import the rendered tree makes has to be listed here.
+  reveal: vi.fn(),
+}));
 vi.mock('@sentientui/core/engagement', () => ({ startEngagementCapture: vi.fn() }));
 vi.mock('./segment.js', () => ({ detectSegment: () => 'desktop:direct' }));
 

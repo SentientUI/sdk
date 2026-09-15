@@ -145,22 +145,33 @@ describe('useAdaptiveTokens â€” learning wiring', () => {
     expect(exposures).toHaveLength(0);
   });
 
-  it('warns once in dev that a keyed baseline slot needs SSR/decide (#2)', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const client = makeClient();
-    mockedInit.mockReturnValue(client as never);
-    const { rerender } = render(createElement(TokensProbe, { id: 'hero-baseline-warn' }), {
-      wrapper: wrapperWith(),
+  it('renders but does not expose a result the core holds without a decision for this session', async () => {
+    // Snapshot seed / failure baseline: getSlotResult has an answer, but
+    // isSlotDecided says no slot_decisions row exists for it. Exposing it
+    // trained an arm the server never served this session — and a failed
+    // decide batch used to yield one phantom baseline exposure per slot.
+    const decideSlots = vi.fn();
+    const client = makeClient({
+      getSlotResult: vi.fn().mockReturnValue({ tone: 'urgent', motion: 'pulse' }),
+      isSlotDecided: vi.fn().mockReturnValue(false),
+      decideSlots,
+      onSlotsChanged: vi.fn().mockReturnValue(() => undefined),
     });
-    rerender(createElement(TokensProbe, { id: 'hero-baseline-warn' }));
+    mockedInit.mockReturnValue(client as never);
+    const { getByTestId } = render(createElement(TokensProbe, { id: 'hero-seeded', goal: 'click' }), { wrapper: wrapperWith() });
 
-    await new Promise((r) => setTimeout(r, 0));
-    const baselineWarnings = warnSpy.mock.calls.filter(([m]) =>
-      String(m).includes('resolved to its baseline'),
+    // Pre-paint parity: the seeded arm is what renders…
+    expect(getByTestId('probe').getAttribute('data-tone')).toBe('urgent');
+    await new Promise((r) => setTimeout(r, 10));
+    // …but it is not a trial: no exposure, and no arm credit on a click.
+    const exposures = client.track.mock.calls.filter(
+      (call: unknown[]) => (call[0] as Record<string, unknown>).eventType === 'variant_assigned',
     );
-    expect(baselineWarnings).toHaveLength(1);
-    expect(String(baselineWarnings[0]![0])).toContain('hero-baseline-warn');
-    warnSpy.mockRestore();
+    expect(exposures).toHaveLength(0);
+    fireEvent.click(getByTestId('probe'));
+    expect(client.componentGoal).not.toHaveBeenCalled();
+    // It still asks for this session's decision.
+    expect(decideSlots).toHaveBeenCalled();
   });
 
   it('wires the declared goal through componentGoal with componentId = slot id', () => {

@@ -1,6 +1,6 @@
-import { containsFormBlock, type SlotConfigEntry } from '@sentientui/core';
+import { containsFormBlock, reveal, type SlotConfigEntry } from '@sentientui/core';
 import type { SnippetSlotDecl } from './config';
-import { isUrlScopedOut, resolveLocatorOne } from './locator';
+import { isLocatorMiss, isUrlScopedOut, resolveLocatorOne } from './locator';
 import { applyOps } from './ops';
 import { applySlotBlocks, sweepOrphanBlocks } from './blocks';
 
@@ -107,6 +107,9 @@ export function applyRegistrySlots(
     onApplied?: (slotId: string, arm: string, el: Element) => void;
     /** Every (element, attribute) written — the inline pre-paint reconcile feed. */
     onAttr?: AttrSink;
+    /** Resolved persona, recorded on revealed elements as provenance for
+     *  devtools and the editor. Never rendered to a visitor. */
+    persona?: string;
   },
 ): string[] {
   const blockContainers = new Set<Element>();
@@ -129,15 +132,17 @@ export function applyRegistrySlots(
     if (cfg.locator) {
       const el = resolveLocatorOne(cfg.locator, doc);
       targets = el ? [el] : [];
+      // Same classifier run() uses before deciding (isLocatorMiss): absence is a
+      // miss only where the component is expected (`page`), or when an element
+      // is there but was rejected. Absence alone used to count, and 10 of those
+      // in 24h auto-suspended components that were healthy on their own page.
+      if (!el && isLocatorMiss(cfg.locator, doc)) missed.push(slotId);
     } else {
-      // declTargets guards the selector: a broken cfg.target yields [] and is
-      // reported as a miss below (so the worker can suspend that slot) instead
-      // of aborting every remaining slot in this loop (audit SNIP-4).
+      // declTargets guards the selector (audit SNIP-4). A bare Phase-2 target
+      // carries no page scope and no fingerprint, so its absence is exactly the
+      // "unscoped component not on this page" case — never a miss.
       targets = declTargets(cfg.target, doc);
     }
-    // A slot that names a specific target/locator but found nothing is a miss —
-    // reported so the worker can suspend a broken slot. Applies nothing either way.
-    if ((cfg.locator || cfg.target) && targets.length === 0) missed.push(slotId);
 
     const result = slots[slotId];
     for (const el of targets) {
@@ -180,12 +185,24 @@ export function applyRegistrySlots(
         }
       }
       if (!contentAndOps) continue;
+      // The text before we touch it, captured for the reveal. `contentAndOps`
+      // is false on the pre-paint pass, so reaching here already means this is
+      // the post-decide apply — but a RETURN visitor's pre-paint pass may have
+      // put the same copy there from the snapshot, in which case nothing
+      // visibly changes and nothing should animate.
+      const before = el.textContent;
       // Phase-2 content, then Phase-3 ops (ops.text wins if both set).
       if (typeof cfg.content === 'string') el.textContent = cfg.content;
       if (cfg.ops) {
         const r = applyOps(el, cfg.ops, slotId, doc);
         if (r.anchorMiss && !missed.includes(slotId)) missed.push(slotId);
       }
+      reveal(el, {
+        previous: before,
+        ...(typeof result === 'string' ? { arm: result } : {}),
+        ...(opts?.persona !== undefined ? { persona: opts.persona } : {}),
+        doc,
+      });
     }
   }
   // Anything we previously turned into a composition container but are no

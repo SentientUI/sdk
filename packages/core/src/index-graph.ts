@@ -59,6 +59,7 @@ export type {
   ScanResult,
   ContentAddedEvent,
   DOMScanner,
+  DOMScannerOptions,
 } from './scanner.js';
 export type {
   PageNode,
@@ -96,6 +97,12 @@ export type GraphSentientConfig = SentientConfig & {
    * (component ids, semantic types, prominence) still syncs when `graph: true`.
    */
   captureDomText?: boolean;
+  /**
+   * Section types declared in code, keyed by `data-sentient-id`
+   * (e.g. `{ about: 'trust' }`). Wins over the content classifier and over
+   * legacy `data-sentient-type` markup. See `DOMScannerOptions.sectionTypes`.
+   */
+  sectionTypes?: Readonly<Partial<Record<string, string>>>;
 };
 
 // The client writes the per-project SUFFIXED cookie (sessionCookieName in
@@ -175,7 +182,7 @@ export function init(config: GraphSentientConfig): SentientClient {
     }
   }
 
-  const domScanner = createDOMScanner();
+  const domScanner = createDOMScanner({ sectionTypes: config.sectionTypes });
   const resolvedIngestUrl = config.ingestUrl ?? DEFAULT_INGEST_URL;
   const graphClient = createGraphClient({
     syncUrl: resolvedIngestUrl.replace(/\/events\/?$/, '/graph/sync'),

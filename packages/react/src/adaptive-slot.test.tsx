@@ -8,6 +8,10 @@ import { AdaptiveSlot } from './adaptive-slot.js';
 import { init } from '@sentientui/core';
 
 vi.mock('@sentientui/core', () => ({
+  // AdaptiveSlot imports `reveal` from core. These mocks are deliberately
+  // minimal — they exist so the suite never loads real core — so every core
+  // import the rendered tree makes has to be listed here.
+  reveal: vi.fn(),
   init: vi.fn(),
   detectDeviceClass: () => 'desktop',
   detectTrafficSource: () => 'direct',
@@ -107,7 +111,7 @@ describe('AdaptiveSlot rendering', () => {
   it('renders served content string instead of children', () => {
     const Wrapper = wrapperWith({
       initialSlotConfig: { hero: { kind: 'arms', content: 'Generated headline' } },
-      initialSlots: { hero: 'researcher_v1' },
+      initialSlots: { hero: 'evaluator_v1' },
     });
     const { container } = render(
       <Wrapper>
@@ -119,12 +123,12 @@ describe('AdaptiveSlot rendering', () => {
     const slot = container.querySelector('[data-sentient-slot="hero"]')!;
     expect(slot.textContent).toBe('Generated headline');
     expect(slot.querySelector('button')).toBeNull();
-    expect(slot.getAttribute('data-sentient-arm')).toBe('researcher_v1');
+    expect(slot.getAttribute('data-sentient-arm')).toBe('evaluator_v1');
   });
 
   it('renders the served arm’s block tree; baseline arm (no tree) renders children', () => {
-    const cfg = { kind: 'arms' as const, blocks: { researcher_v1: BLOCK_TREE } };
-    const served = wrapperWith({ initialSlotConfig: { hero: cfg }, initialSlots: { hero: 'researcher_v1' } });
+    const cfg = { kind: 'arms' as const, blocks: { evaluator_v1: BLOCK_TREE } };
+    const served = wrapperWith({ initialSlotConfig: { hero: cfg }, initialSlots: { hero: 'evaluator_v1' } });
     const { container } = render(
       createElement(served, null, <AdaptiveSlot id="hero"><button>Start free</button></AdaptiveSlot>),
     );
@@ -142,8 +146,8 @@ describe('AdaptiveSlot rendering', () => {
   it('refuses a form tree whole without onFormSubmit (children render, one dev warn)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const Wrapper = wrapperWith({
-      initialSlotConfig: { hero: { kind: 'arms', blocks: { researcher_v1: FORM_TREE } } },
-      initialSlots: { hero: 'researcher_v1' },
+      initialSlotConfig: { hero: { kind: 'arms', blocks: { evaluator_v1: FORM_TREE } } },
+      initialSlots: { hero: 'evaluator_v1' },
     });
     const { container, rerender } = render(
       createElement(Wrapper, null, <AdaptiveSlot id="hero"><button>Start free</button></AdaptiveSlot>),
@@ -162,8 +166,8 @@ describe('AdaptiveSlot rendering', () => {
     const client = makeClient();
     mockedInit.mockReturnValue(client as never);
     const Wrapper = wrapperWith({
-      initialSlotConfig: { hero: { kind: 'arms', blocks: { researcher_v1: FORM_TREE } } },
-      initialSlots: { hero: 'researcher_v1' },
+      initialSlotConfig: { hero: { kind: 'arms', blocks: { evaluator_v1: FORM_TREE } } },
+      initialSlots: { hero: 'evaluator_v1' },
     });
     const { container, getByLabelText, rerender } = render(
       createElement(Wrapper, null, (
@@ -186,7 +190,7 @@ describe('AdaptiveSlot rendering', () => {
     expect(onFormSubmit).toHaveBeenCalledWith({ work_email: 'a@b.co' });
     expect(client.componentGoal).toHaveBeenCalledWith('hero', 'lead_capture');
     expect(client.goal).toHaveBeenCalledWith('lead_capture', {
-      metadata: { componentId: 'hero', arm: 'researcher_v1' },
+      metadata: { componentId: 'hero', arm: 'evaluator_v1' },
       weight: 1.0,
       stepIndex: 0,
     });
@@ -209,8 +213,8 @@ describe('AdaptiveSlot rendering', () => {
 
   it('SSR renders the arm’s blocks and the client first render agrees', () => {
     const props = {
-      initialSlotConfig: { hero: { kind: 'arms' as const, blocks: { researcher_v1: BLOCK_TREE } } },
-      initialSlots: { hero: 'researcher_v1' },
+      initialSlotConfig: { hero: { kind: 'arms' as const, blocks: { evaluator_v1: BLOCK_TREE } } },
+      initialSlots: { hero: 'evaluator_v1' },
     };
     const Wrapper = wrapperWith(props);
     const slotEl = <AdaptiveSlot id="hero"><button>Start free</button></AdaptiveSlot>;
@@ -227,7 +231,7 @@ describe('AdaptiveSlot rendering', () => {
     mockedInit.mockReturnValue(client as never);
     const Wrapper = wrapperWith({
       initialSlotConfig: { hero: { kind: 'arms', content: 'Generated headline' } },
-      initialSlots: { hero: 'researcher_v1' },
+      initialSlots: { hero: 'evaluator_v1' },
     });
     const el = <AdaptiveSlot id="hero"><button>b</button></AdaptiveSlot>;
     const { rerender } = render(createElement(Wrapper, null, el));
@@ -241,5 +245,181 @@ describe('AdaptiveSlot rendering', () => {
     render(createElement(W2, null, <AdaptiveSlot id="forced_slot">base</AdaptiveSlot>));
     const overrideExposures = client.track.mock.calls.filter((c) => (c[0] as { eventType?: string })?.eventType === 'variant_assigned');
     expect(overrideExposures.length).toBe(0);
+  });
+
+  it('records exactly one exposure for a healthy block-tree arm', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({
+      initialSlotConfig: { hero: { kind: 'arms', blocks: { evaluator_v1: BLOCK_TREE } } },
+      initialSlots: { hero: 'evaluator_v1' },
+    });
+    const el = <AdaptiveSlot id="hero"><button>b</button></AdaptiveSlot>;
+    const { container, rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    expect(container.querySelector('h2')).not.toBeNull(); // the arm actually rendered
+    const exposures = client.track.mock.calls.filter((c) => (c[0] as { eventType?: string })?.eventType === 'variant_assigned');
+    expect(exposures.length).toBe(1);
+  });
+
+  it('suppresses the exposure when the form gate blocks the served arm', () => {
+    // The arm falls back to children (it can never convert on this install) —
+    // recording variant_assigned anyway would let the bandit permanently bury
+    // the arm for what is a missing onFormSubmit prop, not a bad arm.
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({
+      initialSlotConfig: { hero: { kind: 'arms', blocks: { evaluator_v1: FORM_TREE } } },
+      initialSlots: { hero: 'evaluator_v1' },
+    });
+    const el = <AdaptiveSlot id="hero"><button>Start free</button></AdaptiveSlot>;
+    const { container, rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    expect(container.querySelector('form')).toBeNull();
+    expect(container.querySelector('button')!.textContent).toBe('Start free');
+    const exposures = client.track.mock.calls.filter((c) => (c[0] as { eventType?: string })?.eventType === 'variant_assigned');
+    expect(exposures.length).toBe(0);
+  });
+
+  it('suppresses the exposure when the arm’s ROOT block type is unknown (newer server)', () => {
+    // Root-level renderBlocks null = nothing of the arm reached the page.
+    // No baseline exposure is reported either: decide didn't assign baseline.
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({
+      initialSlotConfig: {
+        hero: { kind: 'arms', blocks: { evaluator_v1: { type: 'hologram', value: 'from the future' } } },
+      },
+      initialSlots: { hero: 'evaluator_v1' },
+    });
+    const el = <AdaptiveSlot id="hero"><button>Start free</button></AdaptiveSlot>;
+    const { container, rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    expect(container.querySelector('button')!.textContent).toBe('Start free');
+    const exposures = client.track.mock.calls.filter((c) => (c[0] as { eventType?: string })?.eventType === 'variant_assigned');
+    expect(exposures.length).toBe(0);
+  });
+
+  it('a container goal on a form-blocked arm carries no served-arm attribution (no-arm shape)', () => {
+    // The visitor converted on baseline children. A goal stamped with the
+    // served arm would let close-out's first-pass reconciliation (goal_achieved
+    // implies an exposure, CONTRACTS §2) re-mint the suppressed phantom AND
+    // credit the blocked arm for baseline's conversion — so the container goal
+    // takes the same path as source 'none': it does not fire at all.
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({
+      initialSlotConfig: { hero: { kind: 'arms', blocks: { evaluator_v1: FORM_TREE } } },
+      initialSlots: { hero: 'evaluator_v1' },
+    });
+    const el = (
+      <AdaptiveSlot id="hero" goal="signup_click">
+        <button>Start free</button>
+      </AdaptiveSlot>
+    );
+    const { container, rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    fireEvent.click(container.querySelector('button')!);
+    expect(client.componentGoal).not.toHaveBeenCalled();
+    expect(client.goal).not.toHaveBeenCalled();
+  });
+});
+
+describe('baseline text reporting', () => {
+  it('sends the wrapper textContent alongside the first registration', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith();
+    const el = (
+      <AdaptiveSlot id="hero">
+        <button>Start free</button>
+      </AdaptiveSlot>
+    );
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el)); // client lands after the provider init effect
+    expect(client.reportSlots).toHaveBeenCalledWith(['hero'], { hero: 'Start free' });
+  });
+
+  it('reportBaselineText={false} registers the id with no text — for slots wrapping personalized content', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith();
+    const el = (
+      <AdaptiveSlot id="account-banner" reportBaselineText={false}>
+        <p>Welcome back, Alice</p>
+      </AdaptiveSlot>
+    );
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    expect(client.reportSlots).toHaveBeenCalledWith(['account-banner']);
+  });
+});
+
+describe('AdaptiveSlot adaptation reveal', () => {
+  it('does not animate a slot whose arm was already resolved at mount', () => {
+    // The SSR case, and the common one: the arm is in the HTML at first paint,
+    // so the page was ALWAYS that way. Animating it would fire on every page
+    // load and would be theatre rather than a reveal — the same rule the core
+    // module enforces via `previous`.
+    const Wrapper = wrapperWith({
+      initialSlotConfig: { hero: { kind: 'arms', content: 'Generated headline' } },
+      initialSlots: { hero: 'evaluator_v1' },
+    });
+    const { container } = render(
+      <Wrapper>
+        <AdaptiveSlot id="hero">baseline</AdaptiveSlot>
+      </Wrapper>,
+    );
+    const slot = container.querySelector('[data-sentient-slot="hero"]')!;
+    expect(slot.classList.contains('sentient-revealed')).toBe(false);
+    // …and no stylesheet is injected for a page that never revealed anything.
+    expect(document.getElementById('sentient-reveal')).toBeNull();
+  });
+
+  it('still stamps the arm as provenance without animating', () => {
+    const Wrapper = wrapperWith({
+      initialSlotConfig: { hero: { kind: 'arms', content: 'Generated headline' } },
+      initialSlots: { hero: 'evaluator_v1' },
+    });
+    const { container } = render(
+      <Wrapper>
+        <AdaptiveSlot id="hero">baseline</AdaptiveSlot>
+      </Wrapper>,
+    );
+    expect(
+      container.querySelector('[data-sentient-slot="hero"]')!.getAttribute('data-sentient-arm'),
+    ).toBe('evaluator_v1');
+  });
+});
+
+describe('<Adaptive> without variants is the slot', () => {
+  it('renders the children as the original and asks for the mounted slot', async () => {
+    const { Adaptive } = await import('./adaptive.js');
+    const requestSlots = vi.fn();
+    const client = makeClient({ requestSlots, onSlotsChanged: vi.fn(() => () => undefined) });
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith();
+    const el = (
+      <Adaptive id="hero-cta" goal="signup_click">
+        <a href="/signup">Start free trial</a>
+      </Adaptive>
+    );
+    const { container, rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el)); // client lands after the provider init effect
+    expect(container.querySelector('[data-sentient-slot="hero-cta"]')?.textContent).toBe('Start free trial');
+    expect(requestSlots).toHaveBeenCalledWith(['hero-cta'], { 'hero-cta': 'Start free trial' });
+  });
+
+  it('renders the served dashboard version in place of the children', async () => {
+    const { Adaptive } = await import('./adaptive.js');
+    const Wrapper = wrapperWith({
+      initialSlotConfig: { hero: { kind: 'arms', content: 'Generated headline' } },
+      initialSlots: { hero: 'evaluator_v1' },
+    });
+    const { container } = render(
+      createElement(Wrapper, null, <Adaptive id="hero"><h1>Original</h1></Adaptive>),
+    );
+    expect(container.textContent).toContain('Generated headline');
+    expect(container.textContent).not.toContain('Original');
   });
 });

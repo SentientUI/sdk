@@ -171,7 +171,7 @@ describe('preloadDecisions', () => {
       json: async () => ({
         layoutOrder: ['pricing', 'hero'],
         assignments: { hero_cta: 'accent' },
-        persona: 'buyer',
+        persona: 'admin',
         confidence: 0.75,
       }),
     } as Response);
@@ -187,7 +187,7 @@ describe('preloadDecisions', () => {
 
     expect(result.layoutOrder).toEqual(['pricing', 'hero']);
     expect(result.assignments).toEqual({ hero_cta: 'accent' });
-    expect(result.persona).toBe('buyer');
+    expect(result.persona).toBe('admin');
     expect(result.confidence).toBe(0.75);
     expect(mockFetch).toHaveBeenCalledWith(
       'https://api.example.com/v1/decide',
@@ -230,7 +230,7 @@ describe('loadAdaptiveDecision — slots forwarding', () => {
         layoutOrder: [],
         assignments: {},
         slots: { hero: { tone: 'urgent' } },
-        persona: 'buyer',
+        persona: 'admin',
         confidence: 0.8,
       }),
     } as Response);
@@ -246,7 +246,7 @@ describe('loadAdaptiveDecision — slots forwarding', () => {
 
     expect(result.sessionId).toBe('sess-slots');
     expect(result.slots).toEqual({ hero: { tone: 'urgent' } });
-    expect(result.persona).toBe('buyer');
+    expect(result.persona).toBe('admin');
     expect(result.confidence).toBe(0.8);
 
     const decideCall = mockFetch.mock.calls.find(([u]) => String(u).endsWith('/decide'));
@@ -263,10 +263,10 @@ describe('loadAdaptiveDecision — slots forwarding', () => {
       json: async () => ({
         layoutOrder: [],
         assignments: {},
-        slots: { hero: 'researcher_v1' },
+        slots: { hero: 'evaluator_v1' },
         slotConfig: { hero: { kind: 'arms', content: 'Generated headline' } },
         palette: { primaryBg: '#111827', primaryText: '#ffffff', radius: '4px' },
-        persona: 'researcher',
+        persona: 'evaluator',
         confidence: 0.8,
       }),
     } as Response);
@@ -274,18 +274,22 @@ describe('loadAdaptiveDecision — slots forwarding', () => {
     const { loadAdaptiveDecision } = await import('./server.js');
     const result = await loadAdaptiveDecision({
       slotsFrom: 'registry',
+      registrySlotIds: ['hero'],
       components: [],
       cookies: { get: () => ({ value: 'sess-registry' }) },
       apiKey: API_KEY,
       baseUrl: BASE_URL,
     });
 
-    expect(result.slots).toEqual({ hero: 'researcher_v1' });
+    expect(result.slots).toEqual({ hero: 'evaluator_v1' });
     expect(result.slotConfig).toEqual({ hero: { kind: 'arms', content: 'Generated headline' } });
     expect(result.palette).toEqual({ primaryBg: '#111827', primaryText: '#ffffff', radius: '4px' });
 
     const decideCall = mockFetch.mock.calls.find(([u]) => String(u).endsWith('/decide'));
     const body = JSON.parse((decideCall![1] as RequestInit).body as string) as Record<string, unknown>;
     expect(body.slotsFrom).toBe('registry');
+    // Scoped to the page's ids — an unscoped registry decide is a close-out
+    // trial for every published slot on every page.
+    expect(body.registrySlotIds).toEqual(['hero']);
   });
 });

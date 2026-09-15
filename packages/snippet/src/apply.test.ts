@@ -11,8 +11,8 @@ beforeEach(() => {
 
 describe('applyPersonaAttributes', () => {
   it('sets persona and confidence on <html>', () => {
-    applyPersonaAttributes('deal_seeker', 'high', document);
-    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('deal_seeker');
+    applyPersonaAttributes('trial_user', 'high', document);
+    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('trial_user');
     expect(document.documentElement.getAttribute('data-sentient-confidence')).toBe('high');
   });
 });
@@ -199,6 +199,26 @@ describe('applyRegistrySlots (registry mode — server-owned config)', () => {
     );
     expect(missed).toEqual([]);
     expect(document.getElementById('cta')!.getAttribute('data-sentient-arm')).toBeNull();
+  });
+
+  it('apply-time misses use the page-scope classifier (same as run() before deciding)', () => {
+    // jsdom pathname is '/'. Plain absence used to be a miss everywhere, so a
+    // component living on /pricing was suspended from every other page view.
+    document.body.innerHTML = '<a id="cta">Book</a>';
+    const missed = applyRegistrySlots(
+      { here: 'b', elsewhere: 'b', legacy: 'b', rejected: 'b', bare: 'b' },
+      {
+        here: { kind: 'arms', locator: { id: 'faq', page: '/' } }, // expected here → miss
+        elsewhere: { kind: 'arms', locator: { id: 'faq', page: '/pricing' } }, // expected elsewhere → silent
+        legacy: { kind: 'arms', locator: { id: 'faq' } }, // unscoped, just not on this page → silent
+        rejected: { kind: 'arms', locator: { id: 'cta', fingerprint: { tag: 'button' } } }, // there but refused → miss
+        // A bare Phase-2 target has no scope or fingerprint: absence alone is
+        // not a miss any more (it used to be).
+        bare: { kind: 'arms', target: '#faq' },
+      },
+      document,
+    );
+    expect(missed).toEqual(['here', 'rejected']);
   });
 
   it('pre-paint (contentAndOps:false) applies attributes but withholds content + ops', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { resolveLocatorOne } from './locator';
+import { isLocatorMiss, locatorCandidateExists, resolveLocatorOne } from './locator';
 
 beforeEach(() => { document.body.innerHTML = ''; });
 
@@ -48,5 +48,43 @@ describe('resolveLocatorOne', () => {
     document.body.innerHTML = '<a id="cta">x</a>';
     // jsdom default path is '/', which does not include '/pricing'.
     expect(resolveLocatorOne({ id: 'cta', urlMatch: '/pricing' }, document)).toBeNull();
+  });
+});
+
+describe('locatorCandidateExists', () => {
+  it('is true when elements are found but resolution rejects them', () => {
+    document.body.innerHTML = '<a id="cta">Book</a><a class="x"></a><a class="x"></a>';
+    expect(locatorCandidateExists({ id: 'cta', fingerprint: { tag: 'button' } }, document)).toBe(true);
+    expect(locatorCandidateExists({ selector: '.x' }, document)).toBe(true);
+    expect(locatorCandidateExists({ id: 'nope', selector: '#nope' }, document)).toBe(false);
+  });
+});
+
+describe('isLocatorMiss', () => {
+  it('counts absence only where the component is page-scoped to be', () => {
+    // jsdom path is '/'.
+    expect(isLocatorMiss({ id: 'faq', page: '/' }, document)).toBe(true);
+    expect(isLocatorMiss({ id: 'faq', page: '*' }, document)).toBe(true);
+    expect(isLocatorMiss({ id: 'faq', page: '/pricing' }, document)).toBe(false);
+    expect(isLocatorMiss({ id: 'faq' }, document)).toBe(false);
+  });
+
+  it('unscoped: counts a rejected candidate on any page; URL-scoped out stays silent', () => {
+    document.body.innerHTML = '<a id="cta">Book</a>';
+    expect(isLocatorMiss({ id: 'cta', fingerprint: { tag: 'button' } }, document)).toBe(true);
+    expect(isLocatorMiss({ id: 'cta', fingerprint: { tag: 'button' }, urlMatch: '/pricing' }, document)).toBe(false);
+  });
+
+  it('page-scoped to another path: silent even when a look-alike candidate is rejected here', () => {
+    // A /pricing component with a generic selector (h1, .hero, a shared id)
+    // used to collect a "candidate rejected" miss from every OTHER page that
+    // had such an element — an element on / says nothing about /pricing, and
+    // that is exactly the false suspension page scope exists to prevent.
+    document.body.innerHTML = '<a id="cta">Book</a>';
+    expect(isLocatorMiss({ id: 'cta', fingerprint: { tag: 'button' }, page: '/pricing' }, document)).toBe(false);
+    expect(isLocatorMiss({ id: 'cta', selector: 'a', fingerprint: { tag: 'button' }, page: '/products/*' }, document)).toBe(false);
+    // On its own page a rejected candidate is still a miss.
+    expect(isLocatorMiss({ id: 'cta', fingerprint: { tag: 'button' }, page: '/' }, document)).toBe(true);
+    expect(isLocatorMiss({ id: 'cta', fingerprint: { tag: 'button' }, page: '*' }, document)).toBe(true);
   });
 });

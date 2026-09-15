@@ -20,7 +20,7 @@ export function renderWithSentient(
 ): RenderResult {
   applyScenario(scenario);
   return render(
-    <AdaptiveProvider apiKey="pk_test" context="saas" consent={false}>
+    <AdaptiveProvider apiKey="pk_test" consent={false}>
       {ui}
     </AdaptiveProvider>,
     options,

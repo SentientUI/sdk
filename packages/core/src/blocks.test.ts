@@ -7,8 +7,11 @@ import {
   BLOCK_GRID_COLUMNS,
   BLOCK_HEADING_LEVELS,
   BLOCK_JUSTIFIES,
+  BLOCK_MAX_WIDTHS,
+  BLOCK_PADS,
   BLOCK_RATIOS,
   BLOCK_SIZES,
+  BLOCK_SURFACES,
   BLOCK_TEXT_ALIGNS,
   BLOCK_TONES,
   BLOCK_WEIGHTS,
@@ -66,6 +69,12 @@ describe('composition blocks — token vocabularies', () => {
     expect(BLOCK_GRID_COLUMNS).toEqual([2, 3, 4]);
     // Never 1 (h1 belongs to the page), never 5-6 (below the visual hierarchy).
     expect(BLOCK_HEADING_LEVELS).toEqual([2, 3, 4]);
+    // Rung 1 (fully-design ladder spec 2026-09-10 §4). PADS deliberately equals
+    // GAPS: both renderers reuse the GAP px scale for padding, so a divergence
+    // here means someone added a pad step without a renderer value for it.
+    expect(BLOCK_SURFACES).toEqual(['default', 'raised']);
+    expect(BLOCK_PADS).toEqual(BLOCK_GAPS);
+    expect(BLOCK_MAX_WIDTHS).toEqual(['measure']);
   });
 });
 

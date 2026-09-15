@@ -26,12 +26,14 @@ export interface PageGoalOptions extends ComponentGoalOptions {
  * Two things this handles that hand-rolling `useAdaptiveGoal` in an effect does
  * not, both of which fail silently:
  *
- *  - **Fires once.** `useAdaptiveGoal` has no latch, so a remount — or React's
- *    double-invoked effects in development — records the same arrival twice and
- *    inflates the funnel.
+ *  - **Fires once per mount.** A hand-rolled effect re-runs — React's
+ *    double-invoked effects in development, or the client arriving — and
+ *    records the arrival again unless you pass `useAdaptiveGoal`'s `once`.
+ *    (Both latches are per mounted component: a remount records again.)
  *  - **Waits for consent.** Under a consent gate the client does not exist when
  *    the page mounts, and a visitor who accepts a moment later would lose the
- *    goal entirely. The arrival is held until the SDK is running, then sent.
+ *    goal entirely — `once` would even spend its latch on that dropped call.
+ *    The arrival is held until the SDK is running, then sent.
  *
  * Safe during SSR (effects do not run on the server) and a no-op without a
  * provider above it.

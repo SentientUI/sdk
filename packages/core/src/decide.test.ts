@@ -11,7 +11,7 @@ const DECIDE_OK = {
   layoutOrder: ['pricing', 'hero'],
   assignments: { hero_cta: 'accent' },
   slots: { hero: { tone: 'urgent', motion: 'none' }, 'pricing-area': 'social_first' },
-  persona: 'buyer',
+  persona: 'admin',
   confidence: 0.8,
 };
 
@@ -60,7 +60,7 @@ describe('decide()', () => {
       layoutOrder: ['pricing', 'hero'],
       assignments: { hero_cta: 'accent' },
       slots: { hero: { tone: 'urgent', motion: 'none' }, 'pricing-area': 'social_first' },
-      persona: 'buyer',
+      persona: 'admin',
       confidence: 0.8,
     });
 
@@ -130,7 +130,7 @@ describe('decide()', () => {
   // success path wrote synthesized baselines unconditionally, clobbering
   // SSR-seeded / previously-served results for slots the response omitted.
   it('does not overwrite an SSR-seeded slot with a synthesized baseline when the response omits it', async () => {
-    stubFetch({ ok: true, json: { assignments: {}, persona: 'buyer', confidence: 0.8 } });
+    stubFetch({ ok: true, json: { assignments: {}, persona: 'admin', confidence: 0.8 } });
     const client = init({
       ...BASE_CONFIG,
       initialSlots: { hero: { tone: 'urgent', motion: 'pulse' } },
@@ -148,7 +148,7 @@ describe('decide()', () => {
   });
 
   it('a served slot in the response still overwrites a previous result', async () => {
-    stubFetch({ ok: true, json: { slots: { hero: { tone: 'calm', motion: 'none' } }, persona: 'buyer', confidence: 0.8 } });
+    stubFetch({ ok: true, json: { slots: { hero: { tone: 'calm', motion: 'none' } }, persona: 'admin', confidence: 0.8 } });
     const client = init({
       ...BASE_CONFIG,
       initialSlots: { hero: { tone: 'urgent', motion: 'pulse' } },
@@ -229,36 +229,36 @@ describe('decide()', () => {
   it('does not downgrade a known initialPersona when the response omits persona', async () => {
     // Response carries no persona field (older server / holdout path).
     stubFetch({ ok: true, json: { layoutOrder: null, assignments: {}, slots: {} } });
-    const client = init({ ...BASE_CONFIG, initialPersona: { persona: 'buyer', confidence: 0.8 } });
+    const client = init({ ...BASE_CONFIG, initialPersona: { persona: 'admin', confidence: 0.8 } });
 
     const outcome = await client.decide({ slots: [{ id: 'hero', arms: ['a', 'b'] }] });
 
-    expect(outcome?.persona).toBe('buyer');
-    expect(client.getPersona()?.persona).toBe('buyer');
+    expect(outcome?.persona).toBe('admin');
+    expect(client.getPersona()?.persona).toBe('admin');
     // The regression must not be persisted for the next visit's pre-paint.
     const snap = JSON.parse(localStorage.getItem('_snt_snap:' + BASE_CONFIG.apiKey)!) as { persona: string };
-    expect(snap.persona).toBe('buyer');
+    expect(snap.persona).toBe('admin');
     client.destroy();
   });
 
   it('does not downgrade a known persona even when the response explicitly says "unknown"', async () => {
     stubFetch({ ok: true, json: { layoutOrder: null, assignments: {}, slots: {}, persona: 'unknown', confidence: 0 } });
-    const client = init({ ...BASE_CONFIG, initialPersona: { persona: 'buyer', confidence: 0.8 } });
+    const client = init({ ...BASE_CONFIG, initialPersona: { persona: 'admin', confidence: 0.8 } });
 
     const outcome = await client.decide({ slots: [{ id: 'hero', arms: ['a', 'b'] }] });
 
-    expect(outcome?.persona).toBe('buyer');
+    expect(outcome?.persona).toBe('admin');
     client.destroy();
   });
 
   it('adopts a new known persona returned by the response', async () => {
-    stubFetch({ ok: true, json: { layoutOrder: null, assignments: {}, slots: {}, persona: 'researcher', confidence: 0.6 } });
-    const client = init({ ...BASE_CONFIG, initialPersona: { persona: 'buyer', confidence: 0.8 } });
+    stubFetch({ ok: true, json: { layoutOrder: null, assignments: {}, slots: {}, persona: 'evaluator', confidence: 0.6 } });
+    const client = init({ ...BASE_CONFIG, initialPersona: { persona: 'admin', confidence: 0.8 } });
 
     const outcome = await client.decide({ slots: [{ id: 'hero', arms: ['a', 'b'] }] });
 
-    expect(outcome?.persona).toBe('researcher');
-    expect(client.getPersona()?.persona).toBe('researcher');
+    expect(outcome?.persona).toBe('evaluator');
+    expect(client.getPersona()?.persona).toBe('evaluator');
     client.destroy();
   });
 
@@ -288,7 +288,7 @@ describe('decide()', () => {
     const snap = JSON.parse(raw!) as Record<string, unknown>;
     expect(snap).toMatchObject({
       v: 1,
-      persona: 'buyer',
+      persona: 'admin',
       band: 'high',
       layoutOrder: ['pricing', 'hero'],
     });

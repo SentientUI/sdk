@@ -1,5 +1,88 @@
 # @sentientui/snippet
 
+## 0.27.0
+
+### Minor Changes
+
+- f304caf: Install helpers and four locator fixes.
+
+  `@sentientui/snippet/install` gains `renderSnippetInstall({ config })`, which
+  emits the whole `<head>` install: one inline tag that assigns `window.sentient`
+  and then runs the pre-paint script, followed by the deferred loader. Pass
+  `split: true` for the three-tag form, which a strict script-hash CSP needs — the
+  combined tag embeds the site's own config so its hash differs per site, while the
+  split pre-paint tag is byte-identical everywhere and one hash covers it.
+  `serializeSnippetConfig` and `SNIPPET_LOADER_URL` are exported for callers
+  assembling the tags themselves. Existing three-tag and config-plus-loader
+  installs keep working.
+
+  Registry mode now decides only the components found on the current page, and
+  re-scopes on SPA navigation, so a component the visitor could not see no longer
+  takes a trial. A failed `/v1/registry/locators` fetch decides nothing rather
+  than falling back to the whole registry.
+
+  `SnippetConfig.context` is optional and ignored, and `parseSnippetConfig` no
+  longer defaults it to `'landing'` — the project's type is set in the dashboard.
+  Existing installs that still pass it keep working.
+
+  Locator resolution, all four of which distorted which components were considered
+  present:
+
+  - A page-scoped component is no longer reported as a miss from pages outside its
+    scope. A generic selector that matches nothing on `/blog` is not evidence that
+    the component on `/pricing` is broken, but it was counted as such and fed the
+    auto-suspension signal.
+  - After a client-side route change, an already-decided component is no longer
+    reported missing in the instant before the new route renders. Its content is
+    re-applied as it appears.
+  - A legacy bare selector matching several elements is decided again. Resolution
+    demanded exactly one match while application wrote to all of them, so these
+    components silently never decided.
+  - Locator misses are reported once per navigation rather than twice (apply-time
+    and route-watch both reported), which had doubled the miss count.
+
+## 0.26.0
+
+### Minor Changes
+
+- a3ce1dd: Adaptive changes now announce themselves with a brief, deliberate motion.
+
+  When a slot's content changes after the page has painted — a first-visit decide
+  resolving, or a return visitor's persona upgrade re-deciding — the region
+  animates from 55% opacity to full over 240ms instead of snapping. Three rules
+  make it safe to ship on someone else's site:
+
+  - **It is never a cloak.** Nothing is hidden and then revealed. The element is
+    legible at every frame, so a visitor arriving mid-animation reads real
+    content and a script that fails halfway leaves a page that was never hidden.
+  - **It only fires on a real, post-paint change.** A return visitor's arm is
+    applied by the pre-paint tag and an SSR slot arrives with its arm already in
+    the HTML — the page was always that way, so animating it would be theatre on
+    every page load. The snippet compares the text it is replacing; React tracks
+    the arm across renders.
+  - **`prefers-reduced-motion` wins unconditionally.** Not a config option: the
+    keyframes are defined only inside a `no-preference` query, so a browser that
+    mis-reports it applies no transform at all. The content still changes,
+    instantly.
+
+  The served arm and persona are written as `data-sentient-arm` /
+  `data-sentient-persona` for devtools and the editor. Nothing is rendered to a
+  visitor — telling your visitors they are being personalized is your decision
+  about your site, not a default we ship.
+
+## 0.25.0
+
+### Minor Changes
+
+- c9c1260: Fully-design ladder rung 1: composition blocks can now be cards. Stacks accept
+  `surface: 'raised'` (site-palette surface background + border hairline + radius
+  - a contrast-derived `surfaceText` pairing; defaults to `md` padding), stacks
+    and grids accept `pad` (reusing the gap scale), a `divider` block draws a
+    hairline in the palette border color, and `maxWidth: 'measure'` caps text and
+    heading copy at a readable 65ch. All token-resolved — no color or pixel props —
+    rendered identically by the snippet and React renderers, total-validated
+    server-side, and drift-pinned so the three parties cannot disagree silently.
+
 ## 0.24.1
 
 ### Patch Changes

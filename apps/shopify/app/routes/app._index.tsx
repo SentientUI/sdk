@@ -284,22 +284,30 @@ export default function Index() {
               </BlockStack>
             </Card>
 
-            {/* Review rejection 1.2.1/1.2.2 (2026-09-06): the old wording
-                ("you pay for SentientUI… priced on the traffic it optimizes",
-                linking to the external billing page) read as a MANDATORY
-                off-platform charge. The truth is free-first — everything the
-                app sets up runs on the free plan — so say that, and keep any
-                link to external billing/account pages out of the app. */}
+            {/* Billing went through two review rejections before landing here:
+                round 1 (2026-09-06) killed wording that framed the service as
+                paid-and-required with an external billing link; round 2
+                (2026-09-09, ref 133916) ruled that even the optional
+                subscription must go through Shopify. So: plans are Shopify
+                Managed Pricing, bought on Shopify's hosted plan page, and the
+                only billing link in the app points THERE — never to an
+                external payment page. */}
             <Card>
               <BlockStack gap="200">
                 <Text as="h2" variant="headingMd">
-                  What this costs
+                  Your plan
                 </Text>
                 <Text as="p" variant="bodySm">
-                  Nothing. The app is free, and everything it sets up works on SentientUI&apos;s
-                  free plan — orders, refunds, the checkout funnel, audiences. SentientUI offers
-                  optional paid plans for stores that outgrow the free tier&apos;s traffic or want
-                  more seats and AI features; nothing in this app requires one.
+                  The app is free to install, and everything it sets up works on the Free plan —
+                  orders, refunds, the checkout funnel, audiences. If your store outgrows the
+                  free tier&apos;s traffic or you want more seats and AI features,{" "}
+                  <Link
+                    url={`https://admin.shopify.com/store/${data.shop.replace('.myshopify.com', '')}/charges/sentientui-app/pricing_plans`}
+                    target="_blank"
+                  >
+                    upgrade through Shopify
+                  </Link>
+                  {" "}— billed on your Shopify invoice, cancel anytime.
                 </Text>
               </BlockStack>
             </Card>

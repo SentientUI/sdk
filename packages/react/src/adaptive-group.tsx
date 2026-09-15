@@ -118,8 +118,10 @@ export function AdaptiveGroup(props: AdaptiveGroupProps): JSX.Element {
   useEffect(() => {
     // A forced arm (`override`, from devtools/tests) is a preview, not a real
     // exposure — skip it so the optimizer isn't trained on the override (same
-    // contract <Adaptive> honors for component overrides).
-    if (!client || source === 'baseline' || source === 'override' || exposedArmRef.current === arm) return;
+    // contract <Adaptive> honors for component overrides). `seeded` — a
+    // snapshot arm or failure baseline the core holds without a decision for
+    // this session — renders but is not a trial either.
+    if (!client || source === 'baseline' || source === 'seeded' || source === 'override' || exposedArmRef.current === arm) return;
     exposedArmRef.current = arm;
     trackExposure(client, apiKey, props.id, arm);
   }, [client, apiKey, props.id, arm, source]);
@@ -141,7 +143,7 @@ export function AdaptiveGroup(props: AdaptiveGroupProps): JSX.Element {
     // source never recorded an impression (see the exposure effect above) — a
     // conversion attached in that state would attribute to an arm with zero
     // exposures. Same source gates as the exposure.
-    if (!client || props.goal === undefined || source === 'override' || source === 'baseline') return;
+    if (!client || props.goal === undefined || source === 'override' || source === 'baseline' || source === 'seeded') return;
     const node = containerRef.current;
     if (!node) return;
     const label = goalLabelOf(props.goal);

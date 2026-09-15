@@ -24,6 +24,7 @@ import {
   type SlotConfigEntry,
   type SlotResult,
 } from '@sentientui/core';
+import type { SemanticType } from '@sentientui/core/engagement';
 import { update as updateWeightsStore, type ComponentWeights } from './weights-store.js';
 import { getPreviewMode, subscribePreview, createPreviewClient } from './preview-mode.js';
 import { subscribeOverridesChanged } from './override-events.js';
@@ -31,6 +32,7 @@ import { publishDevtoolsConfig } from './devtools-config.js';
 import { registerSections } from './devtools-registry.js';
 import { isDevBuild } from './adaptive-shared.js';
 import { SDK_IDENT } from './sdk-version.js';
+import { maybeStartCellPreview } from './cell-preview.js';
 
 /**
  * Feeds browser globals into core's `deriveSessionSegment` so the cache key
@@ -97,7 +99,11 @@ const AdaptiveContext = createContext<AdaptiveContextValue>({
 
 export type AdaptiveProviderProps = {
   apiKey: string;
-  context: SentientConfig['context'];
+  /**
+   * @deprecated Unused — the project's type is set in the dashboard. Safe to omit.
+   * Still accepted (and forwarded to core, which ignores it) so existing code compiles.
+   */
+  context?: SentientConfig['context'];
   debug?: boolean;
   /**
    * SSR-preloaded assignments from `preloadAssignments()` / `loadAdaptiveAssignments()`.
@@ -111,9 +117,17 @@ export type AdaptiveProviderProps = {
    */
   sessionSegment?: string;
   /**
+   * @deprecated Use `clientOnly` on the component; the default behaviour renders
+   * the first variant.
+   *
    * When no `initialAssignments` exist for a component, `'first'` renders
-   * `variantIds[0]` in server HTML (safe default for SEO). Use `'none'` only for
-   * decorative slots marked `clientOnly`.
+   * `variantIds[0]` in server HTML (safe default for SEO); `'none'` renders
+   * nothing until the client resolves. Still accepted with that exact behaviour
+   * so existing trees don't change. Deprecated because it was a provider-wide
+   * switch for a per-component decision (`clientOnly` already expresses it), and
+   * it only ever reached `<Adaptive variants>` / `useAssignment` — `useAdaptive`
+   * falls back to the first key regardless, and AdaptiveText, generated-version
+   * `<Adaptive>` and slots never read it, so it read broader than it was.
    * @default 'first'
    */
   ssrFallback?: SsrFallback;
@@ -190,6 +204,16 @@ export type AdaptiveProviderProps = {
    * it — running the site locally before accepting a cookie banner.
    */
   declaredSections?: string[];
+  /**
+   * What each section IS, keyed by its `data-sentient-id`:
+   * `{ about: 'trust', contact: 'cta' }`. Optional — sections are classified
+   * from their content — but the classifier reads a section with little
+   * signal-bearing copy (an "About us" band, a contact form) as `generic`, and
+   * a `generic` section is ordered the same for every persona. Declare the
+   * ones it gets wrong; any section with a `data-sentient-id` can appear here,
+   * reorderable or not. Wins over legacy `data-sentient-type` markup.
+   */
+  sectionTypes?: Readonly<Partial<Record<string, SemanticType>>>;
   /**
    * SSR-preloaded slot results from `loadAdaptiveDecision()` (the `slots`
    * field of its result). Guarantees `useAdaptiveTokens`/`AdaptiveGroup`
@@ -333,6 +357,13 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
   // variants/personas writes nothing. Off by default (inert in production).
   const [previewOn, setPreviewOn] = useState(getPreviewMode());
   useEffect(() => subscribePreview(() => setPreviewOn(getPreviewMode())), []);
+  // On-site cell preview (dashboard "Preview on your site" link). No-ops
+  // without both URL params; forces the previewed arm through the override
+  // channel AdaptiveSlot already renders exposure-free.
+  useEffect(() => {
+    maybeStartCellPreview(props.apiBaseUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // When a consentFrom source is configured it owns the gate: start closed and
   // open only once the source grants. An explicit consent={true} (e.g. resolved
@@ -399,6 +430,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
         if (cancelled) return;
         stopEngagement = startEngagementCapture(c, {
           apiKey: props.apiKey,
+          sectionTypes: props.sectionTypes,
           apiBase: props.apiBaseUrl ? props.apiBaseUrl.replace(/\/$/, '') : undefined,
         });
       });
@@ -410,7 +442,12 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       // client (graph-capable). Pass enableGraph={false} for the lean client.
       void import('@sentientui/core/graph').then(({ init: initGraph }) => {
         if (cancelled) return;
-        created = initGraph({ ...config, graph: true, captureDomText: props.captureDomText === true });
+        created = initGraph({
+          ...config,
+          graph: true,
+          captureDomText: props.captureDomText === true,
+          sectionTypes: props.sectionTypes,
+        });
         clientRef.current = created;
         setClient(created);
         startEngagement(created);
@@ -490,7 +527,9 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
   // changing React `key`).
   const frozenConfigRef = useRef<{
     apiKey: string;
-    context: SentientConfig['context'];
+    // Optional since `context` was deprecated: undefined → undefined compares
+    // equal under Object.is, so omitting it never trips the warning below.
+    context: SentientConfig['context'] | undefined;
     country: string | undefined;
     persona: string | undefined;
     apiBaseUrl: string;
@@ -559,8 +598,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
           .join(', ')} ${missing.length > 1 ? 'have' : 'has'} no matching ` +
           'data-sentient-id element, so the layout engine cannot learn what ' +
           'they are and will serve the same order to every persona. Add ' +
-          'data-sentient-id="<sectionId>" (plus optional data-sentient-type) ' +
-          'to each section\'s element.',
+          'data-sentient-id="<sectionId>" to each section\'s element.',
       );
     }
   }, [props.declaredSections]);

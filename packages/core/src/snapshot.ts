@@ -16,6 +16,8 @@ export type CompoundLocator = {
   dataAttr?: { name: string; value: string };
   selector?: string;
   urlMatch?: string;
+  /** Where the element is expected to exist — see page-scope.ts. Health only, never serving. */
+  page?: string;
   fingerprint?: { tag?: string; text?: string };
   semanticId?: string;
 };

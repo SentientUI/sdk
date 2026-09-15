@@ -2,11 +2,9 @@
 
 // `type JSX` from react, not the global namespace removed in @types/react@19
 // (peers allow react >=18) — see adaptive-text.tsx.
-import { memo, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react';
-import { attachMicroSignalDetectors, type MicroSignalType } from '@sentientui/core';
-import { useAdaptiveApiKey, useSentient } from './provider.js';
-import { useAssignment } from './use-assignment.js';
-import { registerComponent } from './devtools-registry.js';
+import { memo, useEffect, useState, type JSX, type ReactNode } from 'react';
+import { useVariantComponent, type MicroSignalGoals } from './use-variant-component.js';
+import { AdaptiveSlot, type AdaptiveSlotProps } from './adaptive-slot.js';
 
 export type {
   ScrollDepthGoal,
@@ -17,15 +15,15 @@ export type {
   WeightedCompositeGoal,
   GoalConfig,
 } from './adaptive-shared.js';
-import { attachGoalListeners, goalValueOf, isDevBuild, maybeDeclareFunnel, normalizeGoal, trackExposure, type GoalConfig } from './adaptive-shared.js';
+import { isDevBuild, type GoalConfig } from './adaptive-shared.js';
 
-/** Maps a detected micro-signal to a named session goal (`client.goal`). */
-export type MicroSignalGoalConfig = string | { name: string; weight?: number; stepIndex?: number };
-export type MicroSignalGoals = Partial<Record<MicroSignalType, MicroSignalGoalConfig>>;
+export type { MicroSignalGoalConfig, MicroSignalGoals } from './use-variant-component.js';
 
-export type AdaptiveProps = {
+/** `<Adaptive>` with variants written in code — each key an arm, first key the control. */
+export type AdaptiveVariantsProps = {
   id: string;
   variants: Record<string, ReactNode>;
+  children?: never;
   goal: string | GoalConfig;
   /**
    * Funnel this component serves (stable funnel id, e.g. "checkout" —
@@ -69,197 +67,30 @@ export type AdaptiveProps = {
   agentData?: unknown;
 };
 
-function AdaptiveImpl(props: AdaptiveProps): JSX.Element | null {
-  const client = useSentient();
-  const apiKey = useAdaptiveApiKey();
-  // Freeze the variant-id array on the KEY SET, not the object identity: an
-  // inline `variants={{...}}` literal is a fresh object every render, so keying
-  // on `props.variants` churned a new array each commit — re-running the
-  // register effect (dep below) and unregistering+re-registering the component
-  // on every render. A joined-keys signature is stable across renders for the
-  // same keys yet still updates if the declared set changes. Same convention as
-  // useAdaptive / AdaptiveGroup / useAdaptiveTokens.
-  const variantKey = Object.keys(props.variants).join('\u0000');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const variantIds = useMemo(() => Object.keys(props.variants), [variantKey]);
-  const { variantId, content, isOverride, settled } = useAssignment(props.id, variantIds, props.agentData, props.agentDataByVariant);
-  const containerRef = useRef<HTMLDivElement>(null);
+/**
+ * `<Adaptive>` without `variants`: the children are your original, and the
+ * versions come from the dashboard (generated per visitor type, no redeploy).
+ */
+export type AdaptiveGeneratedProps = Omit<AdaptiveSlotProps, 'children'> & {
+  children: ReactNode;
+  variants?: undefined;
+};
+
+export type AdaptiveProps = AdaptiveVariantsProps | AdaptiveGeneratedProps;
+
+function AdaptiveImpl(props: AdaptiveVariantsProps): JSX.Element | null {
+  // Exposure, funnel, goal listeners, cursor + micro-signals all live in the
+  // engine shared with useAdaptive, so a gate added for one applies to both.
+  const { client, variantId, content, ref } = useVariantComponent(props.id, props.variants, {
+    goal: props.goal,
+    funnel: props.funnel,
+    microSignalGoals: props.microSignalGoals,
+    agentData: props.agentData,
+    agentDataByVariant: props.agentDataByVariant,
+    cursorSignal: true,
+  });
   const [mounted, setMounted] = useState(false);
-
   useEffect(() => { setMounted(true); }, []);
-  const goalFiredRef = useRef(false);
-  const microGoalFiredRef = useRef<Set<MicroSignalType>>(new Set());
-  const assignTrackedRef = useRef<string | null>(null);
-  const goalKey = typeof props.goal === 'string' ? props.goal : JSON.stringify(props.goal);
-  const goal = useMemo(() => normalizeGoal(props.goal), [goalKey]);
-  const goalLabel = typeof props.goal === 'string' ? props.goal : goal.type;
-
-  // Register with the devtools registry so the dev widget can list this
-  // component + its variants. Inert in production (registry has no UI); the
-  // cleanup unregisters on unmount.
-  useEffect(() => registerComponent({ id: props.id, variantIds, goal: goalLabel }), [props.id, variantIds, goalLabel]);
-
-  // Track variant_assigned exactly once per (component, variant) mount.
-  useEffect(() => {
-    // A forced variant is a dev/test view, not a real exposure — recording it
-    // would train the bandit on the override. Same gate on every tracking
-    // effect below ("no events recorded, weights unchanged").
-    if (isOverride) return;
-    // Only expose a SETTLED assignment. On the CSR path the served variant
-    // resolves in two steps (interim baseline variantIds[0] → bandit choice);
-    // tracking the interim would accrue a phantom baseline exposure that can
-    // never convert. Mirrors AdaptiveText (start null, track after settle).
-    if (!settled) return;
-    if (!client || !variantId || !apiKey) return;
-    if (assignTrackedRef.current === variantId) return;
-    assignTrackedRef.current = variantId;
-    trackExposure(client, apiKey, props.id, variantId);
-  }, [client, variantId, apiKey, props.id, isOverride, settled]);
-
-  // Reset goal latch when variant or goal changes.
-  useEffect(() => {
-    goalFiredRef.current = false;
-    microGoalFiredRef.current = new Set();
-  }, [variantId, goal]);
-
-  // Declare funnel membership (and, for weighted composites, the funnel's
-  // steps) once per page load. Same settle/override gates as the exposure —
-  // a forced dev view must not declare anything.
-  useEffect(() => {
-    if (isOverride || !settled) return;
-    if (!client || !props.funnel) return;
-    maybeDeclareFunnel(client, apiKey, props.id, props.funnel, goal);
-  }, [client, apiKey, props.id, props.funnel, goal, isOverride, settled]);
-
-  // Emit cursor_signal after 800 ms of continuous hover.
-  useEffect(() => {
-    if (isOverride) return;
-    // Same settle gate as the exposure: before assign() resolves, variantId is
-    // the interim baseline placeholder — a hover then would attribute a
-    // cursor_signal to an arm that was never really served.
-    if (!settled) return;
-    if (!client || !variantId) return;
-    const node = containerRef.current;
-    if (!node) return;
-
-    let timerId: ReturnType<typeof setTimeout> | null = null;
-    let hoverStart = 0;
-
-    const onEnter = (): void => {
-      hoverStart = Date.now();
-      timerId = setTimeout(() => {
-        client.track({
-          projectId: apiKey,
-          componentId: props.id,
-          variantId: variantId!,
-          eventType: 'cursor_signal',
-          payload: { hoverDuration: Date.now() - hoverStart },
-        });
-        timerId = null;
-      }, 800);
-    };
-
-    const onLeave = (): void => {
-      if (timerId !== null) {
-        clearTimeout(timerId);
-        timerId = null;
-      }
-    };
-
-    node.addEventListener('mouseenter', onEnter);
-    node.addEventListener('mouseleave', onLeave);
-    return () => {
-      node.removeEventListener('mouseenter', onEnter);
-      node.removeEventListener('mouseleave', onLeave);
-      if (timerId !== null) clearTimeout(timerId);
-    };
-  }, [client, variantId, apiKey, props.id, isOverride, settled]);
-
-  // Attach micro-signal detectors passively — rage click, text copy, scroll hesitation, tab loss.
-  useEffect(() => {
-    if (isOverride) return;
-    // Gate on settle too (like the exposure): during the pre-assign() window
-    // variantId is the interim baseline placeholder, so a rage-click / tab-loss
-    // would record a micro_signal — and fire a mapped named goal — attributed
-    // to an arm that was never really served.
-    if (!settled) return;
-    if (!client || !variantId) return;
-    const node = containerRef.current;
-    if (!node) return;
-    const assignedAt = Date.now();
-    return attachMicroSignalDetectors(
-      (signalType, extra = {}) => {
-        client.track({
-          projectId: apiKey,
-          componentId: props.id,
-          variantId: variantId!,
-          eventType: 'micro_signal',
-          payload: { signalType, ...extra },
-        });
-
-        const mapping = props.microSignalGoals?.[signalType];
-        if (!mapping || microGoalFiredRef.current.has(signalType)) return;
-        microGoalFiredRef.current.add(signalType);
-        const name = typeof mapping === 'string' ? mapping : mapping.name;
-        const weight = typeof mapping === 'string' ? 1.0 : (mapping.weight ?? 1.0);
-        const stepIndex = typeof mapping === 'string' ? 0 : (mapping.stepIndex ?? 0);
-        // Explicit options form: `extra` is arbitrary micro-signal data, so it
-        // must land in metadata and never be mistaken for GoalOptions keys.
-        client.goal(name, { metadata: { signalType, ...extra }, weight, stepIndex });
-      },
-      node,
-      assignedAt,
-    );
-  }, [client, variantId, apiKey, props.id, props.microSignalGoals, isOverride, settled]);
-
-  // Attach goal tracking (shared machinery — see adaptive-shared.ts).
-  useEffect(() => {
-    if (isOverride) return;
-    // Same settle gate as the exposure effect above: before assign() resolves,
-    // variantId is the interim baseline placeholder, which never recorded an
-    // impression — a conversion in that window would attribute to an arm with
-    // zero exposures and corrupt its stats.
-    if (!settled) return;
-    if (!client || !variantId) return;
-    const node = containerRef.current;
-    if (!node) return;
-
-    // A static `value` on the goal config rides on BOTH writes (the component-
-    // attributed event and the session funnel record) so read-time dedup never
-    // picks a valueless row. Steps carry weights, never values (spec §9.4).
-    const declaredValue = goalValueOf(goal);
-    return attachGoalListeners(node, goal, {
-      fireGoal: () => {
-        if (goalFiredRef.current) return;
-        goalFiredRef.current = true;
-        client.track({
-          projectId: apiKey,
-          componentId: props.id,
-          variantId,
-          eventType: 'goal_achieved',
-          goalType: goalLabel,
-          payload: { reward: 1.0, ...(declaredValue !== undefined ? { goalValue: declaredValue } : {}) },
-        });
-        client.goal(goalLabel, {
-          metadata: { componentId: props.id, variantId },
-          weight: 1.0,
-          stepIndex: 0,
-          ...(declaredValue !== undefined ? { value: declaredValue } : {}),
-        });
-      },
-      fireStep: (name, weight, stepIndex) => {
-        client.track({
-          projectId: apiKey,
-          componentId: props.id,
-          variantId: variantId!,
-          eventType: 'goal_achieved',
-          goalType: name,
-          payload: { reward: weight },
-        });
-        client.goal(name, { metadata: {}, weight, stepIndex });
-      },
-    }, goalLabel);
-  }, [client, variantId, apiKey, props.id, goal, goalLabel, isOverride, settled]);
 
   // Decorative slots: empty in SSR HTML and until the client has mounted.
   if (props.clientOnly && (!mounted || !client)) return null;
@@ -276,7 +107,7 @@ function AdaptiveImpl(props: AdaptiveProps): JSX.Element | null {
   }
 
   return (
-    <div ref={containerRef} data-sentient-id={props.id} data-sentient-variant={variantId}>
+    <div ref={ref} data-sentient-id={props.id} data-sentient-variant={variantId}>
       {jsxContent ?? managedContent}
     </div>
   );
@@ -291,7 +122,7 @@ function AdaptiveImpl(props: AdaptiveProps): JSX.Element | null {
  * variant JSX on every render re-renders every time (correct), while stable/
  * memoized elements keep the optimization.
  */
-export const Adaptive = memo(AdaptiveImpl, (prev, next) => {
+const AdaptiveVariants = memo(AdaptiveImpl, (prev, next) => {
   if (prev.id !== next.id) return false;
   // Serialize only when the goal reference actually changed — a stable/memoized
   // goal (the common case) skips the stringify entirely.
@@ -310,3 +141,22 @@ export const Adaptive = memo(AdaptiveImpl, (prev, next) => {
   if (prevKeys.length !== nextKeys.length) return false;
   return prevKeys.every((k) => k in next.variants && Object.is(prev.variants[k], next.variants[k]));
 });
+
+/**
+ * One component, two ways to fill it. Without `variants`, the children are the
+ * original and SentientUI serves dashboard-generated versions (the slot path —
+ * what `<AdaptiveSlot>` was). With `variants`, the arms are the JSX you wrote.
+ * The two stay separate optimizers underneath (slot_decisions vs the variant
+ * bandit, CONTRACTS §1–§2); only the API is shared. Switching a mounted element
+ * between modes remounts it, which is the honest behaviour: it becomes a
+ * different experiment.
+ */
+export function Adaptive(props: AdaptiveProps): JSX.Element | null {
+  if (props.variants === undefined) return <AdaptiveSlot {...props} />;
+  if (isDevBuild() && (props as { children?: ReactNode }).children != null) {
+    // JS callers bypass the `children?: never` type: say which one wins rather
+    // than silently dropping the markup they wrapped.
+    console.warn(`[sentient] <Adaptive id="${props.id}"> got both variants and children — rendering variants; children are ignored.`);
+  }
+  return <AdaptiveVariants {...props} />;
+}

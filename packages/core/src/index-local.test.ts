@@ -6,7 +6,7 @@ import {
   LOCAL_ENGINE_SENTINEL,
 } from './index-local.js';
 import * as stub from './index-local-stub.js';
-import { PERSONAS, fnv1a, pickDeterministicArm } from '@sentientui/policy';
+import { pickDeterministicArm } from '@sentientui/policy';
 
 const SID = 'e2e-keyless-session';
 const INPUT = {
@@ -27,30 +27,53 @@ describe('createLocalEngine — determinism', () => {
     expect(engine.decide(INPUT)).toEqual(engine.decide(INPUT));
   });
 
-  it('persona = PERSONAS[fnv1a(sessionId) % 4] with confidence 0.5', () => {
+  it('unforced persona is unknown for every session, with confidence 0.5', () => {
+    // Was a hash of the session onto the four seeded personas, removed
+    // 2026-09-13: nothing declared means nothing known.
     for (const sid of [SID, 'another-session', 'third']) {
       const out = createLocalEngine({ sessionId: sid }).decide({});
-      expect(out.persona).toBe(PERSONAS[fnv1a(sid) % PERSONAS.length]);
+      expect(out.persona).toBe('unknown');
       expect(out.confidence).toBe(0.5);
     }
-    // Pinned value for the e2e fixture session (verified against holdout.ts's fnv1a):
-    expect(createLocalEngine({ sessionId: SID }).decide({}).persona).toBe('browser');
   });
 
-  it('forcedPersona wins; an invalid forced persona falls back to the hash', () => {
-    expect(createLocalEngine({ sessionId: SID, forcedPersona: 'researcher' }).decide({}).persona).toBe('researcher');
+  it('unforced keyless mode previews the authored layout', () => {
+    expect(createLocalEngine({ sessionId: SID }).decide(INPUT).layoutOrder).toEqual(INPUT.sections);
+  });
+
+  it('forcedPersona wins for any well-formed key; a malformed one falls back to unknown', () => {
+    // Projects declare their own vocabulary now, so `admin` must preview as
+    // `admin` — it used to hash to a seeded persona.
+    expect(createLocalEngine({ sessionId: SID, forcedPersona: 'admin' }).decide({}).persona).toBe('admin');
     expect(createLocalEngine({ sessionId: SID, forcedPersona: 'unknown' }).decide({}).persona).toBe('unknown');
-    expect(createLocalEngine({ sessionId: SID, forcedPersona: 'martian' }).decide({}).persona).toBe('browser');
+    expect(createLocalEngine({ sessionId: SID, forcedPersona: 'not a key!' }).decide({}).persona).toBe('unknown');
   });
 });
 
 describe('createLocalEngine — layout', () => {
-  it('orders sections via applyClusterHeuristic over inferred section types', () => {
-    const buyer = createLocalEngine({ sessionId: SID, forcedPersona: 'buyer' }).decide(INPUT);
-    const researcher = createLocalEngine({ sessionId: SID, forcedPersona: 'researcher' }).decide(INPUT);
-    // buyer priority: pricing < cta < hero < … < faq; researcher: … faq < hero < … pricing
-    expect(buyer.layoutOrder).toEqual(['pricing', 'hero', 'faq']);
-    expect(researcher.layoutOrder).toEqual(['faq', 'hero', 'pricing']);
+  it('gives every persona key an arrangement, not just four magic strings', () => {
+    // Rewritten 2026-09-13. This used to assert the specific orderings two of
+    // the seeded personas produced, because the local
+    // engine looked keys up in a four-persona table — so every OTHER key
+    // silently no-oped while the CLI and docs told people to try their own.
+    // The engine now maps any key onto an archetype, which is what preview mode
+    // was always documented to do.
+    const order = (persona: string) =>
+      createLocalEngine({ sessionId: SID, forcedPersona: persona }).decide(INPUT).layoutOrder;
+    for (const key of ['evaluator', 'trial_user', 'admin', 'trial', 'wombat']) {
+      expect([...order(key)!].sort()).toEqual(['faq', 'hero', 'pricing']);
+    }
+    // Different keys must be able to differ, or preview mode shows nothing.
+    // (Only some do on a 3-section page — there are few distinct orders.) The
+    // earlier pinned `admin` order was really the hashed fallback persona's:
+    // resolvePersona discarded every non-seeded key before it got here.
+    const keys = ['admin', 'evaluator', 'a', 'b', 'trial', 'wombat'];
+    expect(new Set(keys.map((k) => JSON.stringify(order(k)))).size).toBeGreaterThan(1);
+  });
+
+  it('leaves the authored order alone for an unidentified visitor', () => {
+    expect(createLocalEngine({ sessionId: SID, forcedPersona: 'unknown' }).decide(INPUT).layoutOrder)
+      .toEqual(INPUT.sections);
   });
 
   it('layoutOrder is null when no sections are declared', () => {
@@ -81,30 +104,30 @@ describe('inferSectionTypes', () => {
 
 describe('createLocalEngine — slots and assignments', () => {
   it('dims slots pick per dim with the persona-salted key', () => {
-    const out = createLocalEngine({ sessionId: SID, forcedPersona: 'buyer' }).decide(INPUT);
+    const out = createLocalEngine({ sessionId: SID, forcedPersona: 'admin' }).decide(INPUT);
     expect(out.slots.hero).toEqual({
-      tone: pickDeterministicArm(`${SID}:buyer`, 'hero.tone', ['calm', 'urgent']),
+      tone: pickDeterministicArm(`${SID}:admin`, 'hero.tone', ['calm', 'urgent']),
     });
     // Verified concrete values for the e2e fixture (Task 4.6 depends on these):
     expect(out.slots.hero).toEqual({ tone: 'calm' });
-    const res = createLocalEngine({ sessionId: SID, forcedPersona: 'researcher' }).decide(INPUT);
+    const res = createLocalEngine({ sessionId: SID, forcedPersona: 'trial_user' }).decide(INPUT);
     expect(res.slots.hero).toEqual({ tone: 'urgent' });
   });
 
   it('enumerated slots pick via the persona-salted key', () => {
-    const out = createLocalEngine({ sessionId: SID, forcedPersona: 'buyer' }).decide(INPUT);
+    const out = createLocalEngine({ sessionId: SID, forcedPersona: 'admin' }).decide(INPUT);
     expect(out.slots['pricing-area']).toBe(
-      pickDeterministicArm(`${SID}:buyer`, 'pricing-area', ['standard', 'social_first']),
+      pickDeterministicArm(`${SID}:admin`, 'pricing-area', ['standard', 'social_first']),
     );
     expect(out.slots['pricing-area']).toBe('social_first'); // verified concrete value
   });
 
   it('assignments are persona-independent: pickDeterministicArm(sessionId, componentId, variantIds)', () => {
-    const buyer = createLocalEngine({ sessionId: SID, forcedPersona: 'buyer' }).decide(INPUT);
-    const researcher = createLocalEngine({ sessionId: SID, forcedPersona: 'researcher' }).decide(INPUT);
+    const admin = createLocalEngine({ sessionId: SID, forcedPersona: 'admin' }).decide(INPUT);
+    const evaluator = createLocalEngine({ sessionId: SID, forcedPersona: 'evaluator' }).decide(INPUT);
     const expected = pickDeterministicArm(SID, 'hero_cta', ['a', 'b']);
-    expect(buyer.assignments.hero_cta).toBe(expected);
-    expect(researcher.assignments.hero_cta).toBe(expected);
+    expect(admin.assignments.hero_cta).toBe(expected);
+    expect(evaluator.assignments.hero_cta).toBe(expected);
   });
 });
 

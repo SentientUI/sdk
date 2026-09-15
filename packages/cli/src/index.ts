@@ -30,8 +30,8 @@ Notes
   init does NOT edit your layout. It prints the snippet — you must wrap your app
   in <AdaptiveRoot> yourself, or nothing adapts and nothing is tracked.
 
-  Verify an install by loading the app with ?sentient_persona=buyer and then
-  ?sentient_persona=deal_seeker; the two should render differently.
+  Verify an install by loading the app with two different ?sentient_persona=
+  values; in keyless local mode the two should render differently.
 
 Docs   https://sentient-ui.com/docs/developers#cli
 API    https://api.sentient-ui.com/openapi.json`;

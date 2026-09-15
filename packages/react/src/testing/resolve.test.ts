@@ -13,10 +13,10 @@ describe('resolveScenario', () => {
 
   it('serves forced decide response', async () => {
     const r = await resolveScenario(
-      { layout: ['pricing', 'hero'], variants: { hero: 'b' }, persona: 'buyers' },
+      { layout: ['pricing', 'hero'], variants: { hero: 'b' }, persona: 'admins' },
       'POST', `${BASE}/v1/decide`, JSON.stringify({ sections: [{ id: 'hero' }, { id: 'pricing' }] }),
     );
-    expect(r).toEqual({ status: 200, json: { layoutOrder: ['pricing', 'hero'], assignments: { hero: 'b' }, persona: 'buyers', confidence: 1 } });
+    expect(r).toEqual({ status: 200, json: { layoutOrder: ['pricing', 'hero'], assignments: { hero: 'b' }, persona: 'admins', confidence: 1 } });
   });
 
   it('captures events and returns 204', async () => {

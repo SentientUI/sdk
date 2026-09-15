@@ -265,6 +265,32 @@ describe('grantConsent()', () => {
     client.destroy();
   });
 
+  it('replays slots requested while gated and forwards slot listeners after the upgrade', async () => {
+    // grantConsent() swaps the client in place — no remount — so a mounted
+    // AdaptiveSlot that asked while gated would otherwise never be decided.
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input).endsWith('/decide')
+          ? ({ ok: true, json: async () => ({ slots: { hero: 'alt' }, slotConfig: { hero: { kind: 'arms', content: 'Hi' } } }) } as Response)
+          : ({ ok: true, json: async () => ({}) } as Response),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_test_slot_gate', consent: false });
+    const listener = vi.fn();
+    client.onSlotsChanged!(listener);
+
+    client.requestSlots!(['hero']);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/decide'))).toBe(false);
+
+    grantConsent('pk_test_slot_gate');
+    await vi.waitFor(() => expect(client.getSlotConfig('hero')).toEqual({ kind: 'arms', content: 'Hi' }));
+    await vi.waitFor(() => expect(listener).toHaveBeenCalled());
+
+    client.destroy();
+  });
+
   it('is a no-op when called before init()', () => {
     expect(() => grantConsent()).not.toThrow();
   });
@@ -603,7 +629,7 @@ describe('destroy() — forget-me teardown', () => {
     // the pre-paint script on the next visit) and a persisted retry bucket.
     localStorage.setItem(
       `_snt_snap:${BASE_CONFIG.apiKey}`,
-      JSON.stringify({ v: 1, persona: 'buyer', band: 'high', slots: {}, layoutOrder: null, savedAt: 1 }),
+      JSON.stringify({ v: 1, persona: 'admin', band: 'high', slots: {}, layoutOrder: null, savedAt: 1 }),
     );
     localStorage.setItem('_snt_retry_pk_test_abc1', '[]');
     // A cached assignment (`_snt_asgn_*`, namespaced per project) surviving
@@ -629,7 +655,7 @@ describe('dispose() — routine cleanup teardown', () => {
     const client = init({ ...BASE_CONFIG });
     localStorage.setItem(
       `_snt_snap:${BASE_CONFIG.apiKey}`,
-      JSON.stringify({ v: 1, persona: 'buyer', band: 'high', slots: {}, layoutOrder: null, savedAt: 1 }),
+      JSON.stringify({ v: 1, persona: 'admin', band: 'high', slots: {}, layoutOrder: null, savedAt: 1 }),
     );
     localStorage.setItem('_snt_retry_pk_test_abc1', '[]');
     localStorage.setItem(

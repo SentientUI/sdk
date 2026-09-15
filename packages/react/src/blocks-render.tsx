@@ -29,16 +29,22 @@ export type RenderBlocksOptions = {
   onFormGoal?: (goal: string) => void;
 };
 
-function toneStyles(tone?: string): CSSProperties {
+function toneStyles(tone: string | undefined, palette: SitePalette | null): CSSProperties {
+  // Brand tokens when the palette carries them; the original neutral
+  // fallbacks otherwise, so pre-token palettes render exactly as before.
   return {
-    ...(tone === 'muted' ? { opacity: 0.7 } : {}),
-    ...(tone === 'accent' ? { fontWeight: 600 } : {}),
+    ...(tone === 'muted' ? (palette?.muted ? { color: palette.muted } : { opacity: 0.7 }) : {}),
+    ...(tone === 'accent' ? { fontWeight: 600, ...(palette?.accent ? { color: palette.accent } : {}) } : {}),
   };
 }
 
 function buttonStyle(emphasis: string, palette: SitePalette | null, size?: string): CSSProperties {
-  // Mirrors the snippet's button case (blocks.ts:116-125): palette-primary
-  // when available, neutral inherit-first defaults otherwise.
+  // Mirrors the snippet's button case (blocks.ts): palette tokens when
+  // available, neutral inherit-first defaults otherwise. Secondary/ghost
+  // resolve to the ACCENT — before brand tokens they rendered in
+  // currentColor/inherit, which made every non-primary button look like
+  // body text on brand-heavy sites.
+  const accent = palette?.accent;
   return {
     display: 'inline-block',
     padding: BTN_PAD[size ?? 'md'] ?? BTN_PAD['md'],
@@ -48,8 +54,11 @@ function buttonStyle(emphasis: string, palette: SitePalette | null, size?: strin
     textDecoration: emphasis === 'ghost' ? 'underline' : 'none',
     cursor: 'pointer',
     background: emphasis === 'primary' ? (palette?.primaryBg ?? '#111827') : 'transparent',
-    color: emphasis === 'primary' ? (palette?.primaryText ?? '#ffffff') : 'inherit',
-    border: emphasis === 'secondary' ? '1px solid currentColor' : 'none',
+    color:
+      emphasis === 'primary'
+        ? (palette?.primaryText ?? '#ffffff')
+        : (accent ?? 'inherit'),
+    border: emphasis === 'secondary' ? `1px solid ${accent ?? 'currentColor'}` : 'none',
   };
 }
 
@@ -58,7 +67,7 @@ function FormNode({ node, opts }: { node: FormBlock; opts: RenderBlocksOptions }
   const fieldStyle: CSSProperties = {
     padding: '8px 10px',
     font: 'inherit',
-    border: '1px solid currentColor',
+    border: `1px solid ${opts.palette?.border ?? 'currentColor'}`,
     borderRadius: opts.palette?.radius ?? '8px',
   };
   return (
@@ -118,6 +127,12 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
       case 'stack': {
         // Same unknown-token fallback as the grid below (audit SNIP-11).
         const gap = GAP[node.gap ?? 'md'] ?? GAP['md'];
+        // Rung 1: pad reuses the GAP scale; a raised stack with no pad
+        // defaults to md (a zero-padding card is a design bug, not a choice).
+        // Mirrors packages/snippet/src/blocks.ts — the drift-pin test is what
+        // keeps the two renderers agreeing on these literals.
+        const raised = node.surface === 'raised';
+        const pad = node.pad ?? (raised ? 'md' : undefined);
         return (
           <div
             style={{
@@ -127,6 +142,15 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
               ...(node.align ? { alignItems: FLEX_POS[node.align] } : {}),
               ...(node.justify ? { justifyContent: FLEX_POS[node.justify] } : {}),
               ...(node.wrap ? { flexWrap: 'wrap' } : {}),
+              ...(pad ? { padding: GAP[pad] ?? GAP['md'] } : {}),
+              ...(raised
+                ? {
+                    ...(opts.palette?.surface ? { background: opts.palette.surface } : {}),
+                    ...(opts.palette?.surface && opts.palette?.surfaceText ? { color: opts.palette.surfaceText } : {}),
+                    border: `1px solid ${opts.palette?.border ?? 'currentColor'}`,
+                    borderRadius: opts.palette?.radius ?? '8px',
+                  }
+                : {}),
             }}
           >
             {(node.children ?? []).map((child, i) => {
@@ -148,6 +172,7 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
               gridTemplateColumns: `repeat(auto-fit, minmax(max(200px, calc((100% - ${node.columns - 1} * ${gap}) / ${node.columns})), 1fr))`,
               gap,
               ...(node.align ? { alignItems: FLEX_POS[node.align] } : {}),
+              ...(node.pad ? { padding: GAP[node.pad] ?? GAP['md'] } : {}),
             }}
           >
             {(node.children ?? []).map((child, i) => {
@@ -165,7 +190,8 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
               ...(node.size ? { fontSize: FONT_SIZE[node.size] } : {}),
               ...(node.weight ? { fontWeight: WEIGHT[node.weight] } : {}),
               ...(node.align ? { textAlign: node.align } : {}),
-              ...toneStyles(node.tone),
+              ...(node.maxWidth === 'measure' ? { maxWidth: '65ch' } : {}),
+              ...toneStyles(node.tone, opts.palette),
             }}
           >
             {node.value}
@@ -179,6 +205,7 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
               margin: 0,
               fontSize: HEADING_SIZE[node.size ?? 'md'],
               ...(node.align ? { textAlign: node.align } : {}),
+              ...(node.maxWidth === 'measure' ? { maxWidth: '65ch' } : {}),
             }}
           >
             {node.value}
@@ -228,8 +255,8 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
               padding: '2px 10px',
               borderRadius: '999px',
               fontSize: '0.75em',
-              border: '1px solid currentColor',
-              ...toneStyles(node.tone),
+              border: `1px solid ${opts.palette?.border ?? 'currentColor'}`,
+              ...toneStyles(node.tone, opts.palette),
             }}
           >
             {node.value}
@@ -237,6 +264,19 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
         );
       case 'spacer':
         return <div style={{ height: SPACER[node.size] ?? SPACER['md'] }} />;
+      case 'divider':
+        // <hr> for semantics; border-top (not the default inset border) so the
+        // hairline matches form fields and badges in the palette border color.
+        return (
+          <hr
+            style={{
+              border: 'none',
+              borderTop: `1px solid ${opts.palette?.border ?? 'currentColor'}`,
+              margin: 0,
+              width: '100%',
+            }}
+          />
+        );
       case 'form':
         return <FormNode node={node} opts={opts} />;
       default:

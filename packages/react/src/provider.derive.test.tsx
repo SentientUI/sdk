@@ -12,6 +12,10 @@ const { init, deriveSessionSegment } = vi.hoisted(() => ({
 }));
 
 vi.mock('@sentientui/core', () => ({
+  // AdaptiveSlot imports `reveal` from core. These mocks are deliberately
+  // minimal — they exist so the suite never loads real core — so every core
+  // import the rendered tree makes has to be listed here.
+  reveal: vi.fn(),
   init,
   deriveSessionSegment,
 }));

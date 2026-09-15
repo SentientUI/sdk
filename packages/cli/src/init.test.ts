@@ -40,8 +40,8 @@ describe('runInit', () => {
     expect(readFileSync(path.join(dir, '.env.local'), 'utf-8')).toContain('NEXT_PUBLIC_SENTIENT_API_KEY=');
     expect(existsSync(path.join(dir, 'components', 'adaptive-example.tsx'))).toBe(true);
     const out = lines.join('\n');
-    expect(out).toContain('<AdaptiveProvider');
-    expect(out).toContain('open http://localhost:3000?sentient_persona=buyer');
+    expect(out).toContain('<AdaptiveRoot');
+    expect(out).toContain('open http://localhost:3000?sentient_persona=a (then ?sentient_persona=b)');
   });
 
   it('uses the detected package manager (pnpm lockfile → pnpm add)', () => {
@@ -108,7 +108,7 @@ describe('runInit', () => {
     expect(result.framework).toBe('vite');
     expect(readFileSync(path.join(dir, '.env.local'), 'utf-8')).toContain('VITE_SENTIENT_API_KEY=');
     expect(existsSync(path.join(dir, 'src', 'components', 'adaptive-example.tsx'))).toBe(true);
-    expect(lines.join('\n')).toContain('open http://localhost:5173?sentient_persona=buyer');
+    expect(lines.join('\n')).toContain('open http://localhost:5173?sentient_persona=a (then ?sentient_persona=b)');
   });
 
   it('never clobbers an existing example component', () => {

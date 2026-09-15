@@ -8,6 +8,10 @@ import { useSlotResult, useAdaptivePersona } from './use-slot-result.js';
 import { init } from '@sentientui/core';
 
 vi.mock('@sentientui/core', () => ({
+  // AdaptiveSlot imports `reveal` from core. These mocks are deliberately
+  // minimal — they exist so the suite never loads real core — so every core
+  // import the rendered tree makes has to be listed here.
+  reveal: vi.fn(),
   init: vi.fn(),
   detectDeviceClass: () => 'desktop',
   detectTrafficSource: () => 'direct',
@@ -141,19 +145,36 @@ describe('useSlotResult resolution order', () => {
     expect(client.decide).toHaveBeenCalledWith({ slots: [DIMS_DECL] });
   });
 
-  it('keyed mode: warns once in dev that a baseline slot needs SSR/decide (#2)', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const client = makeClient(); // keyed
+  it('keyed mode: decides a mounted, unpreloaded slot through decideSlots and re-renders', async () => {
+    // Keyed clients used to issue no client-side decide at all, so a token or
+    // group slot without an AdaptiveRoot `slots` preload served baseline all
+    // session and never learned.
+    let notify: () => void = () => undefined;
+    let served: unknown = null;
+    const decideSlots = vi.fn(() => { served = { tone: 'urgent' }; notify(); });
+    const client = makeClient({
+      decideSlots,
+      onSlotsChanged: vi.fn((cb: () => void) => { notify = cb; return () => undefined; }),
+      getSlotResult: vi.fn(() => served),
+    });
     mockedInit.mockReturnValue(client as never);
-    const { rerender } = renderHook(() => useSlotResult('hero-warn-slot', DIMS_DECL), {
-      wrapper: wrapperWith(),
+    const { result, rerender } = renderHook(() => useSlotResult('hero-keyed', DIMS_DECL), { wrapper: wrapperWith() });
+    rerender();
+    await vi.waitFor(() => expect(result.current.source).toBe('client'));
+    expect(decideSlots).toHaveBeenCalledWith([DIMS_DECL]);
+    expect(result.current.result).toEqual({ tone: 'urgent' });
+  });
+
+  it('keyed mode: never decides a preloaded slot', async () => {
+    const decideSlots = vi.fn();
+    const client = makeClient({ decideSlots, onSlotsChanged: vi.fn(() => () => undefined) });
+    mockedInit.mockReturnValue(client as never);
+    const { rerender } = renderHook(() => useSlotResult('hero', DIMS_DECL), {
+      wrapper: wrapperWith({ initialSlots: { hero: { tone: 'calm' } } }),
     });
     rerender();
     await new Promise((r) => setTimeout(r, 0));
-    const warnings = warnSpy.mock.calls.filter(([m]) => String(m).includes('resolved to its baseline'));
-    expect(warnings).toHaveLength(1);
-    expect(String(warnings[0]![0])).toContain('hero-warn-slot');
-    warnSpy.mockRestore();
+    expect(decideSlots).not.toHaveBeenCalled();
   });
 
   it('local mode: does not warn about a baseline first paint (decide is pending) (#2)', async () => {
@@ -162,12 +183,12 @@ describe('useSlotResult resolution order', () => {
     mockedInit.mockReturnValue(client as never);
     renderHook(() => useSlotResult('hero-local-nowarn', DIMS_DECL), { wrapper: wrapperWith() });
     await new Promise((r) => setTimeout(r, 0));
-    const warnings = warnSpy.mock.calls.filter(([m]) => String(m).includes('resolved to its baseline'));
+    const warnings = warnSpy.mock.calls.filter(([m]) => String(m).includes('hero-local-nowarn'));
     expect(warnings).toHaveLength(0);
     warnSpy.mockRestore();
   });
 
-  it('keyed mode: never fires a client-side decide for baseline slots', async () => {
+  it('keyed mode on a core without decideSlots: never calls decide per slot', async () => {
     const client = makeClient(); // isLocal undefined = keyed
     mockedInit.mockReturnValue(client as never);
     const { result, rerender } = renderHook(() => useSlotResult('hero', DIMS_DECL), {
@@ -182,33 +203,33 @@ describe('useSlotResult resolution order', () => {
 
 describe('useAdaptivePersona', () => {
   it('honors window.__sentient_persona_override first', () => {
-    window.__sentient_persona_override = { persona: 'buyer', confidence: 0.5 };
+    window.__sentient_persona_override = { persona: 'admin', confidence: 0.5 };
     const { result } = renderHook(() => useAdaptivePersona(), {
-      wrapper: wrapperWith({ initialPersona: { persona: 'browser', confidence: 0.9 } }),
+      wrapper: wrapperWith({ initialPersona: { persona: 'persona_a', confidence: 0.9 } }),
     });
-    expect(result.current).toEqual({ persona: 'buyer', confidence: 0.5, band: 'medium' });
+    expect(result.current).toEqual({ persona: 'admin', confidence: 0.5, band: 'medium' });
   });
 
   it('honors the ?sentient_persona= URL override (mirrors ?sentient_variant=)', () => {
-    window.history.replaceState(null, '', '/?sentient_persona=deal_seeker');
+    window.history.replaceState(null, '', '/?sentient_persona=trial_user');
     const { result } = renderHook(() => useAdaptivePersona(), { wrapper: wrapperWith() });
-    expect(result.current).toEqual({ persona: 'deal_seeker', confidence: 1, band: 'high' });
+    expect(result.current).toEqual({ persona: 'trial_user', confidence: 1, band: 'high' });
   });
 
   it('uses context initialPersona, then client.getPersona()', () => {
     const { result } = renderHook(() => useAdaptivePersona(), {
-      wrapper: wrapperWith({ initialPersona: { persona: 'researcher', confidence: 0.2 } }),
+      wrapper: wrapperWith({ initialPersona: { persona: 'evaluator', confidence: 0.2 } }),
     });
-    expect(result.current).toEqual({ persona: 'researcher', confidence: 0.2, band: 'low' });
+    expect(result.current).toEqual({ persona: 'evaluator', confidence: 0.2, band: 'low' });
 
     mockedInit.mockReturnValue(
       makeClient({
-        getPersona: vi.fn().mockReturnValue({ persona: 'buyer', confidence: 0.8, band: 'high' }),
+        getPersona: vi.fn().mockReturnValue({ persona: 'admin', confidence: 0.8, band: 'high' }),
       }) as never,
     );
     const second = renderHook(() => useAdaptivePersona(), { wrapper: wrapperWith() });
     second.rerender();
-    expect(second.result.current).toEqual({ persona: 'buyer', confidence: 0.8, band: 'high' });
+    expect(second.result.current).toEqual({ persona: 'admin', confidence: 0.8, band: 'high' });
   });
 
   it('returns null when nothing is known', () => {
@@ -220,9 +241,9 @@ describe('useAdaptivePersona', () => {
     const { result } = renderHook(() => useAdaptivePersona(), { wrapper: wrapperWith() });
     expect(result.current).toBeNull();
     act(() => {
-      applyScenario({ persona: 'buyer', confidence: 0.5 });
+      applyScenario({ persona: 'admin', confidence: 0.5 });
     });
-    expect(result.current).toEqual({ persona: 'buyer', confidence: 0.5, band: 'medium' });
+    expect(result.current).toEqual({ persona: 'admin', confidence: 0.5, band: 'medium' });
     act(() => {
       resetScenario();
     });
@@ -235,26 +256,26 @@ describe('useAdaptivePersona', () => {
       return createElement('span', null, p ? p.persona : 'none');
     }
     const tree = createElement(
-      wrapperWith({ initialPersona: { persona: 'browser', confidence: 0.9 } }),
+      wrapperWith({ initialPersona: { persona: 'persona_a', confidence: 0.9 } }),
       null,
       createElement(Probe),
     );
 
     // Server render uses only the SSR-provided persona (window/client not read).
     const html = renderToString(tree);
-    expect(html).toContain('browser');
+    expect(html).toContain('persona_a');
 
     // Force a persona, then hydrate the server HTML. The first client render
     // still uses initialPersona (matches the server → no mismatch), then the
     // post-mount read applies the override.
-    window.__sentient_persona_override = { persona: 'buyer', confidence: 0.5 };
+    window.__sentient_persona_override = { persona: 'admin', confidence: 0.5 };
     const container = document.createElement('div');
     container.innerHTML = html;
     document.body.appendChild(container);
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     render(tree, { container, hydrate: true });
     expect(errSpy).not.toHaveBeenCalled();
-    await waitFor(() => expect(container.textContent).toBe('buyer'));
+    await waitFor(() => expect(container.textContent).toBe('admin'));
     errSpy.mockRestore();
     container.remove();
   });

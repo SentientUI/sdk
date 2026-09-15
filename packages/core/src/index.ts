@@ -41,6 +41,16 @@ import { createLocalModeClient } from './local-mode.js';
 import { randomUuidV4 } from './uuid.js';
 import { backoffDelayMs, classifyResponse } from './durable.js';
 
+// Never `process?.env` — optional chaining still throws ReferenceError on an
+// undeclared global, and browsers without a bundler shim (raw esbuild, vanilla
+// script tags) have no `process`. Same declaration @sentientui/react carries.
+declare const process: { env?: { NODE_ENV?: string } } | undefined;
+
+/** True unless NODE_ENV is 'production' — gates integrator-facing dev warnings. */
+function isDevBuild(): boolean {
+  return typeof process === 'undefined' || process.env?.NODE_ENV !== 'production';
+}
+
 export { PROD_KEYLESS_ERROR, LOCAL_MODE_BANNER } from './local-mode.js';
 
 // The one source of truth for the session cookie's name — every out-of-package
@@ -108,7 +118,11 @@ export function _registerConsentUpgradeInit(
 
 export type SentientConfig = {
   apiKey: string;
-  context: 'landing' | 'ecommerce' | 'saas' | 'marketplace';
+  /**
+   * @deprecated Unused — the project's type is set in the dashboard. Safe to omit.
+   * Still accepted so existing installs keep type-checking; nothing reads it.
+   */
+  context?: 'landing' | 'ecommerce' | 'saas' | 'marketplace';
   /** @internal — not exposed to users; defaults to the hosted SentientUI API. */
   ingestUrl?: string;
   debug?: boolean;
@@ -223,6 +237,7 @@ export {
   renderPrePaintScript,
 } from './snapshot.js';
 export type { DecisionSnapshot, SlotConfigEntry, SlotOps, CompoundLocator } from './snapshot.js';
+export { pageScopeMatches, PAGE_SCOPE_RE } from './page-scope.js';
 export * from './blocks.js';
 
 /** An editor-defined goal delivered with a registry-mode decision, for the
@@ -270,6 +285,12 @@ export type DecideInput = {
   // 'registry' → serve the project's published slot_definitions in addition to
   // any declared slots (registry wins on id collision). Default 'request'.
   slotsFrom?: 'request' | 'registry';
+  /** Registry mode only: decide just these published slot ids (1–50) instead
+   *  of every published slot — see `requestSlots`. */
+  registrySlotIds?: string[];
+  /** Registry mode only: `false` omits the snippet bootstrap data (editor goals,
+   *  section map) the React SDK never reads — two queries per page saved. */
+  bootstrap?: false;
   /**
    * Caller's build version (e.g. the snippet's `__SNIPPET_VERSION__`), sent
    * as `v` on the wire. Additive/best-effort: the server persists it for
@@ -355,8 +376,48 @@ export type SentientClient = {
   getSlotConfig(slotId: string): SlotConfigEntry | null;
   /** Report mounted AdaptiveSlot ids the server has no config for, so they
    *  auto-register as draft slots. Fire-and-forget, batched, deduped per
-   *  client — never blocks rendering and never throws. */
-  reportSlots(slotIds: string[]): void;
+   *  client — never blocks rendering and never throws. `baselineTexts` maps a
+   *  slot id to its rendered baseline text (what the region says today), so
+   *  generation can ground its versions in what they replace — sent only on
+   *  the first report of an id, capped, and the server keeps it only at
+   *  first registration. */
+  reportSlots(slotIds: string[], baselineTexts?: Record<string, string>): void;
+  /**
+   * Ask the server for the registry config of these MOUNTED slots. Batches a
+   * tick's mounts into one decide scoped to exactly those ids, once per id per
+   * client; ids the server has nothing published for are passed on to
+   * `reportSlots` (with their baseline text) so they register as drafts.
+   * Listeners from `onSlotsChanged` fire when the answer lands. Optional so
+   * hand-rolled/test clients keep type-checking.
+   */
+  requestSlots?(slotIds: string[], baselineTexts?: Record<string, string>): void;
+  /**
+   * Decide these MOUNTED request-declared slots (useAdaptiveTokens,
+   * AdaptiveGroup) that nothing preloaded: a tick's mounts batch into one
+   * `decide({ slots })`, once per id per client. Listeners from
+   * `onSlotsChanged` fire when it lands. Optional for hand-rolled clients.
+   */
+  decideSlots?(decls: SlotDeclInput[]): void;
+  /**
+   * Withdraw slots from a `requestSlots`/`decideSlots` batch that has not
+   * been sent yet (the hooks call this from their unmount cleanup). A slot
+   * that mounted and unmounted inside one tick — a redirecting route, a
+   * StrictMode probe — is not on the page, so it must not become a trial.
+   * In-flight requests are unaffected. Optional for hand-rolled clients.
+   */
+  cancelSlots?(slotIds: string[]): void;
+  /** Subscribe to slot result/config changes. Returns the unsubscribe. */
+  onSlotsChanged?(listener: () => void): () => void;
+  /**
+   * Whether the result `getSlotResult` returns for this slot was DECIDED for
+   * this session — an SSR seed or a decide response — as opposed to a
+   * snapshot from an earlier visit or the baseline written when a decide
+   * failed. Only a decided arm has a `slot_decisions` row, so only a decided
+   * arm may be exposed: recording an impression for a seeded one trains an
+   * arm the server never served this session. Optional for hand-rolled
+   * clients (absent reads as decided).
+   */
+  isSlotDecided?(slotId: string): boolean;
   /** Site palette served with registry block decisions. Null when absent. */
   getSitePalette(): import('./blocks.js').SitePalette | null;
   /** Current persona estimate. Band is always `confidenceBand(confidence)`. Null when nothing is known yet. */
@@ -384,6 +445,8 @@ export type SentientClient = {
 // SSR preload helpers moved to the `@sentientui/core/server` entry in 0.6.0 so
 // ~200 lines of Node-only fetch logic stop shipping in the browser bundle.
 
+export { REVEAL_MS, reveal, resetRevealStyles } from './reveal.js';
+export type { RevealOptions } from './reveal.js';
 export { attachMicroSignalDetectors } from './micro-signals.js';
 export type { MicroSignalEmitter, MicroSignalType } from './micro-signals.js';
 
@@ -822,6 +885,10 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
     destroy: () => undefined,
   };
 
+  let upgraded = false;
+  const slotListeners = new Set<() => void>();
+  const queuedSlots: Array<[string[], Record<string, string> | undefined]> = [];
+  let queuedDecls: SlotDeclInput[] = [];
   const proxy: SentientClient = {
     track: (e) => inner.track(e),
     // Cast: a single arrow can't structurally satisfy the overloaded member;
@@ -833,9 +900,26 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
     assign: (c, v, a, av) => inner.assign(c, v, a, av),
     decide: (i) => inner.decide(i),
     getSlotResult: (s) => inner.getSlotResult(s),
+    isSlotDecided: (s) => inner.isSlotDecided?.(s) ?? true,
     getSlotConfig: (s) => inner.getSlotConfig(s),
     getSitePalette: () => inner.getSitePalette(),
-    reportSlots: (ids) => inner.reportSlots(ids),
+    reportSlots: (ids, texts) => inner.reportSlots(ids, texts),
+    // Pre-consent: queue mounted slots and hold listeners, then hand both to
+    // the real client on upgrade. A grantConsent() upgrade swaps the client in
+    // place without remounting, so a slot that asked while gated would
+    // otherwise never be decided.
+    requestSlots: (ids, texts) => (upgraded ? inner.requestSlots?.(ids, texts) : queuedSlots.push([ids, texts])),
+    decideSlots: (d) => (upgraded ? inner.decideSlots?.(d) : queuedDecls.push(...d)),
+    // Pre-consent, an unmounted slot leaves the queue too: consent may be
+    // granted minutes later on a different route, and the slots the visitor
+    // mounted before navigating away are not on the page then.
+    cancelSlots: (ids) => {
+      if (upgraded) return inner.cancelSlots?.(ids);
+      const gone = new Set(ids);
+      for (const q of queuedSlots) q[0] = q[0].filter((id) => !gone.has(id));
+      queuedDecls = queuedDecls.filter((d) => !gone.has(d.id));
+    },
+    onSlotsChanged: (l) => (slotListeners.add(l), () => void slotListeners.delete(l)),
     getPersona: () => inner.getPersona(),
     fetchWeights: () => inner.fetchWeights(),
     getGraph: () => inner.getGraph(),
@@ -845,6 +929,10 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
 
   function setInner(fullClient: SentientClient) {
     inner = fullClient;
+    upgraded = true;
+    fullClient.onSlotsChanged?.(() => slotListeners.forEach((l) => l()));
+    for (const [ids, texts] of queuedSlots.splice(0)) if (ids.length > 0) fullClient.requestSlots?.(ids, texts);
+    if (queuedDecls.length > 0) fullClient.decideSlots?.(queuedDecls.splice(0));
   }
 
   return { proxy, setInner };
@@ -1034,6 +1122,14 @@ export function init(config: SentientConfig): SentientClient {
   // Results served for this session, keyed by slot id. Written by decide();
   // read by getSlotResult() (Task 3.3) and componentGoal's slot fallback.
   const slotStore = new Map<string, SlotResult>();
+  // Ids whose slotStore entry the server decided for THIS session (SSR seed or
+  // a decide response). Snapshot seeds and failure baselines are deliberately
+  // absent: they render (pre-paint parity, "always resolve to something") but
+  // have no slot_decisions row, so the React exposure gates must not record an
+  // impression for them — a failed 30-declaration batch used to yield up to
+  // 30 phantom baseline exposures, and a snapshot arm was exposed and then a
+  // second, different arm exposed again when the real decide landed.
+  const decidedSlotIds = new Set<string>();
   // Registry slot config (content/ops/blocks) served this session. Written by
   // decide() and the SSR/snapshot seeds below; read by getSlotConfig() so SDK
   // surfaces (AdaptiveSlot) can render server-authored arms — previously the
@@ -1044,7 +1140,58 @@ export function init(config: SentientConfig): SentientClient {
   // First-seen slot registration (reportSlots): once per id per client.
   const reportedSlotIds = new Set<string>();
   const pendingSlotReports = new Set<string>();
+  // Baseline text captured with the first report of an id. Bounded by the
+  // once-per-id dedupe above, normalized + capped before it leaves the page.
+  const pendingBaselineTexts = new Map<string, string>();
   let slotReportTimer: ReturnType<typeof setTimeout> | null = null;
+  // Mirror of the server's slot-id rule (apps/api/src/routes/slots-observed.ts):
+  // the server 400s the WHOLE batch when any one id fails it, and every
+  // co-batched valid id is already in reportedSlotIds by then — so a single
+  // `hero.cta` on the page would silently unregister every other new slot for
+  // the client lifetime. Invalid ids are refused at the door instead.
+  const SLOT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
+  const warnedInvalidSlotIds = new Set<string>();
+  // requestSlots: mounted-slot decides, once per id per client.
+  const slotListeners = new Set<() => void>();
+  const requestedSlotIds = new Set<string>();
+  const pendingSlotTexts = new Map<string, string | undefined>();
+  let slotRequestTimer: ReturnType<typeof setTimeout> | null = null;
+  // decideSlots: mounted request-declared slots, once per id per client.
+  const decidedDeclIds = new Set<string>();
+  const pendingDecls = new Map<string, SlotDeclInput>();
+  let declTimer: ReturnType<typeof setTimeout> | null = null;
+  // "Once per id per client" was keyed on the ASK, not the answer: a decide
+  // that failed (5xx, offline, tab suspended mid-flight) left its ids marked
+  // as requested, so the slots served their baseline/snapshot — unexposed,
+  // untrained — for the rest of the client lifetime, and a SPA visitor never
+  // got a decision for that page again. Failed ids are released so a remount
+  // re-asks, and each batch gets a bounded automatic retry with backoff so a
+  // blip during the initial render still resolves without user action.
+  // Bounded per id per client, not per mount: a server that is really down
+  // must not turn every route change into a retry storm.
+  const SLOT_DECIDE_AUTO_RETRIES = 2;
+  const slotDecideFailures = new Map<string, number>();
+  let slotDecideTornDown = false;
+  // Releases every id in the failed batch, then schedules `resend` (after the
+  // backoff for the worst-off id) with the subset still under the retry cap.
+  const retryFailedSlots = (ids: string[], requested: Set<string>, resend: (retry: Set<string>) => void): void => {
+    const retry = new Set<string>();
+    let worst = 1;
+    for (const id of ids) {
+      requested.delete(id);
+      const n = (slotDecideFailures.get(id) ?? 0) + 1;
+      slotDecideFailures.set(id, n);
+      if (n <= SLOT_DECIDE_AUTO_RETRIES) {
+        retry.add(id);
+        if (n > worst) worst = n;
+      }
+    }
+    if (retry.size > 0) {
+      setTimeout(() => {
+        if (!slotDecideTornDown) resend(retry);
+      }, backoffDelayMs(worst));
+    }
+  };
 
   // On decide failure every declared slot must still resolve — to its baseline.
   // Never overwrite a previously served result.
@@ -1058,6 +1205,8 @@ export function init(config: SentientConfig): SentientClient {
   if (config.initialSlots) {
     for (const [slotId, result] of Object.entries(config.initialSlots)) {
       slotStore.set(slotId, result);
+      // The SSR preload decided these against this very session id.
+      decidedSlotIds.add(slotId);
     }
   }
   if (config.initialSlotConfig) {
@@ -1309,6 +1458,15 @@ export function init(config: SentientConfig): SentientClient {
         }
         return;
       }
+      // A slot result the core only HOLDS (pre-paint snapshot, failure
+      // baseline) has no slot_decisions row this session, so a goal attributed
+      // to its arm would be a conversion with no trial behind it. The React
+      // hooks gate this on `source === 'seeded'`; this is the same rule at the
+      // transport, so a hand-rolled integration cannot bypass it.
+      if (!assignment && !decidedSlotIds.has(componentId)) {
+        if (config.debug) console.warn(`[sentient] componentGoal("${componentId}"): slot not decided this session — not attributed`);
+        return;
+      }
       const attributedVariantId = assignment ? assignment.variantId : armOfResult(slotResult!);
       const fullEvent: SentientEvent = {
         id: generateEventId(),
@@ -1351,6 +1509,16 @@ export function init(config: SentientConfig): SentientClient {
     track(event) {
       const sessionId = session.getSessionId();
       if (!sessionId) return;
+      // Same rule as componentGoal: an impression for a slot arm the core holds
+      // without a decision this session (snapshot, failure baseline) trains an
+      // arm the server never served. Only ids the core knows AS SLOTS are
+      // gated — variant components never enter slotStore and pass through.
+      if (
+        event.eventType === 'variant_assigned' &&
+        slotStore.get(event.componentId) !== undefined &&
+        !decidedSlotIds.has(event.componentId) &&
+        !assignmentCache.get(event.componentId, sessionSegment)
+      ) return;
 
       const fullEvent: SentientEvent = {
         // `path` first so an explicit event.path from the caller wins over the
@@ -1438,7 +1606,11 @@ export function init(config: SentientConfig): SentientClient {
       }
       body.components = input.components ?? [];
       if (declared.length > 0) body.slots = declared.map(toWireSlot);
-      if (input.slotsFrom === 'registry') body.slotsFrom = 'registry';
+      if (input.slotsFrom === 'registry') {
+        body.slotsFrom = 'registry';
+        if (input.registrySlotIds) body.registrySlotIds = input.registrySlotIds;
+        if (input.bootstrap === false) body.bootstrap = false;
+      }
       if (input.v) body.v = input.v;
       // 0 is meaningful here (a two-tag snippet install with no inline pre-paint
       // script), so this is a presence check, not a truthiness one.
@@ -1489,6 +1661,7 @@ export function init(config: SentientConfig): SentientClient {
             if (served !== undefined) {
               slots[d.id] = served;
               slotStore.set(d.id, served);
+              decidedSlotIds.add(d.id);
               continue;
             }
             // Slot omitted from the response → synthesize a baseline for the
@@ -1515,6 +1688,7 @@ export function init(config: SentientConfig): SentientClient {
               if (!(slotId in slots)) {
                 slots[slotId] = result;
                 slotStore.set(slotId, result);
+                decidedSlotIds.add(slotId);
               }
             }
           }
@@ -1549,6 +1723,17 @@ export function init(config: SentientConfig): SentientClient {
             }
           }
           if (data.palette) sitePalette = data.palette;
+          // A scoped registry decide is authoritative for the ids it asked
+          // about: one with no config has nothing published NOW. Drop what an
+          // earlier visit's snapshot seeded — before the snapshot is rewritten
+          // below — or an unpublished/archived slot keeps rendering its old
+          // version from localStorage on every visit.
+          for (const id of input.registrySlotIds ?? []) {
+            if (data.slotConfig?.[id]) continue;
+            slotConfigStore.delete(id);
+            slotStore.delete(id);
+            decidedSlotIds.delete(id);
+          }
 
           // Persist for the next visit's pre-paint (SPA cache-first pattern).
           writeSnapshot(config.apiKey, {
@@ -1584,32 +1769,162 @@ export function init(config: SentientConfig): SentientClient {
       return slotStore.get(slotId) ?? null;
     },
 
+    isSlotDecided(slotId) {
+      return decidedSlotIds.has(slotId);
+    },
+
     getSlotConfig(slotId) {
       return slotConfigStore.get(slotId) ?? null;
     },
 
-    reportSlots(slotIds) {
+    reportSlots(slotIds, baselineTexts) {
       // Batch a tick's worth of AdaptiveSlot mounts into one request, once per
       // id per client lifetime — a page of N slots must not fire N registrations
       // on every navigation.
       for (const id of slotIds) {
-        if (typeof id === 'string' && id.length > 0 && !reportedSlotIds.has(id)) {
+        if (typeof id !== 'string' || id.length === 0) continue;
+        if (!SLOT_ID_RE.test(id)) {
+          // Warn once per id, dev builds only — the fetch error the server
+          // batch rejection produced was swallowed, so an invalid id was
+          // completely silent AND poisoned its whole batch.
+          if (isDevBuild() && !warnedInvalidSlotIds.has(id)) {
+            warnedInvalidSlotIds.add(id);
+            console.warn(
+              `[sentient] reportSlots: slot id ${JSON.stringify(id)} will not register — ids must start ` +
+                `with a letter or digit and contain only letters, digits, '_' or '-' (max 128 chars): ` +
+                `/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.`,
+            );
+          }
+          continue;
+        }
+        if (!reportedSlotIds.has(id)) {
           reportedSlotIds.add(id);
           pendingSlotReports.add(id);
+          // Normalize before it leaves the page: whitespace collapsed, hard
+          // 400-char cap. Only the region the developer explicitly wrapped
+          // for replacement is read — never the page around it.
+          const raw = baselineTexts?.[id];
+          if (typeof raw === 'string') {
+            const text = raw.replace(/\s+/g, ' ').trim().slice(0, 400);
+            if (text !== '') pendingBaselineTexts.set(id, text);
+          }
         }
       }
       if (pendingSlotReports.size === 0 || slotReportTimer != null) return;
       slotReportTimer = setTimeout(() => {
         slotReportTimer = null;
-        const batch = [...pendingSlotReports].slice(0, 20);
+        const all = [...pendingSlotReports];
         pendingSlotReports.clear();
-        if (batch.length === 0) return;
-        void fetch(`${baseUrl}/slots/observed`, {
-          method: 'POST',
-          headers: authHeaders,
-          body: JSON.stringify({ slotIds: batch }),
-        }).catch(() => undefined);
+        // Chunks of 20 — the server's MAX_BATCH. This used to slice(0, 20) and
+        // clear(), so ids 21+ were dropped permanently: already marked as
+        // reported, never sent, never retried. Sequential fire-and-forget keeps
+        // the send path as cheap as the single-batch one.
+        for (let i = 0; i < all.length; i += 20) {
+          const chunk = all.slice(i, i + 20);
+          const texts: Record<string, string> = {};
+          for (const id of chunk) {
+            const t = pendingBaselineTexts.get(id);
+            if (t !== undefined) {
+              texts[id] = t;
+              pendingBaselineTexts.delete(id);
+            }
+          }
+          void fetch(`${baseUrl}/slots/observed`, {
+            method: 'POST',
+            headers: authHeaders,
+            body: JSON.stringify({
+              slotIds: chunk,
+              ...(Object.keys(texts).length > 0 ? { baselineTexts: texts } : {}),
+            }),
+          }).catch(() => undefined);
+        }
       }, 1000);
+    },
+
+    requestSlots(slotIds, baselineTexts) {
+      for (const id of slotIds) {
+        if (requestedSlotIds.has(id)) continue;
+        requestedSlotIds.add(id);
+        // An invalid id would 400 the whole scoped decide; reportSlots owns
+        // the dev warning for it and refuses it there.
+        if (SLOT_ID_RE.test(id)) pendingSlotTexts.set(id, baselineTexts?.[id]);
+        else client.reportSlots([id]);
+      }
+      if (pendingSlotTexts.size === 0 || slotRequestTimer != null) return;
+      // 0ms: every AdaptiveSlot mounted in the same commit lands in one request.
+      slotRequestTimer = setTimeout(() => {
+        slotRequestTimer = null;
+        const all = [...pendingSlotTexts];
+        pendingSlotTexts.clear();
+        for (let i = 0; i < all.length; i += 50) {
+          const chunk = all.slice(i, i + 50);
+          void client.decide({ slotsFrom: 'registry', registrySlotIds: chunk.map(([id]) => id), bootstrap: false }).then((out) => {
+            // A failed decide registers nothing: "the network blipped" must not
+            // read as "this slot has nothing published".
+            if (out) {
+              const texts: Record<string, string> = {};
+              const missing: string[] = [];
+              for (const [id, text] of chunk) {
+                if (out.slotConfig?.[id]) continue;
+                missing.push(id);
+                if (text) texts[id] = text;
+              }
+              if (missing.length > 0) client.reportSlots(missing, texts);
+            } else {
+              // Release the ids (a remount re-asks) and retry this batch with
+              // backoff — see retryFailedSlots.
+              retryFailedSlots(chunk.map(([id]) => id), requestedSlotIds, (retry) => {
+                const texts: Record<string, string> = {};
+                for (const [id, t] of chunk) if (retry.has(id) && t) texts[id] = t;
+                client.requestSlots?.([...retry], texts);
+              });
+            }
+            slotListeners.forEach((l) => l());
+          });
+        }
+      }, 0);
+    },
+
+    decideSlots(decls) {
+      for (const d of decls) {
+        if (decidedDeclIds.has(d.id)) continue;
+        decidedDeclIds.add(d.id);
+        pendingDecls.set(d.id, d);
+      }
+      if (pendingDecls.size === 0 || declTimer != null) return;
+      declTimer = setTimeout(() => {
+        declTimer = null;
+        const all = [...pendingDecls.values()];
+        pendingDecls.clear();
+        // 30 per request: the server's decide `slots` cap.
+        for (let i = 0; i < all.length; i += 30) {
+          const batch = all.slice(i, i + 30);
+          void client.decide({ slots: batch }).then((out) => {
+            // The failure path already seeded every declared slot's baseline
+            // into slotStore (unexposed — isSlotDecided stays false); release
+            // the ids and retry with backoff so the slot gets a real decision.
+            if (!out) {
+              retryFailedSlots(batch.map((d) => d.id), decidedDeclIds, (retry) =>
+                client.decideSlots?.(batch.filter((d) => retry.has(d.id))));
+            }
+            slotListeners.forEach((l) => l());
+          });
+        }
+      }, 0);
+    },
+
+    cancelSlots(slotIds) {
+      for (const id of slotIds) {
+        // Only a still-pending ask is withdrawn; once sent, the id stays
+        // marked so the in-flight answer is not duplicated by a remount.
+        if (pendingSlotTexts.delete(id)) requestedSlotIds.delete(id);
+        if (pendingDecls.delete(id)) decidedDeclIds.delete(id);
+      }
+    },
+
+    onSlotsChanged(listener) {
+      slotListeners.add(listener);
+      return () => void slotListeners.delete(listener);
     },
 
     getSitePalette() {
@@ -1645,6 +1960,7 @@ export function init(config: SentientConfig): SentientClient {
       // leaves identity, snapshot, and retry buckets for the next client.
       stopPageviews?.();
       pageviewsTornDown = true;
+      slotDecideTornDown = true;
       eventQueue.destroy();
       goalQueue.destroy();
       // Drop the registry entry so a later re-init doesn't try to dispose an
@@ -1660,6 +1976,7 @@ export function init(config: SentientConfig): SentientClient {
     destroy() {
       stopPageviews?.();
       pageviewsTornDown = true;
+      slotDecideTornDown = true;
       eventQueue.destroy();
       goalQueue.destroy();
       session.destroy();

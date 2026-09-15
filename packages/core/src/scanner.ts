@@ -113,11 +113,30 @@ function extractDataAttributes(element: Element): Record<string, string> {
 
 const SEMANTIC_SET: ReadonlySet<string> = new Set(SEMANTIC_TYPES);
 
-// Explicit tag wins → role → heuristic → generic. Every output is normalized to
-// the graph_nodes enum: an out-of-vocabulary data-sentient-type/role falls
-// through to the heuristic instead of being emitted raw (raw values violated
-// the graph_nodes CHECK constraint on insert).
-function inferSemanticType(element: Element): SemanticType {
+export type DOMScannerOptions = {
+  /**
+   * Section types declared in code, keyed by `data-sentient-id`. Replaces the
+   * per-element `data-sentient-type` attribute so a section needs one attribute
+   * of markup. The content classifier misses sections whose copy carries no
+   * strong signal (an "About us" band reads `generic`, not `trust`), and a
+   * wrong type here reorders that section for the wrong personas.
+   */
+  sectionTypes?: Readonly<Partial<Record<string, string>>>;
+};
+
+// Declared type (sectionTypes) → legacy data-sentient-type markup → role →
+// heuristic → generic. Every output is normalized to the graph_nodes enum: an
+// out-of-vocabulary declared/markup/role value falls through to the next stage
+// instead of being emitted raw (raw values violated the graph_nodes CHECK
+// constraint on insert).
+function inferSemanticType(
+  element: Element,
+  sectionTypes: Readonly<Partial<Record<string, string>>> | undefined,
+): SemanticType {
+  const id = element.getAttribute('data-sentient-id');
+  // The SEMANTIC_SET check also rejects inherited keys (an id of "constructor").
+  const declared = id ? sectionTypes?.[id] : undefined;
+  if (declared && SEMANTIC_SET.has(declared)) return declared as SemanticType;
   const explicit = element.getAttribute('data-sentient-type');
   if (explicit && SEMANTIC_SET.has(explicit)) return explicit as SemanticType;
   const role = element.getAttribute('role');
@@ -178,11 +197,12 @@ function depthOf(element: Element): number {
 function scanElement(
   element: Element,
   getProminenceScore: (el: Element) => number,
+  sectionTypes: Readonly<Partial<Record<string, string>>> | undefined,
 ): ScannedNode {
   const heading = element.querySelector(HEADING_SELECTOR);
   return {
     componentId: componentIdFor(element),
-    semanticType: inferSemanticType(element),
+    semanticType: inferSemanticType(element, sectionTypes),
     ariaLabel: element.getAttribute('aria-label') ?? undefined,
     headingText: heading?.textContent?.trim() ?? undefined,
     isAboveFold: element.getBoundingClientRect().top < window.innerHeight,
@@ -258,6 +278,7 @@ function detectStructuralEdges(elementToId: Map<Element, string>): StructuralEdg
 
 function collectNodesAndEdges(
   getProminenceScore: (el: Element) => number,
+  sectionTypes: Readonly<Partial<Record<string, string>>> | undefined,
 ): { nodes: ScannedNode[]; edges: StructuralEdge[]; elementToId: Map<Element, string> } {
   const nodes: ScannedNode[] = [];
   const seen = new Set<Element>();
@@ -267,7 +288,7 @@ function collectNodesAndEdges(
   registered.forEach((el) => {
     if (el instanceof Element && !seen.has(el)) {
       seen.add(el);
-      const node = scanElement(el, getProminenceScore);
+      const node = scanElement(el, getProminenceScore, sectionTypes);
       nodes.push(node);
       elementToId.set(el, node.componentId);
     }
@@ -280,7 +301,7 @@ function collectNodesAndEdges(
     const hasSentientId = el.hasAttribute('data-sentient-id');
     if (!hasAria && !hasSentientId) return;
     seen.add(el);
-    const node = scanElement(el, getProminenceScore);
+    const node = scanElement(el, getProminenceScore, sectionTypes);
     nodes.push(node);
     elementToId.set(el, node.componentId);
   });
@@ -291,7 +312,8 @@ function collectNodesAndEdges(
 /**
  * Creates a DOM scanner that uses idle callbacks and mutation observation.
  */
-export function createDOMScanner(): DOMScanner {
+export function createDOMScanner(options: DOMScannerOptions = {}): DOMScanner {
+  const { sectionTypes } = options;
   if (typeof window === 'undefined') {
     return SSR_SCANNER;
   }
@@ -331,7 +353,7 @@ export function createDOMScanner(): DOMScanner {
   const scan = (): Promise<ScanResult> =>
     new Promise((resolve) => {
       const run = (): void => {
-        const { nodes, edges, elementToId } = collectNodesAndEdges(getProminenceScore);
+        const { nodes, edges, elementToId } = collectNodesAndEdges(getProminenceScore, sectionTypes);
         // Seed the known-element registry so the observer can resolve parents that
         // were registered in this scan when later children are inserted.
         knownElementToId.clear();
@@ -382,7 +404,7 @@ export function createDOMScanner(): DOMScanner {
               // both appear in addedNodes (the child once via the parent's
               // subtree, once directly), which would emit duplicate nodes.
               if (knownElementToId.has(el)) continue;
-              const scanned = scanElement(el, getProminenceScore);
+              const scanned = scanElement(el, getProminenceScore, sectionTypes);
               added.push(scanned);
               addedIds.add(scanned.componentId);
               knownElementToId.set(el, scanned.componentId);

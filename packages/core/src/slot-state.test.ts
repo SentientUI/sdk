@@ -41,7 +41,7 @@ describe('initialSlots / getSlotResult', () => {
   it('fills gaps from the snapshot but initialSlots win', () => {
     writeSnapshot(BASE_CONFIG.apiKey, {
       v: 1,
-      persona: 'browser',
+      persona: 'persona_a',
       band: 'medium',
       slots: { hero: { tone: 'calm' }, faq: 'expanded' },
       layoutOrder: null,
@@ -71,19 +71,66 @@ describe('initialSlots / getSlotResult', () => {
   });
 });
 
+// Only a DECIDED result has a slot_decisions row, so only a decided result may
+// be exposed. The React gates read isSlotDecided to tell a decision for this
+// session (SSR seed, decide response) from a result the core merely holds
+// (last visit's snapshot, the failure baseline) — exposing the latter trained
+// arms the server never served this session.
+describe('isSlotDecided (exposure provenance)', () => {
+  it('is true for SSR initialSlots and false for snapshot-seeded results', () => {
+    writeSnapshot(BASE_CONFIG.apiKey, {
+      v: 1,
+      persona: 'persona_a',
+      band: 'medium',
+      slots: { faq: 'expanded' },
+      layoutOrder: null,
+      savedAt: Date.now(),
+    });
+    const client = init({ ...BASE_CONFIG, initialSlots: { hero: { tone: 'urgent' } } });
+    expect(client.isSlotDecided!('hero')).toBe(true);
+    expect(client.getSlotResult('faq')).toBe('expanded');
+    expect(client.isSlotDecided!('faq')).toBe(false);
+    expect(client.isSlotDecided!('never-seen')).toBe(false);
+    client.destroy();
+  });
+
+  it('stays false for a failure baseline and flips true once a decide serves the slot', async () => {
+    let fail = true;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (!String(input).endsWith('/decide')) return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+      return Promise.resolve(
+        fail
+          ? ({ ok: false, status: 500, json: async () => ({}) } as Response)
+          : ({ ok: true, json: async () => ({ slots: { hero: { tone: 'urgent' } } }) } as Response),
+      );
+    }));
+    const client = init({ ...BASE_CONFIG });
+    const decl = { id: 'hero', dims: { tone: ['calm', 'urgent'] } };
+    await client.decide({ slots: [decl] });
+    expect(client.getSlotResult('hero')).toEqual({ tone: 'calm' }); // renders the baseline…
+    expect(client.isSlotDecided!('hero')).toBe(false);              // …but is not a trial
+
+    fail = false;
+    await client.decide({ slots: [decl] });
+    expect(client.getSlotResult('hero')).toEqual({ tone: 'urgent' });
+    expect(client.isSlotDecided!('hero')).toBe(true);
+    client.destroy();
+  });
+});
+
 describe('initialPersona / getPersona', () => {
   it('returns persona with computed band from config.initialPersona', () => {
-    const client = init({ ...BASE_CONFIG, initialPersona: { persona: 'buyer', confidence: 0.8 } });
-    expect(client.getPersona()).toEqual({ persona: 'buyer', confidence: 0.8, band: 'high' });
+    const client = init({ ...BASE_CONFIG, initialPersona: { persona: 'admin', confidence: 0.8 } });
+    expect(client.getPersona()).toEqual({ persona: 'admin', confidence: 0.8, band: 'high' });
     client.destroy();
   });
 
   it('adopts documentElement.dataset when no initialPersona (single-writer adoption)', () => {
-    document.documentElement.setAttribute('data-sentient-persona', 'deal_seeker');
+    document.documentElement.setAttribute('data-sentient-persona', 'trial_user');
     document.documentElement.setAttribute('data-sentient-confidence', 'medium');
     const client = init({ ...BASE_CONFIG });
     const p = client.getPersona();
-    expect(p?.persona).toBe('deal_seeker');
+    expect(p?.persona).toBe('trial_user');
     expect(p?.band).toBe('medium');
     // Band-consistent numeric confidence: band(confidence) === band.
     expect(p!.confidence).toBeGreaterThanOrEqual(0.3);
@@ -93,17 +140,17 @@ describe('initialPersona / getPersona', () => {
 
   it('falls back to the snapshot when neither config nor dataset have a persona', () => {
     writeSnapshot(BASE_CONFIG.apiKey, {
-      v: 1, persona: 'researcher', band: 'low', slots: {}, layoutOrder: null, savedAt: Date.now(),
+      v: 1, persona: 'evaluator', band: 'low', slots: {}, layoutOrder: null, savedAt: Date.now(),
     });
     const client = init({ ...BASE_CONFIG });
     const p = client.getPersona();
-    expect(p?.persona).toBe('researcher');
+    expect(p?.persona).toBe('evaluator');
     expect(p?.band).toBe('low');
     client.destroy();
   });
 
   it('returns null when nothing is known, and never writes the html attributes', () => {
-    const client = init({ ...BASE_CONFIG, initialPersona: { persona: 'buyer', confidence: 1 } });
+    const client = init({ ...BASE_CONFIG, initialPersona: { persona: 'admin', confidence: 1 } });
     expect(document.documentElement.hasAttribute('data-sentient-persona')).toBe(false);
     client.destroy();
     const client2 = init({ ...BASE_CONFIG });
@@ -117,13 +164,13 @@ describe('initialPersona / getPersona', () => {
         ok: true,
         json: async () =>
           String(input).endsWith('/decide')
-            ? { layoutOrder: null, assignments: {}, slots: {}, persona: 'buyer', confidence: 0.25 }
+            ? { layoutOrder: null, assignments: {}, slots: {}, persona: 'admin', confidence: 0.25 }
             : {},
       } as Response),
     ));
     const client = init({ ...BASE_CONFIG });
     await client.decide({ sections: ['hero'] });
-    expect(client.getPersona()).toEqual({ persona: 'buyer', confidence: 0.25, band: 'low' });
+    expect(client.getPersona()).toEqual({ persona: 'admin', confidence: 0.25, band: 'low' });
     client.destroy();
   });
 });
@@ -173,6 +220,28 @@ describe('componentGoal slot fallback', () => {
     await flush(client);
     expect(events.filter((e) => e.eventType === 'goal_achieved')).toHaveLength(0);
   });
+
+  it('refuses to attribute a goal or an exposure to a slot arm the core only holds (no decision this session)', async () => {
+    // A snapshot-seeded arm renders but has no slot_decisions row; a goal or
+    // impression on it would be a conversion/trial for an arm never served.
+    writeSnapshot(BASE_CONFIG.apiKey, {
+      v: 1, persona: 'persona_a', band: 'medium', slots: { faq: 'expanded' }, layoutOrder: null, savedAt: Date.now(),
+    });
+    const events = captureEvents();
+    const client = init({ ...BASE_CONFIG, initialSlots: { hero: { tone: 'urgent' } } });
+    expect(client.getSlotResult('faq')).toBe('expanded');
+    client.componentGoal('faq', 'open');
+    client.track({ projectId: BASE_CONFIG.apiKey, componentId: 'faq', variantId: 'expanded', eventType: 'variant_assigned', payload: {} });
+    // The SSR-decided slot and an unknown (variant) component still pass through.
+    client.componentGoal('hero', 'buy_click');
+    client.track({ projectId: BASE_CONFIG.apiKey, componentId: 'cta_variant', variantId: 'b', eventType: 'variant_assigned', payload: {} });
+    await flush(client);
+
+    const byComponent = (id: string) => events.filter((e) => e.componentId === id);
+    expect(byComponent('faq')).toHaveLength(0);
+    expect(byComponent('hero').map((e) => e.eventType)).toEqual(['goal_achieved']);
+    expect(byComponent('cta_variant').map((e) => e.eventType)).toEqual(['variant_assigned']);
+  });
 });
 
 describe('slotConfig / palette exposure', () => {
@@ -196,7 +265,7 @@ describe('slotConfig / palette exposure', () => {
   it('fills from the snapshot but initialSlotConfig wins per slot', () => {
     writeSnapshot(BASE_CONFIG.apiKey, {
       v: 1,
-      persona: 'browser',
+      persona: 'persona_a',
       band: 'medium',
       slots: {},
       layoutOrder: null,
@@ -218,10 +287,10 @@ describe('slotConfig / palette exposure', () => {
           ? ({
               ok: true,
               json: async () => ({
-                slots: { hero: 'researcher_v1' },
+                slots: { hero: 'evaluator_v1' },
                 slotConfig: { hero: CFG_ENTRY },
                 palette: PALETTE,
-                persona: 'researcher',
+                persona: 'evaluator',
                 confidence: 0.8,
               }),
             } as Response)
@@ -262,6 +331,350 @@ describe('reportSlots (first-seen registration)', () => {
     await vi.advanceTimersByTimeAsync(1100);
     expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'))).toHaveLength(1);
 
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('refuses invalid ids client-side so co-batched valid ids still register', async () => {
+    // The server 400s the WHOLE batch on one bad id, and by then every valid
+    // co-batched id was already in the reported set — never retried for the
+    // client lifetime, with the fetch error swallowed. Bad ids must not board.
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const warn = vi.mocked(console.warn);
+    const client = init({ ...BASE_CONFIG });
+    fetchMock.mockClear();
+    warn.mockClear();
+
+    client.reportSlots(['hero.cta', 'valid-slot', '_leading', 'a'.repeat(129), 'héro']);
+    await vi.advanceTimersByTimeAsync(1100);
+
+    const reports = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'));
+    expect(reports).toHaveLength(1);
+    expect(JSON.parse(String(reports[0]![1]?.body))).toEqual({ slotIds: ['valid-slot'] });
+
+    // One dev warning per invalid id, naming the id and the allowed shape.
+    const invalidWarns = warn.mock.calls.filter((c) => String(c[0]).includes('will not register'));
+    expect(invalidWarns).toHaveLength(4);
+    expect(String(invalidWarns[0]![0])).toContain('hero.cta');
+    expect(String(invalidWarns[0]![0])).toContain('[a-zA-Z0-9]');
+
+    client.reportSlots(['hero.cta']); // repeat — warned once, stays silent
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('will not register'))).toHaveLength(4);
+
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('carries normalized baseline text with the FIRST report of an id only', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    fetchMock.mockClear();
+
+    client.reportSlots(['hero-cta'], { 'hero-cta': '  Start\n  your   free trial  ' });
+    // Text for an id not being reported is ignored; empty text is dropped.
+    client.reportSlots(['pricing-cta'], { 'pricing-cta': '   ', other: 'x' });
+    await vi.advanceTimersByTimeAsync(1100);
+
+    const reports = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'));
+    expect(reports).toHaveLength(1);
+    expect(JSON.parse(String(reports[0]![1]?.body))).toEqual({
+      slotIds: ['hero-cta', 'pricing-cta'],
+      baselineTexts: { 'hero-cta': 'Start your free trial' },
+    });
+
+    // Re-reporting with a (different) text must not re-fire or resend text.
+    client.reportSlots(['hero-cta'], { 'hero-cta': 'poisoned later' });
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'))).toHaveLength(1);
+
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('caps baseline text at 400 chars before it leaves the page', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    fetchMock.mockClear();
+
+    client.reportSlots(['long-slot'], { 'long-slot': 'x'.repeat(1000) });
+    await vi.advanceTimersByTimeAsync(1100);
+
+    const reports = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'));
+    const body = JSON.parse(String(reports[0]![1]?.body)) as { baselineTexts: Record<string, string> };
+    expect(body.baselineTexts['long-slot']!.length).toBe(400);
+
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('sends every pending id in chunks of 20 instead of dropping ids 21+', async () => {
+    // slice(0, 20) + clear() used to drop the tail permanently: already marked
+    // reported, never sent, never retried. 45 ids must produce 3 chunked POSTs.
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    fetchMock.mockClear();
+
+    client.reportSlots(Array.from({ length: 45 }, (_, i) => `slot-${i}`));
+    await vi.advanceTimersByTimeAsync(1100);
+
+    const reports = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'));
+    expect(reports).toHaveLength(3);
+    const batches = reports.map((c) => (JSON.parse(String(c[1]?.body)) as { slotIds: string[] }).slotIds);
+    for (const b of batches) expect(b.length).toBeLessThanOrEqual(20); // server MAX_BATCH
+    const sent = batches.flat();
+    expect(sent).toHaveLength(45);
+    expect(new Set(sent).size).toBe(45);
+
+    client.destroy();
+    vi.useRealTimers();
+  });
+});
+describe('requestSlots (mounted-slot registry decide)', () => {
+  function stubDecide(response: Record<string, unknown>) {
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(
+        String(input).endsWith('/decide')
+          ? ({ ok: true, json: async () => response } as Response)
+          : ({ ok: true, json: async () => ({}) } as Response),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+  const decideBodies = (m: ReturnType<typeof vi.fn>) =>
+    m.mock.calls.filter((c) => String(c[0]).endsWith('/decide')).map((c) => JSON.parse(String((c[1] as RequestInit).body)));
+
+  it('batches a tick of mounts into ONE decide scoped to exactly those ids, once per id', async () => {
+    // Unscoped registry mode decides every published slot — a close-out trial
+    // for slots the visitor never had on screen.
+    vi.useFakeTimers();
+    const fetchMock = stubDecide({ slots: { hero: 'alt' }, slotConfig: { hero: { kind: 'arms', content: 'Hi' } } });
+    const client = init({ ...BASE_CONFIG });
+    const listener = vi.fn();
+    client.onSlotsChanged!(listener);
+
+    client.requestSlots!(['hero']);
+    client.requestSlots!(['pricing', 'hero']);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const bodies = decideBodies(fetchMock);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ slotsFrom: 'registry', registrySlotIds: ['hero', 'pricing'] });
+    expect(client.getSlotConfig('hero')).toEqual({ kind: 'arms', content: 'Hi' });
+    expect(listener).toHaveBeenCalled();
+
+    client.requestSlots!(['hero']);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(decideBodies(fetchMock)).toHaveLength(1);
+
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('registers ids with nothing published, carrying their baseline text', async () => {
+    vi.useFakeTimers();
+    const fetchMock = stubDecide({ slots: {}, persona: 'unknown' });
+    const client = init({ ...BASE_CONFIG });
+    client.requestSlots!(['hero'], { hero: 'Start free trial' });
+    await vi.advanceTimersByTimeAsync(1100);
+
+    const reports = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'));
+    expect(reports).toHaveLength(1);
+    expect(JSON.parse(String((reports[0]![1] as RequestInit).body))).toEqual({
+      slotIds: ['hero'],
+      baselineTexts: { hero: 'Start free trial' },
+    });
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('drops a snapshot-seeded config the server no longer publishes', async () => {
+    // Otherwise an archived slot keeps rendering its old version from
+    // localStorage on every visit.
+    writeSnapshot(BASE_CONFIG.apiKey, {
+      v: 1, persona: 'unknown', band: 'low', slots: { hero: 'old' }, layoutOrder: null, savedAt: Date.now(),
+      slotConfig: { hero: { kind: 'arms', content: 'Old headline' } },
+    });
+    vi.useFakeTimers();
+    stubDecide({ slots: {}, persona: 'unknown' });
+    const client = init({ ...BASE_CONFIG });
+    expect(client.getSlotConfig('hero')).not.toBeNull();
+
+    client.requestSlots!(['hero']);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(client.getSlotConfig('hero')).toBeNull();
+    expect(client.getSlotResult('hero')).toBeNull();
+    expect(readSnapshot(BASE_CONFIG.apiKey)?.slotConfig?.hero).toBeUndefined();
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('a failed decide registers nothing', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input).endsWith('/decide')
+          ? ({ ok: false, status: 500, json: async () => ({}) } as Response)
+          : ({ ok: true, json: async () => ({}) } as Response),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    client.requestSlots!(['hero']);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/slots/observed'))).toBe(false);
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('retries a failed batch with backoff, then serves the decision once the server answers', async () => {
+    // "Once per id" used to be keyed on the ASK: a 5xx during first render
+    // left the slot on baseline/snapshot — unexposed, untrained — for the
+    // whole client lifetime, and a remount never re-asked either.
+    vi.useFakeTimers();
+    let failures = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (!String(input).endsWith('/decide')) return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+      if (failures < 1) { failures++; return Promise.resolve({ ok: false, status: 503, json: async () => ({}) } as Response); }
+      return Promise.resolve({ ok: true, json: async () => ({ slots: { hero: 'alt' }, slotConfig: { hero: { kind: 'arms', content: 'Hi' } } }) } as Response);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    client.requestSlots!(['hero'], { hero: 'Baseline' });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(decideBodies(fetchMock)).toHaveLength(1);
+    expect(client.getSlotConfig('hero')).toBeNull();
+
+    // Backoff (2 s after the first failure), then the automatic retry lands.
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(decideBodies(fetchMock)).toHaveLength(2);
+    expect(decideBodies(fetchMock)[1]).toMatchObject({ registrySlotIds: ['hero'] });
+    expect(client.getSlotConfig('hero')).toEqual({ kind: 'arms', content: 'Hi' });
+    expect(client.isSlotDecided!('hero')).toBe(true);
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('cancelSlots withdraws an id that unmounted before the batch was sent, and only then', async () => {
+    // A slot that mounts and unmounts inside one tick (redirecting route,
+    // StrictMode probe) is not on the page — deciding it would mint a trial
+    // with no exposure. Once the request is in flight the id stays marked so
+    // a remount does not duplicate the answer.
+    vi.useFakeTimers();
+    const fetchMock = stubDecide({ slots: { hero: 'alt' }, slotConfig: { hero: { kind: 'arms', content: 'Hi' } } });
+    const client = init({ ...BASE_CONFIG });
+    client.requestSlots!(['hero', 'gone']);
+    client.cancelSlots!(['gone']);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(decideBodies(fetchMock)).toHaveLength(1);
+    expect(decideBodies(fetchMock)[0]).toMatchObject({ registrySlotIds: ['hero'] });
+
+    // Withdrawn ids are free to be asked again by a later mount…
+    client.requestSlots!(['gone']);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(decideBodies(fetchMock)).toHaveLength(2);
+    // …but cancelling an already-sent id is a no-op: no re-ask on remount.
+    client.cancelSlots!(['hero']);
+    client.requestSlots!(['hero']);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(decideBodies(fetchMock)).toHaveLength(2);
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('bounds automatic retries, but a remount still re-asks after they are spent', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input).endsWith('/decide')
+          ? ({ ok: false, status: 503, json: async () => ({}) } as Response)
+          : ({ ok: true, json: async () => ({}) } as Response),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    client.requestSlots!(['hero']);
+    // Initial + 2 automatic retries (2 s, 4 s), then it stops on its own.
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(decideBodies(fetchMock)).toHaveLength(3);
+    // A later mount (SPA navigation back) is a fresh ask, not a dead id.
+    client.requestSlots!(['hero']);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(decideBodies(fetchMock)).toHaveLength(4);
+    client.destroy();
+    vi.useRealTimers();
+  });
+});
+
+describe('decideSlots (mounted request-declared slots)', () => {
+  it('batches a tick of mounts into ONE decide with those declarations, once per id', async () => {
+    // Keyed clients never decided request-declared slots client-side, so
+    // useAdaptiveTokens / AdaptiveGroup served baseline all session without an
+    // SSR `slots` preload.
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(
+        String(input).endsWith('/decide')
+          ? ({ ok: true, json: async () => ({ slots: { hero: { tone: 'urgent' } } }) } as Response)
+          : ({ ok: true, json: async () => ({}) } as Response),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    const listener = vi.fn();
+    client.onSlotsChanged!(listener);
+    const hero = { id: 'hero', dims: { tone: ['calm', 'urgent'] } };
+    const group = { id: 'pricing-area', arms: ['standard', 'social_first'] };
+
+    client.decideSlots!([hero]);
+    client.decideSlots!([group, hero]);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const bodies = fetchMock.mock.calls
+      .filter((c) => String(c[0]).endsWith('/decide'))
+      .map((c) => JSON.parse(String(c[1]?.body)));
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].slots.map((s: { id: string }) => s.id)).toEqual(['hero', 'pricing-area']);
+    expect(bodies[0].slotsFrom).toBeUndefined();
+    expect(client.getSlotResult('hero')).toEqual({ tone: 'urgent' });
+    expect(listener).toHaveBeenCalled();
+
+    client.decideSlots!([hero]);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/decide'))).toHaveLength(1);
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('a failed batch renders the baseline undecided, then retries with backoff', async () => {
+    vi.useFakeTimers();
+    let failures = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (!String(input).endsWith('/decide')) return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+      if (failures < 1) { failures++; return Promise.resolve({ ok: false, status: 503, json: async () => ({}) } as Response); }
+      return Promise.resolve({ ok: true, json: async () => ({ slots: { hero: { tone: 'urgent' } } }) } as Response);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    const hero = { id: 'hero', dims: { tone: ['calm', 'urgent'] } };
+    client.decideSlots!([hero]);
+    await vi.advanceTimersByTimeAsync(10);
+    // Failure path: baseline renders but is not a decision (no exposure).
+    expect(client.getSlotResult('hero')).toEqual({ tone: 'calm' });
+    expect(client.isSlotDecided!('hero')).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/decide'))).toHaveLength(2);
+    expect(client.getSlotResult('hero')).toEqual({ tone: 'urgent' });
+    expect(client.isSlotDecided!('hero')).toBe(true);
     client.destroy();
     vi.useRealTimers();
   });

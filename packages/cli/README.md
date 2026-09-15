@@ -11,8 +11,8 @@ npx @sentientui/cli init
 1. **Detects your framework** (Next.js App/Pages Router, Vite, Remix, CRA) and package manager (pnpm, yarn, bun, npm).
 2. **Installs `@sentientui/react`** with your package manager.
 3. **Writes `.env.local`** with the right variable for your framework (`NEXT_PUBLIC_SENTIENT_API_KEY` or `VITE_SENTIENT_API_KEY`). Never clobbers: if the variable is already assigned — even empty — the file is left untouched.
-4. **Scaffolds `components/adaptive-example.tsx`** (or `src/components/` when your app uses `src/`) — a working style-rung hero using `useAdaptiveTokens`. Skipped if the file already exists.
-5. **Prints the wrap instructions** for your framework: the `<AdaptiveRoot>` / provider snippet to add to your layout, and what to do next.
+4. **Scaffolds `components/adaptive-example.tsx`** (or `src/components/` when your app uses `src/`) — a hero wrapped in `<Adaptive id="hero-cta" goal="signup_click">`: your markup is the original, and versions are generated from the dashboard. Skipped if the file already exists.
+5. **Prints the wrap instructions** for your framework: `<AdaptiveRoot>` (a Server Component, in `app/layout.tsx`) for the Next.js App Router, `<AdaptiveProvider>` everywhere else, and what to do next.
 
 ## What it does NOT do
 
@@ -38,7 +38,7 @@ An unknown command prints usage to stderr and exits 1.
 
 ## After init
 
-Run your dev server and preview personas locally with `?sentient_persona=buyer` (or `researcher` / `deal_seeker` / `browser`) — this override works in keyless local mode.
+Run your dev server and preview personas locally with `?sentient_persona=a`, then `?sentient_persona=b` — in keyless local mode any key works, and the two should render differently. Against a real project, use a persona key you declared (e.g. `admin`); projects start with no personas.
 
 Full component and hook reference: the [`@sentientui/react` README](https://www.npmjs.com/package/@sentientui/react).
 

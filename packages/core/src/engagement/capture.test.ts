@@ -180,6 +180,32 @@ describe('startEngagementCapture', () => {
     expect(byType('generic')).toMatchObject({ semanticType: 'generic', source: 'auto' });
   });
 
+  it('declared sectionTypes (by data-sentient-id) win over markup and typeOf, reported as markup', () => {
+    document.body.innerHTML =
+      '<section data-sentient-id="about"><p>Some paragraph of prose that carries no strong signal about its role at all whatsoever.</p></section>' +
+      '<section data-sentient-id="x" data-sentient-type="pricing"><div>plain content</div></section>';
+    vi.spyOn(core, 'isDoNotTrackEnabled').mockReturnValue(false);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue({ ok: true } as never);
+    (globalThis as Record<string, unknown>)['IntersectionObserver'] = class {
+      observe() { /* noop */ }
+      disconnect() { /* noop */ }
+    };
+
+    startEngagementCapture({ track: vi.fn() }, {
+      apiKey: 'pk_test', apiBase: 'https://api.example.com',
+      sectionTypes: { about: 'trust', x: 'faq' },
+      typeOf: () => 'hero',
+    });
+
+    const body = JSON.parse((fetchSpy.mock.calls[0] as unknown as [string, { body: string }])[1].body) as {
+      sections: Array<{ componentId: string; semanticType: string; source: string }>;
+    };
+    expect(body.sections.map((s) => [s.semanticType, s.source])).toEqual([
+      ['trust', 'markup'],
+      ['faq', 'markup'],
+    ]);
+  });
+
   describe('section-map URL normalization', () => {
     // Both a root base and a /v1-suffixed base (with or without a trailing slash)
     // must resolve to exactly one `/v1/section-map` — a doubled `/v1/v1/...` is a

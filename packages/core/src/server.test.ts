@@ -330,12 +330,12 @@ describe('preloadDecisions — slots', () => {
       layoutOrder: ['pricing', 'hero'],
       assignments: {},
       slots: { hero: { tone: 'urgent' }, 'pricing-area': 'social_first' },
-      persona: 'buyer',
+      persona: 'admin',
       confidence: 0.9,
     });
 
     expect(result.slots).toEqual({ hero: { tone: 'urgent' }, 'pricing-area': 'social_first' });
-    expect(result.persona).toBe('buyer');
+    expect(result.persona).toBe('admin');
     expect(result.confidence).toBe(0.9);
 
     const decideCall = vi.mocked(fetch).mock.calls.find(([u]) => String(u).endsWith('/decide'));
@@ -388,27 +388,61 @@ describe('preloadDecisions — registry mode (slotConfig/palette)', () => {
   const CFG_ENTRY = { kind: 'arms', content: 'Generated headline' };
   const PALETTE = { primaryBg: '#111827', primaryText: '#ffffff', radius: '4px' };
 
-  async function callRegistry(decideJson: unknown) {
+  // `null` = omit registrySlotIds (an explicit `undefined` would take the default).
+  async function callRegistry(decideJson: unknown, registrySlotIds: string[] | null = ['hero']) {
     const { preloadDecisions } = await import('./server.js');
     const mockFn = vi.mocked(fetch);
     mockFn.mockResolvedValueOnce({ ok: true, json: async () => ({}) } as Response); // sessions
     mockFn.mockResolvedValueOnce({ ok: true, status: 200, json: async () => decideJson } as Response); // decide
-    return preloadDecisions({ components: [], slotsFrom: 'registry' }, SESSION_ID, CONFIG);
+    return preloadDecisions(
+      { components: [], slotsFrom: 'registry', ...(registrySlotIds ? { registrySlotIds } : {}) },
+      SESSION_ID,
+      CONFIG,
+    );
   }
+
+  it('scopes the registry decide to the page\'s ids (bootstrap:false) — never unscoped', async () => {
+    // Close-out turns every slot decision into a trial without checking an
+    // exposure; an unscoped registry decide minted one for every published
+    // slot on every page (CONTRACTS §2).
+    await callRegistry({ layoutOrder: [], assignments: {}, slots: {}, persona: 'unknown', confidence: 0 }, ['hero', 'faq']);
+    const decideCall = vi.mocked(fetch).mock.calls.find(([u]) => String(u).endsWith('/decide'));
+    const body = JSON.parse((decideCall![1] as RequestInit).body as string) as Record<string, unknown>;
+    expect(body).toMatchObject({ slotsFrom: 'registry', registrySlotIds: ['hero', 'faq'], bootstrap: false });
+  });
+
+  it('refuses registry mode without ids: downgrades to request mode with one console.error', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await callRegistry({ layoutOrder: [], assignments: {}, slots: {}, persona: 'unknown', confidence: 0 }, null);
+    const decideCall = vi.mocked(fetch).mock.calls.find(([u]) => String(u).endsWith('/decide'));
+    const body = JSON.parse((decideCall![1] as RequestInit).body as string) as Record<string, unknown>;
+    expect(body.slotsFrom).toBeUndefined();
+    expect(body.registrySlotIds).toBeUndefined();
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(String(errSpy.mock.calls[0]![0])).toContain('registrySlotIds');
+    errSpy.mockRestore();
+  });
+
+  it('an empty id list is a valid scope ("nothing published is on this page")', async () => {
+    await callRegistry({ layoutOrder: [], assignments: {}, slots: {}, persona: 'unknown', confidence: 0 }, []);
+    const decideCall = vi.mocked(fetch).mock.calls.find(([u]) => String(u).endsWith('/decide'));
+    const body = JSON.parse((decideCall![1] as RequestInit).body as string) as Record<string, unknown>;
+    expect(body).toMatchObject({ slotsFrom: 'registry', registrySlotIds: [] });
+  });
 
   it('sends slotsFrom on the wire and returns slotConfig, palette, and undeclared served slots', async () => {
     const result = await callRegistry({
       layoutOrder: [],
       assignments: {},
-      slots: { hero: 'researcher_v1' },
+      slots: { hero: 'evaluator_v1' },
       slotConfig: { hero: CFG_ENTRY },
       palette: PALETTE,
-      persona: 'researcher',
+      persona: 'evaluator',
       confidence: 0.8,
     });
 
     // Registry slots arrive undeclared — they must still land in the result.
-    expect(result.slots).toEqual({ hero: 'researcher_v1' });
+    expect(result.slots).toEqual({ hero: 'evaluator_v1' });
     expect(result.slotConfig).toEqual({ hero: CFG_ENTRY });
     expect(result.palette).toEqual(PALETTE);
 

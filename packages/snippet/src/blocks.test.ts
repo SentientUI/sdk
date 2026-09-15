@@ -73,10 +73,98 @@ describe('renderBlock', () => {
       expect(branded.style.background).toBe('rgb(20, 40, 200)');
       expect(branded.style.color).toBe('rgb(255, 255, 0)');
       expect(branded.style.borderRadius).toBe('2px');
-      // Secondary/ghost stay inherit-first; only the radius is branded.
+      // Secondary/ghost stay inherit-first on a bare palette; only the radius
+      // is branded (they resolve to the accent token when one exists — below).
       const ghost = renderBlock({ ...btn, emphasis: 'ghost' }, document)!;
       expect(ghost.style.background).toBe('transparent');
       expect(ghost.style.borderRadius).toBe('2px');
+    });
+
+    it('brand tokens resolve tone and non-primary emphasis', () => {
+      setBlockPalette({
+        primaryBg: '#111827', primaryText: '#ffffff', radius: '2px',
+        accent: 'rgb(225, 29, 72)', muted: 'rgb(107, 114, 128)', border: 'rgb(229, 231, 235)',
+      });
+      const secondary = renderBlock({ type: 'button', label: 'Compare', href: 'https://x.example/c', emphasis: 'secondary' }, document)!;
+      expect(secondary.style.color).toBe('rgb(225, 29, 72)');
+      expect(secondary.style.border).toContain('rgb(225, 29, 72)');
+
+      const accentText = renderBlock({ type: 'text', value: 'Save time', tone: 'accent' }, document)!;
+      expect(accentText.style.color).toBe('rgb(225, 29, 72)');
+      expect(accentText.style.fontWeight).toBe('600');
+
+      const muted = renderBlock({ type: 'text', value: 'small print', tone: 'muted' }, document)!;
+      expect(muted.style.color).toBe('rgb(107, 114, 128)');
+      expect(muted.style.opacity).toBe(''); // the token replaces the opacity fallback
+
+      const badge = renderBlock({ type: 'badge', value: 'New' }, document)!;
+      expect(badge.style.border).toContain('rgb(229, 231, 235)');
+    });
+  });
+
+  describe('rung 1 — surface, pad, divider, maxWidth (spec 2026-09-10 §4)', () => {
+    afterEach(() => setBlockPalette(null));
+
+    it('a raised stack renders as a card in the palette surface with readable text pairing', () => {
+      setBlockPalette({
+        primaryBg: '#111827', primaryText: '#ffffff', radius: '6px',
+        surface: 'rgb(243, 244, 246)', surfaceText: 'rgb(17, 24, 39)', border: 'rgb(229, 231, 235)',
+      });
+      const card = renderBlock(
+        { type: 'stack', direction: 'column', surface: 'raised', children: [{ type: 'text', value: 'Plan' }] },
+        document,
+      )!;
+      expect(card.style.background).toBe('rgb(243, 244, 246)');
+      expect(card.style.color).toBe('rgb(17, 24, 39)');
+      expect(card.style.border).toContain('rgb(229, 231, 235)');
+      expect(card.style.borderRadius).toBe('6px');
+      // A zero-padding card is a design bug: raised defaults pad to md.
+      expect(card.style.padding).toBe('16px');
+    });
+
+    it('raised without a palette stays inherit-first — hairline + radius only, no color guess', () => {
+      const card = renderBlock(
+        { type: 'stack', direction: 'column', surface: 'raised', children: [{ type: 'text', value: 'Plan' }] },
+        document,
+      )!;
+      expect(card.style.background).toBe('');
+      expect(card.style.color).toBe('');
+      expect(card.style.border.toLowerCase()).toContain('currentcolor');
+      expect(card.style.borderRadius).toBe('8px');
+    });
+
+    it('pad reuses the GAP scale on stacks and grids; explicit pad beats the raised default', () => {
+      const padded = renderBlock(
+        { type: 'stack', direction: 'row', surface: 'raised', pad: 'lg', children: [{ type: 'spacer', size: 'sm' }] },
+        document,
+      )!;
+      expect(padded.style.padding).toBe('24px');
+      const grid = renderBlock(
+        { type: 'grid', columns: 2, pad: 'sm', children: [{ type: 'spacer', size: 'sm' }] },
+        document,
+      )!;
+      expect(grid.style.padding).toBe('8px');
+      // No pad, no surface → no padding (the pre-rung-1 rendering, unchanged).
+      const plain = renderBlock(
+        { type: 'stack', direction: 'row', children: [{ type: 'spacer', size: 'sm' }] },
+        document,
+      )!;
+      expect(plain.style.padding).toBe('');
+    });
+
+    it('divider renders an hr hairline in the palette border color', () => {
+      setBlockPalette({ primaryBg: '#111827', primaryText: '#ffffff', radius: '6px', border: 'rgb(229, 231, 235)' });
+      const hr = renderBlock({ type: 'divider' }, document)!;
+      expect(hr.tagName).toBe('HR');
+      expect(hr.style.borderTop).toContain('rgb(229, 231, 235)');
+      expect(hr.style.margin).toBe('0px');
+    });
+
+    it('maxWidth measure caps text and heading at 65ch', () => {
+      const p = renderBlock({ type: 'text', value: 'long copy', maxWidth: 'measure' }, document)!;
+      expect(p.style.maxWidth).toBe('65ch');
+      const h = renderBlock({ type: 'heading', value: 'Hi', level: 2, maxWidth: 'measure' }, document)!;
+      expect(h.style.maxWidth).toBe('65ch');
     });
   });
 

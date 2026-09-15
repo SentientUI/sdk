@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { loadAdaptiveDecision } from './server.js';
-import { PERSONAS, fnv1a, pickDeterministicArm } from '@sentientui/policy';
+import { pickDeterministicArm } from '@sentientui/policy';
 
 const cookiesWith = (value: string | null) => ({
   get: (name: string) => (name === '_snt_uid' && value ? { value } : undefined),
@@ -25,14 +25,16 @@ describe('loadAdaptiveDecision — keyless (development condition)', () => {
     });
     expect(fetch).not.toHaveBeenCalled(); // short-circuits BEFORE any fetch — no timeout burn
     expect(result.sessionId).toBe('ssr-sess-1');
-    const persona = PERSONAS[fnv1a('ssr-sess-1') % PERSONAS.length];
+    // Nothing forced, nothing declared → unknown (was a session hash onto the
+    // seeded personas, removed 2026-09-13), which keeps the authored order.
+    const persona = 'unknown';
     expect(result.persona).toBe(persona);
     expect(result.confidence).toBe(0.5);
     expect(result.assignments.hero_cta).toBe(pickDeterministicArm('ssr-sess-1', 'hero_cta', ['a', 'b']));
     expect(result.slots.hero).toEqual({
       tone: pickDeterministicArm(`ssr-sess-1:${persona}`, 'hero.tone', ['calm', 'urgent']),
     });
-    expect(result.layoutOrder).toHaveLength(3);
+    expect(result.layoutOrder).toEqual(['hero', 'pricing', 'faq']);
   });
 
   it('generates a session id when no cookie exists (ssrSessionId flow)', async () => {

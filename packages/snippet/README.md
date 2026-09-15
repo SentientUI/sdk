@@ -14,11 +14,15 @@ Composition-Block arm inside its slot (all arms render hidden up front; the serv
 shown, and removing the arm restores your original markup exactly). If anything fails, your
 page is left exactly as it was.
 
+The install is two tags in `<head>`: an inline tag that sets `window.sentient` and then runs
+the pre-paint script, followed by the deferred loader. Copy the real thing from your dashboard's
+Install page, or generate it (the pre-paint script is ~2.6 KB and byte-identical for every site,
+so it is not reproduced here):
+
 ```html
 <script>
   window.sentient = {
     apiKey: 'pk_your_key',            // sentient-ui.com → Settings
-    context: 'landing',               // 'landing' | 'ecommerce' | 'saas' | 'marketplace'
     personaAttributes: true,          // sets data-sentient-persona / -confidence on <html>
     persona: () => window.myApp?.role, // optional: declare the role your site already knows
                                        // (string or function; must be a key from Settings → Personas)
@@ -27,12 +31,10 @@ page is left exactly as it was.
     slots: {
       hero: { dims: { tone: ['calm', 'urgent'] }, target: '#hero' },
     },
+    // registry: true,                // needed alongside `slots` — see the note below
   };
+  /* SentientUI pre-paint script goes here, in the same tag, after the `;` */
 </script>
-<!-- Optional but recommended: the pre-paint tag. Copy the real thing from your
-     dashboard's Install page — it is one ~2.6 KB inline script, byte-identical
-     for every site, so it is not reproduced here. -->
-<script>/* SentientUI pre-paint */</script>
 <script
   src="https://unpkg.com/@sentientui/snippet/dist/snippet.global.js"
   defer
@@ -40,20 +42,53 @@ page is left exactly as it was.
 ></script>
 ```
 
-**The pre-paint tag.** The loader above is `defer`, so it runs after your page has parsed —
+> **Declaring `slots` turns off dashboard-published components.** A bare `{ apiKey }`
+> install serves the components you publish from the dashboard; as soon as `slots` is
+> non-empty, that default flips off. Add `registry: true` to keep both. With
+> `debug: true` the snippet logs this when it happens. (`context` is no longer needed —
+> the project's type is set in the dashboard; an existing `context` key is ignored.)
+
+**Published components are decided only where they are.** Before deciding, the snippet
+fetches the project's published component locators (`GET /v1/registry/locators`, in parallel
+with session setup) and resolves them against the page once it has parsed. Only components
+whose element is on this page are decided, so a component that lives on `/pricing` gets no
+trial — and no dilution of its results — from your home page. For three seconds after the
+page loads, and after each client-side navigation, the snippet keeps watching for components
+that render late (hydrating frameworks, client routers) and decides them when they appear. If the
+locators request fails, that page view shows your original page and records nothing for any
+component. A component is reported as "element not found" (which can pause it) only when it
+is expected on this page (its page scope, set in the editor, matches) and still missing when that watch ends, or when an
+element is there but no longer matches what was saved; being absent from a page it was never
+meant for is not a failure.
+
+**The pre-paint script.** The loader above is `defer`, so it runs after your page has parsed —
 and on a return visit the browser may already have painted your original section order and
-baseline styles before it does. The middle tag closes that gap: a tiny synchronous inline
+baseline styles before it does. The pre-paint script closes that gap: a tiny synchronous inline
 script that applies the last served decision *before* the page paints. It reads only the
 snapshot already stored on that visitor's own device, makes no network request, hides nothing
 (there is no cloak here, by design), and does nothing at all on a first visit or for a
 Do-Not-Track / Global Privacy Control / consent-gated visitor. Anything it gets wrong — a
 selector that resolved differently mid-parse, say — the loader reverts within the same page
-load. Skip it and everything still works; your returning visitors just see the change land a
-beat later. Generating it yourself:
+load. It reads `window.sentient` when it runs, which is why it can share a tag with the config
+(keep the `;` that ends the assignment). Skip it and everything still works; your returning
+visitors just see the change land a beat later. Generating the tags yourself:
 
 ```js
-import { renderSnippetPrePaintScript } from '@sentientui/snippet/install';
+import { renderSnippetInstall, renderSnippetPrePaintScript } from '@sentientui/snippet/install';
+
+renderSnippetInstall({ config: { apiKey: 'pk_your_key' } });              // two tags (default)
+renderSnippetInstall({ config: { apiKey: 'pk_your_key' }, split: true }); // three tags
 ```
+
+`config` must be JSON values (a `persona` function is dropped — hand-write that key); it is
+escaped for inline HTML, so a value containing `</script>` cannot end the tag.
+
+**Strict Content-Security-Policy (script hashes).** Use the three-tag form instead: the config
+in its own `<script>`, the pre-paint script alone in a second, then the loader — in that order.
+The combined tag contains your config, so its hash is different for every site and changes
+whenever the config does; split out, the pre-paint tag is byte-identical everywhere, so one hash
+covers it and only the short config tag needs a hash of its own. Installs from before the
+two-tag form — three tags, or config + loader with no pre-paint script — keep working unchanged.
 
 The URL above carries no version: unpkg resolves it to the latest release, so your site picks
 up new snippet versions on its own and this tag is pasted once. That is the recommended setup,
@@ -71,7 +106,7 @@ version it sees running falls behind.
 
 ```css
 #hero[data-tone='urgent'] .cta { font-weight: 700; }
-html[data-sentient-persona='deal_seeker'] .discount-banner { display: block; }
+html[data-sentient-persona='trial_user'] .upgrade-banner { display: block; }
 ```
 
 The first value of each dim is your baseline (what you show today). Decisions are locked per
@@ -87,7 +122,7 @@ role label — never a user id or email.
 your theme renders them (the first learned baseline). Each selector must match exactly one
 element and all of them must share one parent; anything else — a missing section, an ambiguous
 selector, a served order that isn't a permutation of your list — applies nothing. Return visits
-apply the last served order from a local snapshot; with the pre-paint tag installed that
+apply the last served order from a local snapshot; with the pre-paint script installed that
 happens before the browser paints, so there is no natural-order flash at all.
 
 The snippet also captures per-section attention (visible time + scroll depth) and behavioral

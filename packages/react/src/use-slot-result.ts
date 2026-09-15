@@ -3,10 +3,6 @@ import { armOfResult, baselineResultFor, type SlotDeclInput, type SlotResult } f
 import { confidenceBand } from '@sentientui/policy';
 import { useInitialPersona, useInitialSlots, useSentient } from './provider.js';
 import { subscribeOverridesChanged, getOverridesVersion } from './override-events.js';
-import { isDevBuild } from './adaptive-shared.js';
-
-// Warn once per slot id per page lifetime, not per render.
-const warnedBaselineSlots = new Set<string>();
 
 declare global {
   interface Window {
@@ -21,7 +17,14 @@ export type SlotResolution = {
   result: SlotResult;
   /** Canonical arm string (`dim=value|…` for dims slots, arm id for arms slots). */
   arm: string;
-  source: 'override' | 'preloaded' | 'client' | 'baseline';
+  /**
+   * `client` = decided for this session (a slot_decisions row exists);
+   * `seeded` = the core client holds a result that was NOT decided this
+   * session — a snapshot from an earlier visit or the baseline it wrote when a
+   * decide failed. Seeded results render (pre-paint parity) but must never be
+   * exposed or credited: there is no trial for them to belong to.
+   */
+  source: 'override' | 'preloaded' | 'client' | 'seeded' | 'baseline';
 };
 
 /**
@@ -86,31 +89,40 @@ export function useSlotResult(slotId: string, decl: SlotDeclInput): SlotResoluti
       return { result: preloaded, arm: armOfResult(preloaded), source: 'preloaded' };
     }
     if (fromClient !== null) {
-      return { result: fromClient, arm: armOfResult(fromClient), source: 'client' };
+      // A result the core holds but did not decide this session (snapshot seed,
+      // failure baseline) renders as-is but is `seeded`, so the exposure and
+      // goal gates in the calling hooks skip it. Clients without the probe
+      // (hand-rolled/test) read as decided, as before.
+      const decided = client?.isSlotDecided ? client.isSlotDecided(slotId) : true;
+      return { result: fromClient, arm: armOfResult(fromClient), source: decided ? 'client' : 'seeded' };
     }
     const baseline = baselineResultFor(decl);
     return { result: baseline, arm: armOfResult(baseline), source: 'baseline' };
   })();
 
-  // Dev-only: a live KEYED client that has settled on the declared baseline was
-  // never decided — keyed clients decide slots server-side (SSR preload), and
-  // (unlike local mode) issue no client-side decide, so this slot serves
-  // baseline for the whole session and cannot learn. Callers gate exposure on
-  // `source !== 'baseline'` so no phantom baseline impression is recorded; warn
-  // once so the integrator preloads the decision. (Local mode's baseline is a
-  // transient first paint before its decide resolves — excluded here.)
+  // Keyed clients decide THIS mounted slot when nothing preloaded it: one
+  // batched decide per commit (core decideSlots), then re-render when it lands.
+  // Before this a keyed client never decided request-declared slots in the
+  // browser — useAdaptiveTokens and AdaptiveGroup served their baseline for the
+  // whole session and learned nothing unless the same declaration was
+  // duplicated into AdaptiveRoot's `slots` for SSR. Snapshot-seeded ('client')
+  // slots still ask: the snapshot is the last visit's answer, not a decision
+  // for this session. Only mounted slots are decided, so a declaration on
+  // another page never becomes a trial for this visit.
+  const settled = resolution.source === 'preloaded' || resolution.source === 'override';
   useEffect(() => {
-    if (!isDevBuild()) return;
-    if (!client || client.isLocal === true) return;
-    if (resolution.source !== 'baseline') return;
-    if (warnedBaselineSlots.has(slotId)) return;
-    warnedBaselineSlots.add(slotId);
-    console.warn(
-      `[sentient] slot "${slotId}" resolved to its baseline — no SSR-preloaded or decided result. ` +
-        `Keyed clients decide slots server-side, so this slot serves baseline for the whole session ` +
-        `and records no exposure. Preload it via loadAdaptiveDecision()/initialSlots so it can serve a decided arm and learn.`,
-    );
-  }, [client, resolution.source, slotId]);
+    if (!client || client.isLocal === true || settled || !client.decideSlots) return;
+    const off = client.onSlotsChanged?.(bump);
+    client.decideSlots([decl]);
+    return () => {
+      // Unmounted before the batch was sent (redirecting route, StrictMode
+      // probe): withdraw it — a slot that is not on the page is not a trial.
+      client.cancelSlots?.([slotId]);
+      off?.();
+    };
+    // decl identity is fixed per slot id (callers memoize it on id).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, slotId, settled]);
 
   return resolution;
 }
@@ -118,7 +130,8 @@ export function useSlotResult(slotId: string, decl: SlotDeclInput): SlotResoluti
 /**
  * Reads a forced persona: `window.__sentient_persona_override` (the devtools
  * panel, `applyScenario`, the Playwright/Cypress helpers) or the
- * `?sentient_persona=<PersonaKey>` URL param (mirrors `?sentient_variant=`).
+ * `?sentient_persona=<persona key>` URL param (any project vocabulary key;
+ * mirrors `?sentient_variant=`).
  * Read POST-MOUNT only — it touches `window.location`.
  */
 function getPersonaOverride(): { persona: string; confidence: number } | null {

@@ -14,7 +14,7 @@
     "start": "remix-serve ./build/server/index.js",
     "setup": "prisma generate && prisma migrate deploy",
     "prisma": "prisma",
-    "test": "vitest run",
+    "test": "prisma generate && vitest run",
     "typecheck": "prisma generate && tsc --noEmit",
     "docker-start": "npm run setup && npm run start"
   },

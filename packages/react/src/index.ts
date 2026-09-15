@@ -1,9 +1,14 @@
 export { AdaptiveProvider, useSentient, useInitialAssignments, useLayoutOrder, useAdaptiveApiBaseUrl } from './provider.js';
 export type { AdaptiveProviderProps, SsrFallback } from './provider.js';
+// The vocabulary `sectionTypes` accepts, so a typed app can build the map
+// without a direct @sentientui/core dependency.
+export type { SemanticType } from '@sentientui/core/engagement';
 
 export { Adaptive } from './adaptive.js';
 export type {
   AdaptiveProps,
+  AdaptiveVariantsProps,
+  AdaptiveGeneratedProps,
   GoalConfig,
   ClickGoal,
   ScrollDepthGoal,
@@ -77,3 +82,11 @@ export type { AgentFeed, AgentBlock } from './agent-feed.js';
 // during SSR), so it is only ever invoked from client components and the
 // client reference is never called on the server.
 export { grantConsent } from '@sentientui/core';
+
+// Composition Block renderer, exported for operator surfaces (the dashboard's
+// review preview renders a pending arm exactly as AdaptiveSlot would, with the
+// same palette). Not needed for normal SDK integration — AdaptiveSlot renders
+// served arms itself.
+export { renderBlocks } from './blocks-render.js';
+export type { RenderBlocksOptions } from './blocks-render.js';
+export type { SitePalette } from '@sentientui/core';

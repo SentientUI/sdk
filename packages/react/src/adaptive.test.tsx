@@ -7,6 +7,10 @@ import { subscribeRegistry } from './devtools-registry.js';
 import { init, attachMicroSignalDetectors } from '@sentientui/core';
 
 vi.mock('@sentientui/core', () => ({
+  // AdaptiveSlot imports `reveal` from core (the adaptation reveal). These
+  // mocks are deliberately minimal — they exist so the suite never loads real
+  // core — so every core import the component tree makes has to be listed here.
+  reveal: vi.fn(),
   init: vi.fn(),
   attachMicroSignalDetectors: vi.fn(() => () => undefined),
 }));

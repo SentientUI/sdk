@@ -9,9 +9,9 @@ describe('parseSnippetConfig', () => {
       personaAttributes: true,
       slots: { hero: { dims: { tone: ['calm', 'urgent'] }, target: '#hero' } },
     });
+    // A legacy `context` key is tolerated but not carried: nothing ever read it.
     expect(cfg).toEqual({
       apiKey: 'pk_abc',
-      context: 'ecommerce',
       personaAttributes: true,
       slots: { hero: { dims: { tone: ['calm', 'urgent'] }, target: '#hero' } },
     });
@@ -24,9 +24,9 @@ describe('parseSnippetConfig', () => {
     expect(parseSnippetConfig({ apiKey: 42 })).toBeNull();
   });
 
-  it('defaults context to landing and personaAttributes to false and slots to {}', () => {
+  it('defaults personaAttributes to false and slots to {}', () => {
     const cfg = parseSnippetConfig({ apiKey: 'pk_abc' });
-    expect(cfg).toEqual({ apiKey: 'pk_abc', context: 'landing', personaAttributes: false, slots: {} });
+    expect(cfg).toEqual({ apiKey: 'pk_abc', personaAttributes: false, slots: {} });
   });
 
   it('records an explicit sectionCapture: false (default-on is applied at the gate)', () => {
@@ -34,8 +34,8 @@ describe('parseSnippetConfig', () => {
     expect(cfg?.sectionCapture).toBe(false);
   });
 
-  it('coerces an unknown context to landing', () => {
-    expect(parseSnippetConfig({ apiKey: 'pk_abc', context: 'blog' })!.context).toBe('landing');
+  it('still accepts a config carrying the deprecated context key', () => {
+    expect(parseSnippetConfig({ apiKey: 'pk_abc', context: 'blog' })).not.toBeNull();
   });
 
   it('passes through consent, preConsentBehavior, and debug when declared', () => {

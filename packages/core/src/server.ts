@@ -231,14 +231,36 @@ export async function preloadDecisions(
     components: Array<{ id: string; variantIds?: string[] }>;
     slots?: SlotDeclInput[];
     /** 'registry' serves the project's published slot_definitions as if declared
-     *  (and is the only way slotConfig/palette come back). Default 'request'. */
+     *  (and is the only way slotConfig/palette come back). Default 'request'.
+     *  Requires `registrySlotIds`: the `<Adaptive id>`s THIS page renders. */
     slotsFrom?: 'request' | 'registry';
+    /**
+     * Registry mode: decide only these published slot ids. Close-out turns
+     * every slot decision into a trial without checking an exposure, so an
+     * unscoped registry decide accrues trials — and session-level credit — for
+     * every published slot on every page, including ones this page never
+     * renders (CONTRACTS §2). Omitting it in registry mode is refused: the
+     * call downgrades to request mode with one console.error, rather than
+     * silently minting those trials.
+     */
+    registrySlotIds?: string[];
   },
   sessionId: string,
   config: ServerAssignConfig,
 ): Promise<DecideResult> {
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const declaredSlots = params.slots ?? [];
+  let registryIds: string[] | null = null;
+  if (params.slotsFrom === 'registry') {
+    if (Array.isArray(params.registrySlotIds)) {
+      registryIds = params.registrySlotIds;
+    } else {
+      console.error(
+        "[SentientUI] preloadDecisions: slotsFrom: 'registry' needs registrySlotIds (the <Adaptive id>s this page renders). " +
+          'An unscoped registry decide records a trial for every published slot on every page; falling back to request mode.',
+      );
+    }
+  }
   const fallback: DecideResult = {
     layoutOrder: params.sections ?? [],
     assignments: {},
@@ -292,7 +314,10 @@ export async function preloadDecisions(
           sections: (params.sections ?? []).map((id) => ({ id })),
           components: params.components,
           ...(declaredSlots.length > 0 ? { slots: declaredSlots.map(toWireSlot) } : {}),
-          ...(params.slotsFrom === 'registry' ? { slotsFrom: 'registry' } : {}),
+          // bootstrap:false — editor goals and the section map are snippet
+          // data the React SDK never reads. An EMPTY id list is meaningful
+          // ("nothing published is on this page"): zero trials, still a decide.
+          ...(registryIds !== null ? { slotsFrom: 'registry', registrySlotIds: registryIds, bootstrap: false } : {}),
           ...(config.persona ? { persona: config.persona } : {}),
         }),
       },

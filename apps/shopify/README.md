@@ -11,12 +11,17 @@ app embed carrying the snippet one-liner, a web pixel firing funnel-step goals
 and the cart-token → session binding, and app-backend webhooks forwarding
 server-truth orders/refunds to the SentientUI API.
 
-## Status: submitted 2026-09-05, rejected 2026-09-06 — fixes in flight
+## Status: in review — two rejections fixed, Managed Pricing shipped
 
-Review returned three "Action needed" items: missing test credentials
-(4.5.4 — reviewers found none and could not connect) and the two billing
-requirements (1.2.1/1.2.2 — the old paid-service framing read as mandatory
-off-platform billing; see "Pricing and billing" for how it was reworded).
+- **Round 1 (2026-09-06):** missing test credentials (4.5.4 — the review
+  account existed but held no project) + billing wording read as mandatory
+  off-platform billing (1.2.1/1.2.2). Fixed: keys inline in the review
+  instructions, free-plan-first copy.
+- **Round 2 (2026-09-09, ref 133916):** subscription must go through
+  Shopify billing (now Managed Pricing — see "Pricing and billing") and a
+  real pixel bug: `ensureWebPixel`'s lookup-first order treated the thrown
+  "No web pixel was found for this app." as fatal, so FRESH stores never
+  created the pixel (dev stores masked it — their pixel pre-existed).
 
 Every checklist item below passed live on `sentientui-store.myshopify.com`,
 including the pixel path and the three-step checkout funnel, and the backend
@@ -36,11 +41,12 @@ What is left is **operator work, not code**:
 - **Fill the listing** from `listing/LISTING.md` — copy, URLs, review
   instructions, and the screenshot/screencast plan are pre-written there;
   the 1200×1200 icon is `listing/icon-1200.png`.
-- **Billing wording is free-plan-first.** See "Pricing and billing" below —
-  the app is free, carries no Shopify charge, and everything it does runs on
-  SentientUI's free plan; paid plans (traffic volume, seats, AI features) are
-  optional upsells on the standalone service. Review rejected the earlier
-  "merchant pays, priced on traffic" framing as mandatory off-platform billing.
+- **Configure Managed Pricing plans** in the Partner dashboard (Free $0
+  default + Starter/Growth/Scale) with names matching PLAN_NAME_MAP in
+  `app/lib/plan-sync.server.ts` — see "Pricing and billing" below.
+- **Set `SHOPIFY_CONNECTOR_SECRET`** (same value on `sentient-api` and
+  `sentientui-shopify` via `fly secrets set`) — without it the plan sync is
+  disabled and the API refuses plan writes (fail closed).
 
 The operator ran `shopify app init` (Partner org `sentientui-app`,
 client_id in `shopify.app.toml`) and the generated Remix shell is merged in:
@@ -222,23 +228,41 @@ itself carries (pixel, webhooks, provisioning, tag → persona mapping) is
 live the moment the app version is released — no coupling between the two
 deploys beyond that.
 
-## Pricing and billing
+## Pricing and billing — Shopify Managed Pricing (since 2026-09-09)
 
-**The app is free and uses no Shopify Billing API charge.**
+**The app is free to install; paid plans are Shopify Managed Pricing.**
 
-The merchant pays for SentientUI, on their SentientUI account, priced on the
-traffic it optimizes (session tiers, billed by Stripe). This app is the
-connector to that account, not a product with its own price. Two reasons that
-matters beyond taste:
+Two review rejections got us here: round 1 (2026-09-06) killed wording that
+framed the SentientUI service as paid-and-required with an external billing
+link; round 2 (2026-09-09, ref 133916) ruled that even the OPTIONAL Stripe
+subscription must go through Shopify once reviewers could see it in the
+dashboard. So for Shopify-installed merchants, Shopify billing REPLACES
+Stripe (never alongside — nobody pays on two rails):
 
-- **Nobody pays twice.** A Shopify charge on top of the SentientUI subscription
-  would bill the same customer for the same service on two rails.
-- **The price should follow the value.** Traffic is what the optimizer works on
-  and what costs us to serve, so a small store pays little and a large one pays
-  in proportion. A flat app fee prices the connector instead.
+- Plans (Free $0 default, Starter/Growth/Scale flat monthly) are configured
+  as Managed Pricing in the Partner dashboard. Their NAMES are a contract
+  with `app/lib/plan-sync.server.ts` (PLAN_NAME_MAP).
+- The `app_subscriptions/update` webhook maps the active subscription to a
+  SentientUI plan and syncs it via `POST /v1/provision/shopify/plan` —
+  authorized by the shop's sk_ PLUS `SHOPIFY_CONNECTOR_SECRET` (a Fly secret
+  on both apps; the sk_ alone must never grant plan changes or any sk_
+  holder could self-upgrade).
+- The API marks such accounts `users.billing_source = 'shopify'`: the
+  dashboard hides Stripe checkout for them (the API refuses it too), and a
+  'free' sync (cancellation/uninstall) only downgrades accounts the Shopify
+  rail owns — a Stripe-paying customer who merely uninstalls the connector
+  keeps their plan.
+- Uninstall releases the plan BEFORE deleting the shop's keys, because the
+  CANCELLED webhook can land after the keys are gone.
+- **Follow-up (post-approval):** the "Your plan" card shows the
+  "upgrade through Shopify" link to every store, including ones connected to
+  Stripe-paid or agency accounts. Harmless — such a purchase is refused at
+  sync time (`applied: false`, audited) and unwound by support — but the
+  polished version asks the API which rail owns the account and hides the
+  link when the account isn't Shopify-billable.
 
-This repo previously carried "$19 one-time (planned)" as an unmade decision, and
-a charge was briefly implemented against it. It has been removed.
+This repo previously carried "$19 one-time (planned)" as an unmade decision,
+and a charge was briefly implemented against it. It has been removed.
 
 ### How review actually ruled (rejection 2026-09-06)
 

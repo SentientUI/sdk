@@ -1,5 +1,181 @@
 # @sentientui/core
 
+## 0.31.1
+
+### Patch Changes
+
+- Updated dependencies
+  - @sentientui/policy@0.12.0
+
+## 0.31.0
+
+### Minor Changes
+
+- f304caf: An exposure or a conversion is only recorded for an arm the server actually
+  decided this session.
+
+  The core seeds a slot's result from two places that are not decisions: the
+  pre-paint snapshot on a return visit, and the baseline it falls back to when a
+  `decide` call fails. Both render — that is the point, the visitor sees content
+  immediately — but neither has a `slot_decisions` row behind it, so counting them
+  produced impressions for arms that were never served and conversions with no
+  trial to credit.
+
+  - `SentientClient.isSlotDecided(slotId)` reports whether a slot's current result
+    came from a server decision (or an SSR seed) as opposed to a snapshot or a
+    failure baseline.
+  - `componentGoal()` and `track({ eventType: 'variant_assigned' })` now refuse to
+    attribute to an undecided slot arm, so a hand-rolled integration cannot record
+    one either. Variant components (which resolve from the assignment cache) and
+    SSR-preloaded slots are unaffected.
+  - `SentientClient.cancelSlots(slotIds)` withdraws a pending ask. React hooks call
+    it on unmount, so a region that mounts and unmounts inside one batching tick no
+    longer takes a trial it will never show.
+  - A failed `requestSlots`/`decideSlots` batch is now retried with bounded backoff
+    (2 attempts) instead of leaving the region on its baseline for the rest of the
+    session with nothing recorded.
+
+  `@sentientui/react`: `useSlotResult` and `useSlotConfig` resolutions gained a
+  `'seeded'` source for exactly this state. `<Adaptive>`, `<AdaptiveGroup>` and
+  `useAdaptiveTokens` render it and skip the exposure and goal wiring.
+
+- f304caf: One `<Adaptive>` instead of two components. `<Adaptive id>` now covers both
+  shapes: wrap the markup you already ship and versions of it are generated and
+  published from the dashboard (`AdaptiveGeneratedProps`), or pass `variants` and
+  write the alternatives yourself (`AdaptiveVariantsProps`). Children or
+  `variants`, never both.
+
+  `<AdaptiveSlot>` is deprecated, not removed — it still renders, and its logic is
+  now the same code path as `<Adaptive>`. Migrate by renaming the element;
+  `onFormSubmit`, `reportBaselineText` and `clientOnly` mean what they did.
+
+  The `context` prop/config field is deprecated and ignored everywhere it appears
+  (`AdaptiveProvider`, `SentientConfig`, `window.sentient`) — the project's type is
+  set in the dashboard. It is still accepted, and now optional; `@sentientui/cli`
+  no longer prints it. Safe to omit.
+
+  **Breaking (types) for `AdaptiveRoot`:** its `consentFrom` no longer accepts a
+  `check` callback. `AdaptiveRootProps` used to inherit `consentFrom` wholesale
+  from `AdaptiveProviderProps`, so a JS-API CMP predicate type-checked there while
+  being unusable — `AdaptiveRoot` runs on the server, where a client callback
+  cannot be evaluated, so SSR silently treated those visitors as un-consented.
+  Cookie-based `consentFrom` is unchanged. For a JS-API CMP, put
+  `<AdaptiveProvider consentFrom={{ check }}>` in a client component instead.
+
+  Mounted regions decide client-side in one batched call
+  (`requestSlots`/`decideSlots`/`onSlotsChanged` on `SentientClient`), so a
+  client-rendered app no longer needs an SSR preload to get a decision — it
+  previously showed its baseline for the whole session. First paint shows the
+  original briefly, then swaps; return visits start from the last served version.
+
+  **Decisions are page-scoped.** A slot only decides, and only records a trial,
+  when it is on the page the visitor is looking at. Previously a mounted region
+  could take a trial it could never convert, which biased every arm that happened
+  to be declared on more pages than it rendered on. `@sentientui/core` exports the
+  matcher behind this (`pageScopeMatches`, `PAGE_SCOPE_RE`) so a target's page
+  scope can be evaluated the same way client- and server-side.
+
+- 036af5e: The four seeded personas are gone from the SDK surface. Projects have started with an empty persona vocabulary since 2026-09-13; this removes the last code that still named them.
+
+  **Breaking for anyone importing these from `@sentientui/policy`:** `PERSONAS`, the `Persona` and `PersonaKey` types, `PERSONA_DISPLAY`, `LEGACY_PERSONA_MAP` and the deprecated `CLUSTER_PRIORITY` are removed. Use the project's own vocabulary for persona keys and display names (`UNKNOWN_PERSONA_DISPLAY` covers `'unknown'`), and `LAYOUT_ARCHETYPES` / `orderByArchetype` for orderings.
+
+  `canonicalPersona` no longer looks labels up in a table of those four names: it trims, lowercases and returns any key-shaped label (`PERSONA_KEY_RE`), and `'unknown'` otherwise. Previously every other label — including every key a customer declared — came back `'unknown'`. It still says nothing about vocabulary membership; `resolvePersona` checks that. `decisionPersona` and `resolvePersona` no longer remap the old plural labels (`'buyers'` → `'buyer'`), and `RESERVED_PERSONA_KEYS` is now just `['unknown', '__all__']`.
+
+  `@sentientui/core`: keyless local mode with no forced persona now resolves `unknown` (the authored order and baselines) instead of hashing the session onto one of the four names. `?sentient_persona=<key>` still previews any key.
+
+  `@sentientui/react`: devtools no longer offers the four names as persona buttons when the project vocabulary is unavailable; it lists the vocabulary it fetched, plus `unknown` and a free-text key.
+
+- f304caf: **Breaking for SSR registry preloads:** `preloadDecisions` (`@sentientui/core/server`)
+  and `loadAdaptiveDecision` (`@sentientui/react/server`) now require
+  `registrySlotIds` when called with `slotsFrom: 'registry'` — the list of
+  `<Adaptive id>`s that the page being rendered actually contains.
+
+  Without it the preload asked the server to decide every published slot in the
+  project, on every page, and each of those decisions was recorded as a trial. A
+  slot that never rendered could therefore accumulate exposures it had no chance
+  of converting, which pulls its posterior toward zero and makes the arm look
+  worse than it is.
+
+  A call that omits `registrySlotIds` no longer throws or silently proceeds: it
+  logs an error naming the problem and falls back to request mode, so pages keep
+  rendering while the phantom trials stop. Pass the ids to restore registry
+  behaviour:
+
+  ```tsx
+  await loadAdaptiveDecision({
+    slotsFrom: 'registry',
+    registrySlotIds: ['hero-cta', 'pricing-table'],
+  });
+  ```
+
+### Patch Changes
+
+- Updated dependencies [036af5e]
+  - @sentientui/policy@0.11.0
+
+## 0.30.0
+
+### Minor Changes
+
+- 68151cd: Sections need one attribute of markup: `data-sentient-id`. Declare what a section is with the new `sectionTypes` prop on `AdaptiveRoot` / `AdaptiveProvider` (`sectionTypes={{ about: 'trust', contact: 'cta' }}`) instead of a per-element `data-sentient-type`. Only the sections the content classifier gets wrong need declaring, and a section doesn't have to be in `sections` to be typed. The map reaches both the graph scanner (`createDOMScanner({ sectionTypes })`, `init({ graph: true, sectionTypes })` from `@sentientui/core/graph`) and engagement capture, and it wins over `data-sentient-type`, which is still honoured for existing markup and the no-code snippet. `SemanticType` is now exported from `@sentientui/react`.
+
+## 0.29.1
+
+### Patch Changes
+
+- 316f827: Layout candidates no longer depend on what a persona is named, and the authored order is always an arm.
+
+  `candidateLayouts` dropped its `persona` parameter and now always includes the page's own order. The set of orderings a page could be shown in is a property of the page; the persona belongs in the posteriors, which is where the caller already had it. Previously the authored order only made the candidate set when the requesting persona's name happened to miss the archetype table — so a project that declared `buyer` had its own layout excluded entirely, leaving the bandit no way to conclude "leave this page alone" and nothing for a holdout to compare against.
+
+  `CLUSTER_PRIORITY` is deprecated in favour of `LAYOUT_ARCHETYPES`, whose keys (`conversion_led`, `evidence_led`, `price_led`, `discovery_led`) name what an ordering does rather than who it is for. The arrays are unchanged and `hashLayout` hashes the resulting order, so every stored `layout_weights` row still joins.
+
+  `applyClusterHeuristic` is deprecated. Server code should use `orderByArchetype` (by archetype); the keyless local engine uses the new `previewOrderForPersona`, which maps ANY key onto an archetype — previously only the four seeded persona strings did anything and every other key silently no-oped, including the ones the CLI and docs told people to try.
+
+- Updated dependencies [316f827]
+  - @sentientui/policy@0.10.0
+
+## 0.29.0
+
+### Minor Changes
+
+- a3ce1dd: Adaptive changes now announce themselves with a brief, deliberate motion.
+
+  When a slot's content changes after the page has painted — a first-visit decide
+  resolving, or a return visitor's persona upgrade re-deciding — the region
+  animates from 55% opacity to full over 240ms instead of snapping. Three rules
+  make it safe to ship on someone else's site:
+
+  - **It is never a cloak.** Nothing is hidden and then revealed. The element is
+    legible at every frame, so a visitor arriving mid-animation reads real
+    content and a script that fails halfway leaves a page that was never hidden.
+  - **It only fires on a real, post-paint change.** A return visitor's arm is
+    applied by the pre-paint tag and an SSR slot arrives with its arm already in
+    the HTML — the page was always that way, so animating it would be theatre on
+    every page load. The snippet compares the text it is replacing; React tracks
+    the arm across renders.
+  - **`prefers-reduced-motion` wins unconditionally.** Not a config option: the
+    keyframes are defined only inside a `no-preference` query, so a browser that
+    mis-reports it applies no transform at all. The content still changes,
+    instantly.
+
+  The served arm and persona are written as `data-sentient-arm` /
+  `data-sentient-persona` for devtools and the editor. Nothing is rendered to a
+  visitor — telling your visitors they are being personalized is your decision
+  about your site, not a default we ship.
+
+## 0.28.0
+
+### Minor Changes
+
+- c9c1260: Fully-design ladder rung 1: composition blocks can now be cards. Stacks accept
+  `surface: 'raised'` (site-palette surface background + border hairline + radius
+  - a contrast-derived `surfaceText` pairing; defaults to `md` padding), stacks
+    and grids accept `pad` (reusing the gap scale), a `divider` block draws a
+    hairline in the palette border color, and `maxWidth: 'measure'` caps text and
+    heading copy at a readable 65ch. All token-resolved — no color or pixel props —
+    rendered identically by the snippet and React renderers, total-validated
+    server-side, and drift-pinned so the three parties cannot disagree silently.
+
 ## 0.27.0
 
 ### Minor Changes

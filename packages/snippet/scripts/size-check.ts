@@ -68,7 +68,54 @@ const bundles: Array<{ name: string; file: string; limit: number }> = [
   // render would hide the merchant's section behind a form-less tree at
   // pre-paint, so it must be always-on) landed on top of the semantic-capture
   // re-baseline above. Measured 23593 against 23552.
-  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 23 * 1024 + 256 },
+  // Re-baselined 23.25→23.5 KB for brand-token resolution in the serving
+  // renderer (2026-09-10): tone 'accent'/'muted' and secondary/ghost emphasis
+  // now resolve to the crawl-derived palette tokens, and reportSlots carries
+  // the capped baseline text on first registration so generation stops
+  // writing blind. Both are always-on by nature — one renders SERVED arms,
+  // the other fires on first mount. Measured 23955 against the 23808 limit
+  // (+149 for the pair). NOTE: the prior "margin 2" reading was against a
+  // stale dist — size-check reads dist/, so always rebuild before trusting
+  // the number.
+  // 23.5→24 KiB (2026-09-10, operator decision "increase sizes if needed"):
+  // real working headroom (~620 bytes) instead of re-baselining on every
+  // always-on fix. The budget still exists — the next JUMP needs a note.
+  // 24→24.5 KiB (2026-09-13, same operator decision): main had already drifted
+  // to 24640 (-64) through the 09-10 headroom; declared `sectionTypes` in
+  // shared capture adds 31 (measured 24671). ~450 bytes headroom again.
+  // +256 (operator decision 2026-09-13/14, "increase sizes if needed"): the
+  // snippet bundles core's client, which gained requestSlots / decideSlots
+  // (mounted-only React slot decides). The snippet never calls them, but they
+  // are methods on one client object and cannot be tree-shaken. Measured 25194.
+  // +512 (same operator decision, 2026-09-14): phantom-trial scoping + correct
+  // miss classification. Registry mode used to decide every published
+  // component on every page view — a close-out trial each, element on the page
+  // or not — and reported plain absence as a locator miss, auto-suspending
+  // components that only live on one page. The snippet now fetches the
+  // published locators, decides only what resolves (plus one scoped decide per
+  // SPA route), and classifies misses by page scope / rejected candidate
+  // (core's pageScopeMatches rides along). Always-on by nature: it gates the
+  // decide itself. Measured 25710 against 25031 before; +256 did not fit, and
+  // trimming the debug strings and a redundant catch bought 15 bytes.
+  // +256 (same decision, same day): the bounded late-render watch on top of it.
+  // Resolving the locators once dropped components that hydrating frameworks
+  // and client routers render after DOMContentLoaded / the history call — a
+  // regression, since those used to apply on a later reapply. A MutationObserver
+  // (3 s window, 100 ms debounce) now decides them late and defers page-scoped
+  // miss classification to the window's end. Measured 25877 against 25856;
+  // reordering to drop the idle-observer guard saved 3 bytes and was reverted.
+  // +512 (same decision, 2026-09-14, data-pipeline audit). NOTE the branch
+  // head already measured 26264 against 26112 — the last two steps were taken
+  // against each other's baseline, not the union. On top of that: page-scoped
+  // components are silent off their page even when a look-alike candidate is
+  // rejected there (generic selectors collected false misses site-wide);
+  // legacy bare-selector targets count as on-page on ANY match (apply stamps
+  // every match; exactly-one silently stopped serving them); an already-
+  // decided component gets the full watch window to re-render after a
+  // navigation, and is restamped when it does; registry mode no longer books
+  // the same absence from both the post-decide apply and the watch's window
+  // end. All on the decide/miss gate — always-on. Measured 26352.
+  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 26 * 1024 },
   // 20 KiB (was 18, 12): re-baselined 2026-09-07 for the editor audit
   // remediation — the 18 KiB note reserved ~1.8 KiB for "the review card and
   // the NL command box" and said the next addition needs a deliberate
@@ -102,7 +149,13 @@ const bundles: Array<{ name: string; file: string; limit: number }> = [
   // raising for the editor phase; it did NOT (the picker is forms — the server
   // owns catalog data and all rendering/validation). The next overlay feature
   // may still force that conversation; keep it deliberate.
-  { name: '@sentientui/snippet (editor overlay)', file: 'editor.global.js', limit: 20 * 1024 },
+  // Re-baselined 20→22 KB for on-site cell preview (2026-09-10): the review
+  // inbox's "Preview on your site" renders a generated version — pending or
+  // live — in its real place, which pulls the shared block renderer
+  // (applySlotBlocks) into this bundle for designed layouts. Lazy bundle,
+  // zero bytes on the normal path; the budget only guards unbounded growth.
+  // Measured 21448 (+1759 on the 19689 baseline, most of it the renderer).
+  { name: '@sentientui/snippet (editor overlay)', file: 'editor.global.js', limit: 22 * 1024 },
 ];
 
 let allOk = true;

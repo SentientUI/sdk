@@ -9,6 +9,7 @@ import { SentientPersonaScript } from '../persona-script.js';
 import {
   loadAdaptiveAssignments,
   loadAdaptiveDecision,
+  type LoadAdaptiveDecisionResult,
   type ServerAssignments,
 } from '../server.js';
 import { AdaptiveRootClient } from './adaptive-root-client.js';
@@ -41,11 +42,25 @@ export type AdaptiveRootProps = Omit<
   | 'initialAssignments'
   | 'onAssignment'
   | 'initialSlots'
+  | 'initialSlotConfig'
+  | 'initialPalette'
   | 'initialPersona'
   | 'initialLayoutOrder'
   | 'declaredSections'
   | 'sessionSegment'
+  | 'consentFrom'
 > & {
+  /**
+   * Cookie-based consent source — see `AdaptiveProviderProps.consentFrom`.
+   *
+   * Narrowed to the cookie form: AdaptiveRoot is a Server Component and spreads
+   * this straight into its client boundary, and a function prop crossing the
+   * server→client boundary throws at render ("Functions cannot be passed
+   * directly to Client Components"). The provider's type accepted `check`, so
+   * a Cookiebot-style predicate typechecked here and then crashed the layout.
+   * Need a JS-API CMP predicate? Use `<AdaptiveProvider>` in a client component.
+   */
+  consentFrom?: Omit<NonNullable<AdaptiveProviderProps['consentFrom']>, 'check'>;
   /**
    * Components to assign server-side (SEO-safe). Optional — omit when the
    * tree uses only slots/sections, or assigns client-side via hooks.
@@ -57,15 +72,16 @@ export type AdaptiveRootProps = Omit<
    * individual `/v1/assign` calls, and `useLayoutOrder()` returns the
    * persona-specific order on first render.
    *
-   * Give each section's rendered element `data-sentient-id="<sectionId>"`
-   * (optionally with an explicit `data-sentient-type`) so the DOM graph
-   * scanner can register it under the same id. Without it the server never
-   * learns what the section IS, types it `generic`, and serves the identity
-   * order to every persona — the integration looks live but cannot
-   * personalize. The provider warns about unresolvable ids in development.
+   * Give each section's rendered element `data-sentient-id="<sectionId>"` —
+   * the only markup a section needs — so the DOM graph scanner can register
+   * it under the same id. Without it the server never learns what the section
+   * IS, types it `generic`, and serves the identity order to every persona —
+   * the integration looks live but cannot personalize. The provider warns
+   * about unresolvable ids in development. Correct a section the content
+   * classifier mistypes with `sectionTypes`, not extra markup.
    *
    * @example sections={['hero', 'pricing', 'features', 'social_proof']}
-   * // …and in the tree: <section data-sentient-id="pricing" data-sentient-type="pricing">
+   * // …and in the tree: <section data-sentient-id="pricing">
    */
   sections?: string[];
   /**
@@ -74,6 +90,20 @@ export type AdaptiveRootProps = Omit<
    * round trip, so their values serialize into the server HTML.
    */
   slots?: SlotDeclInput[];
+  /**
+   * The generated-mode `<Adaptive id>`s THIS page renders. Declaring them
+   * decides their published versions in the same SSR round trip
+   * (`/v1/decide` registry mode) and serializes the served content into the
+   * server HTML, so the first paint shows the version rather than the
+   * original children until the client-side decide answers. Without it a
+   * registry slot renders its children first and swaps after mount.
+   *
+   * Scoped to exactly these ids on purpose: an unscoped registry decide
+   * records a close-out trial for every published slot on every page.
+   *
+   * @example registrySlotIds={['hero-headline', 'pricing-cta']}
+   */
+  registrySlotIds?: string[];
   /** App origin — must be in the project's `allowed_origins`. */
   appOrigin?: string;
   /**
@@ -153,7 +183,6 @@ function assignmentsToBlocks(assignments: ServerAssignments): AgentBlock[] {
  *   return (
  *     <AdaptiveRoot
  *       apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!}
- *       context="landing"
  *       sections={['hero', 'pricing', 'features', 'social_proof']}
  *       components={[
  *         { id: 'hero_cta', variantIds: ['default', 'accent'] },
@@ -172,6 +201,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
     components = [],
     sections,
     slots,
+    registrySlotIds,
     appOrigin,
     searchParams,
     initialAssignments: initialAssignmentsOverride,
@@ -222,9 +252,8 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   // An already-consented visitor therefore gets SSR variant assignment (zero
   // layout shift) with no extra code.
   //
-  // A `check()` source runs in the browser and cannot be evaluated here, so it
-  // stays gated until the client resolves it. An explicit `consent` prop always
-  // wins — it is the escape hatch for apps that track consent elsewhere.
+  // An explicit `consent` prop always wins — it is the escape hatch for apps
+  // that track consent elsewhere. (No `check()` form here: see the prop type.)
   //
   // Consent gates the SERVER too, not just the client: without it the SSR
   // decide/assign still ran and still minted a session row for a visitor who
@@ -233,7 +262,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   const cf = providerProps.consentFrom;
   const consent =
     providerProps.consent ??
-    (cf?.cookie && !cf.check
+    (cf?.cookie
       ? cookieStore.get(cf.cookie)?.value === (cf.value ?? 'accepted')
       : undefined);
   const skipSsr = doNotTrack || consent === false || (cf != null && consent !== true);
@@ -261,6 +290,8 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   let initialAssignments: ServerAssignments;
   let initialLayoutOrder: string[] | null = null;
   let initialSlots: Record<string, SlotResult> | undefined;
+  let initialSlotConfig: LoadAdaptiveDecisionResult['slotConfig'];
+  let initialPalette: LoadAdaptiveDecisionResult['palette'];
   let initialPersona: { persona: string; confidence: number } | null = null;
   let ssrSessionId: string | undefined;
 
@@ -273,11 +304,21 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
     // consents — via the `consent` prop or grantConsent(), neither of which
     // needs a page reload.
     initialAssignments = {};
-  } else if ((sections && sections.length > 0) || (slots && slots.length > 0)) {
+  } else if (
+    (sections && sections.length > 0) ||
+    (slots && slots.length > 0) ||
+    (registrySlotIds && registrySlotIds.length > 0)
+  ) {
+    // Registry mode only when ids were declared: `loadAdaptiveDecision` already
+    // accepted `registrySlotIds` but AdaptiveRoot never passed them, so an
+    // `<Adaptive id>` under AdaptiveRoot showed its original children on first
+    // paint until the client-side decide returned.
+    const registry = registrySlotIds && registrySlotIds.length > 0;
     const decision = await loadAdaptiveDecision({
       sections: sections ?? [],
       components,
       slots,
+      ...(registry ? { slotsFrom: 'registry' as const, registrySlotIds } : {}),
       cookies: cookieStore,
       apiKey: providerProps.apiKey,
       baseUrl,
@@ -295,6 +336,8 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
     initialAssignments = decision.assignments;
     initialLayoutOrder = decision.layoutOrder;
     initialSlots = decision.slots;
+    initialSlotConfig = decision.slotConfig;
+    initialPalette = decision.palette;
     initialPersona =
       decision.persona !== undefined
         ? { persona: decision.persona, confidence: decision.confidence ?? 0 }
@@ -338,6 +381,10 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       // a page whose decision was gated or timed out.
       declaredSections={sections}
       initialSlots={initialSlots}
+      // Registry-mode preload: the hook treats a preloaded slot config as
+      // settled, so the client does not decide the same slot a second time.
+      initialSlotConfig={initialSlotConfig}
+      initialPalette={initialPalette}
       initialPersona={initialPersona ?? undefined}
       sessionSegment={sessionSegment}
       ssrSessionId={ssrSessionId}

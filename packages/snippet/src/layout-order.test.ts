@@ -139,7 +139,7 @@ function applyViaInlineScript(c: Case): void {
     '_snt_snap:pk_test',
     JSON.stringify({
       v: 1,
-      persona: 'buyer',
+      persona: 'admin',
       band: 'high',
       slots: {},
       layoutOrder: c.order,

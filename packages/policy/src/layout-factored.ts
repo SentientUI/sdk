@@ -1,7 +1,7 @@
 import { sampleBeta } from './bandit';
 import { posteriorOfCounts } from './pooling';
 import { shrunkPosterior } from './shrinkage';
-import { applyClusterHeuristic, candidateLayouts } from './layout-heuristics';
+import { candidateLayouts } from './layout-heuristics';
 import type { SectionRole } from './taxonomy';
 
 /**
@@ -74,7 +74,8 @@ const cellKey = (parent: string, bucket: number): string => `${parent}#${bucket}
  * start degrades gracefully: empty cells draw from Beta(1,1), which still
  * randomises across candidates, so exploration survives the switch.
  *
- * Falls back to the persona's heuristic prior when there are no candidates.
+ * The candidate set always contains the AUTHORED order, so leaving the page as
+ * built is a real arm rather than something only reachable by accident.
  */
 export function chooseLayoutFactored(
   sections: string[],
@@ -84,8 +85,7 @@ export function chooseLayoutFactored(
   rand: () => number = Math.random,
   sectionRoles?: Map<string, SectionRole>,
 ): string[] {
-  const candidates = candidateLayouts(sections, sectionTypes, persona, sectionRoles);
-  if (candidates.size === 0) return applyClusterHeuristic(sections, sectionTypes, persona, sectionRoles);
+  const candidates = candidateLayouts(sections, sectionTypes, sectionRoles);
 
   const global = new Map<string, LayoutFactorCell>();
   const perPersona = new Map<string, LayoutFactorCell>();
@@ -140,5 +140,7 @@ export function chooseLayoutFactored(
       best = order;
     }
   }
-  return best ?? applyClusterHeuristic(sections, sectionTypes, persona, sectionRoles);
+  // `sections` rather than an archetype: with nothing to score against, the
+  // page the customer built is the only defensible thing to serve.
+  return best ?? sections;
 }

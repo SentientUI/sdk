@@ -35,9 +35,15 @@ export type EngagementCaptureOptions = {
    */
   microSignals?: boolean;
   /**
+   * Section types declared in code, keyed by `data-sentient-id`. The highest
+   * precedence — the same map the graph scanner receives, so capture and the
+   * graph never disagree on what a declared section is.
+   */
+  sectionTypes?: Readonly<Partial<Record<string, string>>>;
+  /**
    * Server-served section-map lookup (persona-coverage auto-classification):
-   * consulted after explicit `data-sentient-type` markup, before the local
-   * heuristic. Return null when the element has no served label.
+   * consulted after declared types and legacy `data-sentient-type` markup,
+   * before the local heuristic. Return null when the element has no served label.
    */
   typeOf?: (el: Element) => SemanticType | null;
 };
@@ -147,8 +153,10 @@ export function startEngagementCapture(
   // The type-level matrix is unaffected (it aggregates via graph_nodes
   // semantic_type); pre-change dwell history stays keyed to collapsed ids and
   // ages out of the reporting windows.
-  // Per-element precedence: explicit data-sentient-type markup → served
-  // section map (opts.typeOf) → local heuristic.
+  // Per-element precedence: declared sectionTypes (by data-sentient-id) →
+  // legacy data-sentient-type markup → served section map (opts.typeOf) →
+  // local heuristic. Declared and markup types both report source 'markup':
+  // they are author-asserted, not inferred.
   const componentOf = new Map<Element, string>();
   const entries: Array<{
     componentId: string;
@@ -158,10 +166,10 @@ export function startEngagementCapture(
     observation?: SectionObservation;
   }> = [];
   for (const el of els) {
-    const explicit = el.getAttribute('data-sentient-type');
-    const markup = explicit && (SEMANTIC_TYPES as readonly string[]).includes(explicit)
-      ? (explicit as SemanticType)
-      : null;
+    const markup = [
+      opts.sectionTypes?.[el.getAttribute('data-sentient-id') ?? ''],
+      el.getAttribute('data-sentient-type'),
+    ].find((t): t is SemanticType => (SEMANTIC_TYPES as readonly unknown[]).includes(t)) ?? null;
     const f = featuresFromElement(el);
     const type = markup ?? opts.typeOf?.(el) ?? classifyFeatures(f).type;
     const locator = locatorFromElement(el, doc) as

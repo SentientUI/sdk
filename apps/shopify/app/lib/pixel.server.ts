@@ -61,11 +61,27 @@ export async function ensureWebPixel(
 
     // Re-saves are the common case, and creating first fired a guaranteed-fail
     // create (TAKEN) on every one of them — an error-shaped exchange on the
-    // healthy path. Query first; only a shop with no pixel yet creates. (When
-    // none exists the query answers with a top-level error and no data, which
-    // reads as `undefined` here — that is the create case, not a failure.)
-    const current = (await (await graphql(CURRENT)).json()) as { data?: { webPixel?: { id: string } | null } };
-    const existingId = current.data?.webPixel?.id;
+    // healthy path. Query first; only a shop with no pixel yet creates.
+    //
+    // The lookup must catch its own errors: on a shop with no pixel the query
+    // answers with a TOP-LEVEL GraphQL error, and the admin client THROWS
+    // those (GraphqlQueryError carrying the first error's message). Letting
+    // that throw reach the outer catch failed activation with "No web pixel
+    // was found for this app." on every FRESH install — invisible on
+    // long-lived dev stores whose pixel already existed, fatal on the App
+    // Store reviewers' brand-new stores (rejection 2026-09-09, 4.5.5). Any
+    // lookup failure means "try the create": a real problem (missing scope,
+    // network) fails the create too and surfaces from there.
+    const currentPixelId = async (): Promise<string | undefined> => {
+      try {
+        const current = (await (await graphql(CURRENT)).json()) as { data?: { webPixel?: { id: string } | null } };
+        return current.data?.webPixel?.id ?? undefined;
+      } catch {
+        return undefined;
+      }
+    };
+
+    const existingId = await currentPixelId();
     if (existingId) return update(existingId);
 
     const created = (await (await graphql(CREATE, { variables: { webPixel: { settings } } })).json()) as {
@@ -79,8 +95,7 @@ export async function ensureWebPixel(
 
     // TAKEN despite the lookup above: a concurrent save created the pixel
     // between the query and the create. Re-query and update in place.
-    const requeried = (await (await graphql(CURRENT)).json()) as { data?: { webPixel?: { id: string } | null } };
-    const id = requeried.data?.webPixel?.id;
+    const id = await currentPixelId();
     if (!id) return { ok: false, reason: 'pixel reported TAKEN but none found to update' };
     return update(id);
   } catch (err) {

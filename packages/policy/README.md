@@ -30,14 +30,16 @@ replayable decisions.
 - `validateSlotDecl(decl)` — structural validation of a `SlotDecl`, returning `{ ok: true }` or `{ ok: false, reason }`.
 
 **Layout selection** (`layout-heuristics.ts`, `choose-layout.ts`, `hash.ts`)
-- `candidateLayouts(sections, sectionTypes, persona)` — the candidate section orderings for a persona.
-- `applyClusterHeuristic(sections, sectionTypes, persona)` — the persona's heuristic ordering (`CLUSTER_PRIORITY`), used as the fallback.
-- `chooseLayout(sections, sectionTypes, persona, learned, rand?)` — Thompson-samples the learned layout posteriors over the candidates, falling back to the heuristic.
+- `candidateLayouts(sections, sectionTypes, sectionRoles?)` — the candidate orderings for a PAGE: the authored order plus each archetype's. Takes no persona — the persona selects posteriors, not which layouts are reachable.
+- `LAYOUT_ARCHETYPES` / `orderByArchetype(sections, sectionTypes, archetype, sectionRoles?)` — a catalogue of orderings (`conversion_led`, `evidence_led`, `price_led`, `discovery_led`). Not a persona taxonomy.
+- `previewOrderForPersona(sections, sectionTypes, persona, sectionRoles?)` — **keyless local mode only.** Maps any persona key onto an archetype so `?sentient_persona=<anything>` visibly rearranges a page with no server. Never use it for serving.
+- `chooseLayout(sections, sectionTypes, persona, learned, rand?)` — Thompson-samples the learned layout posteriors over the candidates. The authored order is always among them, so "leave the page alone" can win.
+- *Deprecated:* `applyClusterHeuristic` (use `orderByArchetype` on the server, `previewOrderForPersona` locally).
 - `hashLayout(order)` — stable hash of a section order (the `layoutHash` key).
 
 **Personas** (`personas.ts`)
-- `PERSONAS`, `PersonaKey`, `UNKNOWN_PERSONA`, `PERSONA_DISPLAY` — the canonical persona set and display names.
-- `canonicalPersona(label)` — normalize an arbitrary/legacy label to a `PersonaKey`.
+- `UNKNOWN_PERSONA`, `UNKNOWN_PERSONA_DISPLAY` — the only persona key the package defines. There is no built-in persona list: every persona comes from the project's own vocabulary (declared by the app, or promoted by discovery).
+- `canonicalPersona(label)` — normalize any label to a persona key (trimmed, lowercased, key-shaped), or `'unknown'`. Says nothing about vocabulary membership.
 
 **Deterministic helpers** (`deterministic.ts`)
 - `fnv1a(input)` — FNV-1a hash.
@@ -65,7 +67,7 @@ const chosenSeeded = sampleArm(arms, mySeededRng);
 import { chooseLayout, hashLayout, type LearnedLayout } from '@sentientui/policy';
 
 const learned = new Map<string, LearnedLayout>(); // from your layout_weights store
-const order = chooseLayout(sections, sectionTypes, 'buyer', learned);
+const order = chooseLayout(sections, sectionTypes, 'evaluator', learned); // a key from the project's own vocabulary
 const key = hashLayout(order);
 ```
 

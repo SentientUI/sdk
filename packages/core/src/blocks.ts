@@ -29,6 +29,12 @@ export const BLOCK_RATIOS = ['auto', 'square', 'landscape', 'wide'] as const;
 export const BLOCK_FITS = ['cover', 'contain'] as const;
 export const BLOCK_GRID_COLUMNS = [2, 3, 4] as const;
 export const BLOCK_HEADING_LEVELS = [2, 3, 4] as const;
+// Rung 1 of the fully-design ladder (spec 2026-09-10 §4): containers can be
+// cards ("raised" surface), containers get inner padding, and long copy can
+// cap its measure. All token-resolved — no color/px props, same as ever.
+export const BLOCK_SURFACES = ['default', 'raised'] as const;
+export const BLOCK_PADS = ['none', 'sm', 'md', 'lg'] as const;
+export const BLOCK_MAX_WIDTHS = ['measure'] as const;
 
 export type BlockGap = (typeof BLOCK_GAPS)[number];
 export type BlockAlign = (typeof BLOCK_ALIGNS)[number];
@@ -40,8 +46,14 @@ export type BlockEmphasis = (typeof BLOCK_EMPHASES)[number];
 export type BlockTextAlign = (typeof BLOCK_TEXT_ALIGNS)[number];
 export type BlockRatio = (typeof BLOCK_RATIOS)[number];
 export type BlockFit = (typeof BLOCK_FITS)[number];
+export type BlockSurface = (typeof BLOCK_SURFACES)[number];
+export type BlockPad = (typeof BLOCK_PADS)[number];
+export type BlockMaxWidth = (typeof BLOCK_MAX_WIDTHS)[number];
 
-/** Flex row/column container. */
+/** Flex row/column container. `surface: 'raised'` renders it as a card
+ *  (palette surface bg + border hairline + radius + readable text pairing);
+ *  a raised stack with no `pad` defaults to `md` — a zero-padding card is a
+ *  design bug both renderers refuse to reproduce. */
 export type StackBlock = {
   type: 'stack';
   direction: 'row' | 'column';
@@ -50,6 +62,8 @@ export type StackBlock = {
   align?: BlockAlign;
   justify?: BlockJustify;
   wrap?: boolean;
+  surface?: BlockSurface;
+  pad?: BlockPad;
 };
 
 /** 2–4 equal-column grid container. */
@@ -59,9 +73,10 @@ export type GridBlock = {
   children: BlockNode[];
   gap?: BlockGap;
   align?: BlockAlign;
+  pad?: BlockPad;
 };
 
-/** Paragraph / label. */
+/** Paragraph / label. `maxWidth: 'measure'` caps long copy at a readable 65ch. */
 export type TextBlock = {
   type: 'text';
   value: string;
@@ -69,6 +84,7 @@ export type TextBlock = {
   weight?: BlockWeight;
   tone?: BlockTone;
   align?: BlockTextAlign;
+  maxWidth?: BlockMaxWidth;
 };
 
 /** h2–h4 — never h1 (the page owns its h1). */
@@ -78,6 +94,7 @@ export type HeadingBlock = {
   level: (typeof BLOCK_HEADING_LEVELS)[number];
   size?: BlockSize;
   align?: BlockTextAlign;
+  maxWidth?: BlockMaxWidth;
 };
 
 /** Link styled as a button. `tag` feeds agent legibility (agentDataByVariant). */
@@ -119,6 +136,13 @@ export type BadgeBlock = {
 export type SpacerBlock = {
   type: 'spacer';
   size: BlockSize;
+};
+
+/** Section separation — a 1px hairline in the palette border color. No props:
+ *  anything a divider could be configured with is a styling decision, and
+ *  styling decisions live in tokens, not on nodes. */
+export type DividerBlock = {
+  type: 'divider';
 };
 
 export const FORM_FIELD_KINDS = ['input', 'textarea', 'select'] as const;
@@ -164,6 +188,7 @@ export type BlockNode =
   | ImageBlock
   | BadgeBlock
   | SpacerBlock
+  | DividerBlock
   | FormBlock;
 
 /** The derived site palette (spec §4 "Colour and type: derived, not chosen").
@@ -176,6 +201,22 @@ export type SitePalette = {
   primaryBg: string;
   primaryText: string;
   radius: string;
+  /** Brand accent — resolves `tone: 'accent'` and secondary/ghost button color.
+   *  Optional: sites tokenized before brand-token extraction shipped carry
+   *  only the three fields above, and every renderer keeps its neutral
+   *  fallback for them. */
+  accent?: string;
+  /** Readable text color on the accent (contrast-derived when not declared). */
+  accentText?: string;
+  /** Card/section background. */
+  surface?: string;
+  /** Readable text color on the surface (contrast-derived when not declared).
+   *  Resolves the text pairing of `surface: 'raised'` stacks. */
+  surfaceText?: string;
+  /** Hairline border color (form fields, dividers). */
+  border?: string;
+  /** Muted text color — resolves `tone: 'muted'` (fallback: opacity 0.7). */
+  muted?: string;
 };
 
 // Structural caps. Total-nodes and depth bound the render cost of one arm;

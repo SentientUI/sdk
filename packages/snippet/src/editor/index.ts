@@ -1,9 +1,11 @@
 import { resolveLocatorOne } from '../locator';
+import { applySlotBlocks } from '../blocks';
 import { generateLocator, resolvesUniquely } from './locator-gen';
 import { clearCachedEditorToken } from '../editor-token';
 import { deriveSitePalette } from './palette';
 import { CSS_PROP, cssValueSafe } from '../css-guard';
 import { applyOps } from '../ops';
+import { normalizePagePath, pageScopeChoices, pageScopeLabel } from './page-scope-choice';
 import {
   buildDraftPayload, funnelSummaryLine, stepOptions, toggleStepSelection,
   type EditorFunnel, type EditorGoal,
@@ -1048,6 +1050,9 @@ export function mount(b: Boot): void {
       values: Record<string, string>,
       fieldError: (key: string, msg: string | null) => void,
     ) => void,
+    // The component's slot id: renders "Where does this appear?" and hands its
+    // choice to onSubmit as values[PAGE_KEY]. Omitted for goal/funnel forms.
+    scopeOf?: string,
   ): void => {
     closeForm();
     const getters: Record<string, () => string> = {};
@@ -1103,6 +1108,11 @@ export function mount(b: Boot): void {
       fb.textContent = msg ?? '';
       fb.style.display = msg ? 'block' : 'none';
     };
+    if (scopeOf) {
+      const sc = scopeControl(scopeOf);
+      formHost.append(sc.node);
+      getters[PAGE_KEY] = sc.value;
+    }
     const submit = el('button', btnStyle('#6366f1'), submitLabel) as HTMLButtonElement;
     const cancel = el('button', { ...btnStyle('transparent'), opacity: '0.6' }, 'Cancel') as HTMLButtonElement;
     submit.onclick = () =>
@@ -1110,6 +1120,40 @@ export function mount(b: Boot): void {
     cancel.onclick = closeForm;
     formHost.append(submit, cancel);
   };
+
+  // ---- "Where does this appear?" (CompoundLocator.page) -------------------
+  // Without a page scope, a component that lives only on /pricing reads as
+  // "element not found" on every other page view and gets auto-paused while
+  // working fine. Every editor save re-picks the element, so the default is the
+  // page the operator is standing on — unless the component already carries a
+  // scope (set from the dashboard or an earlier save), which is kept.
+  const PAGE_KEY = '__page';
+  const knownPages: Record<string, string | undefined> = {};
+  const notePages = (rows?: Array<{ slot_id: string; target?: { page?: string } | null }>): void => {
+    for (const r of rows ?? []) knownPages[r.slot_id] = r.target?.page;
+  };
+  void fetchEditorJson<{ slots?: Parameters<typeof notePages>[0] }>(b, '/v1/editor/slots').then((r) => notePages(r?.slots));
+  const scopeControl = (slotId: string): { node: HTMLElement; value: () => string } => {
+    const here = normalizePagePath(location.pathname);
+    const node = el('div', {});
+    const sel = el('select', {
+      display: 'block', width: '100%', marginTop: '4px', padding: '7px 9px', borderRadius: '8px',
+      border: '1px solid rgba(255,255,255,0.18)', background: '#1f2937', color: '#fff', font: '13px system-ui, sans-serif',
+    }) as HTMLSelectElement;
+    sel.setAttribute('data-field', 'page');
+    for (const v of pageScopeChoices(here, knownPages[slotId])) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = pageScopeLabel(v, here);
+      sel.append(o);
+    }
+    node.append(
+      el('label', { display: 'block', fontSize: '12px', opacity: '0.85', marginTop: '8px' }, 'Where does this appear?'),
+      sel,
+      el('div', { fontSize: '11px', opacity: '0.6', marginTop: '3px' }, 'Helps us tell a moved element from a page it isn’t on.'),
+    );
+    return { node, value: () => sel.value };
+  };
+  const withPage = (loc: CompoundLocator, page: string | undefined): CompoundLocator => (page ? { ...loc, page } : loc);
 
   const setStatus = (text: string, ok = true): void => {
     status.textContent = text;
@@ -1242,7 +1286,14 @@ export function mount(b: Boot): void {
     moveUpBtn.title = moveUpBtn.disabled ? moveDisabledReason(prevLocator, 'above') : '';
     moveDownBtn.title = moveDownBtn.disabled ? moveDisabledReason(nextLocator, 'below') : '';
   };
+  // A move has no form, so its scope control sits above "Save this arrangement"
+  // while a preview is pending.
+  let moveScope: { node: HTMLElement; value: () => string } | null = null;
   const showMovePreviewControls = (show: boolean): void => {
+    if (show && !moveScope && selected && currentLocator) {
+      moveScope = scopeControl(deriveSlotId('move', currentLocator, selected));
+      saveArrangeBtn.before(moveScope.node);
+    } else if (!show) { moveScope?.node.remove(); moveScope = null; }
     saveArrangeBtn.style.display = show ? 'block' : 'none';
     undoBtn.style.display = show ? 'block' : 'none';
     refreshMoveButtons();
@@ -1541,7 +1592,7 @@ export function mount(b: Boot): void {
         setStatus('Saving…');
         const r = await save(b, `/v1/editor/slots/${encodeURIComponent(slotId)}`, {
           kind: 'arms',
-          target: loc,
+          target: withPage(loc, v[PAGE_KEY]),
           draftConfig: { arms: [
             { id: 'a', displayName: 'Original', ops: { text: v.current } },
             { id: 'b', displayName: 'Alternative', ops: { text: v.alt } },
@@ -1550,6 +1601,7 @@ export function mount(b: Boot): void {
         if (r.r === 'ok') { emit('draft_saved', { kind: 'slot' }); commitPreview(); closeForm(); offerPublish(slotId, describeElement(selected!), 'b'); }
         reportSave(r, '✓ Saved as a draft. Click “Publish” below to go live.');
       },
+      deriveSlotId('text', loc, selected),
     );
 
     // Live preview: the alternative wording lands on the element as it is
@@ -1691,8 +1743,10 @@ export function mount(b: Boot): void {
         if (badLink) { setStatus('⚠ Fix the highlighted link(s).', false); return; }
         if (blank) { setStatus('⚠ Every field needs your own words — this layout re-arranges your copy, it doesn’t write any.', false); return; }
         setStatus('Saving…');
+        // The scope choice rides the same values map — it is not a layout field.
+        const { [PAGE_KEY]: page, ...fields } = v;
         const inst = await saveJson<{ blocks?: unknown; reason?: string }>(
-          b, `/v1/editor/arrangements/${encodeURIComponent(a.id)}/instantiate`, { fields: v },
+          b, `/v1/editor/arrangements/${encodeURIComponent(a.id)}/instantiate`, { fields },
         );
         if (inst.r !== 'ok' || !inst.data?.blocks) {
           if (inst.r === 'expired') reportSave(inst.outcome, '');
@@ -1702,7 +1756,7 @@ export function mount(b: Boot): void {
         const slotId = deriveSlotId('arrange', loc, target);
         const r = await save(b, `/v1/editor/slots/${encodeURIComponent(slotId)}`, {
           kind: 'arms',
-          target: loc,
+          target: withPage(loc, page),
           draftConfig: {
             arms: [
               { id: 'original', displayName: 'Your page today' },
@@ -1714,6 +1768,7 @@ export function mount(b: Boot): void {
         if (r.r === 'ok') { emit('draft_saved', { kind: 'arrangement' }); closeForm(); offerPublish(slotId, a.name, a.id); }
         reportSave(r, '✓ Saved as a draft — it will test against this section as it is today. Click “Publish” below to go live.');
       },
+      deriveSlotId('arrange', loc, target),
     );
   };
 
@@ -2062,7 +2117,7 @@ export function mount(b: Boot): void {
         setStatus('Saving…');
         const r = await save(b, `/v1/editor/slots/${encodeURIComponent(slotId)}`, {
           kind: 'arms',
-          target: loc,
+          target: withPage(loc, v[PAGE_KEY]),
           draftConfig: { arms: [
             { id: 'a', displayName: 'Current look', ops: {} },
             { id: 'b', displayName: 'New look', ops: { style } },
@@ -2071,6 +2126,7 @@ export function mount(b: Boot): void {
         if (r.r === 'ok') { emit('draft_saved', { kind: 'slot' }); commitPreview(); closeForm(); offerPublish(slotId, describeElement(selected!), 'b'); }
         reportSave(r, '✓ Saved as a draft. Click “Publish” below to go live.');
       },
+      deriveSlotId('style', loc, selected),
     );
 
     // Live preview: apply the candidate styles to the real element as the
@@ -2338,7 +2394,7 @@ export function mount(b: Boot): void {
     setStatus('Saving…');
     const r = await save(b, `/v1/editor/slots/${encodeURIComponent(slotId)}`, {
       kind: 'arms',
-      target: currentLocator,
+      target: withPage(currentLocator, moveScope?.value()),
       draftConfig: { arms: [{ id: 'a', ops: {} }, { id: 'b', ops: { [opKey]: anchor } }] },
     });
     if (r.r === 'ok') {
@@ -2524,6 +2580,76 @@ async function mountPreview(b: Boot, slotId: string): Promise<void> {
   (document.body ?? document.documentElement).append(bar);
 }
 
+/** Cell preview: render one generated version (pending review or live) in its
+ *  real place on the page. Content swaps the element's text; a designed layout
+ *  renders through the SAME block renderer serving uses. Exit reloads clean —
+ *  destructive in-place changes need no undo bookkeeping here, exactly like
+ *  mountPreview's reasoning. */
+async function mountCellPreview(b: Boot, cellParam: string): Promise<void> {
+  const sep = cellParam.lastIndexOf('~');
+  const slotId = sep > 0 ? cellParam.slice(0, sep) : cellParam;
+  const persona = sep > 0 ? cellParam.slice(sep + 1) : '';
+
+  const bar = el('div', {
+    position: 'fixed', bottom: '16px', left: '50%', transform: 'translateX(-50%)', zIndex: '2147483647',
+    display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '12px',
+    maxWidth: '90vw', flexWrap: 'wrap',
+    background: '#111827', color: '#fff', font: '13px system-ui, sans-serif',
+    border: '1px solid rgba(139,92,246,0.6)', boxShadow: '0 10px 34px rgba(0,0,0,0.45)',
+  });
+  bar.id = PREVIEW_BAR_ID;
+  const exit = el('button', {
+    padding: '4px 10px', borderRadius: '999px', border: '1px solid rgba(255,255,255,0.3)',
+    background: 'transparent', color: '#fff', font: '12px system-ui, sans-serif', cursor: 'pointer',
+  }, 'Exit preview') as HTMLButtonElement;
+  exit.onclick = () => {
+    clearCachedEditorToken();
+    const url = new URL(location.href);
+    for (const p of ['sentient_editor', 'sentient_preview_cell']) url.searchParams.delete(p);
+    location.assign(url.toString());
+  };
+  const fail = (msg: string): void => {
+    bar.append(el('span', {}, msg), exit);
+    (document.body ?? document.documentElement).append(bar);
+  };
+
+  type CellPreviewData = {
+    status?: string; slotName?: string; personaDisplay?: string;
+    content?: string | null; blocks?: unknown; target?: unknown;
+  };
+  let data: CellPreviewData | null = null;
+  try {
+    const res = await fetch(
+      `${b.apiBase}/v1/editor/cell-preview?slotId=${encodeURIComponent(slotId)}&persona=${encodeURIComponent(persona)}`,
+      { headers: { authorization: `Bearer ${b.token}` } },
+    );
+    if (res.ok) data = (await res.json()) as CellPreviewData;
+  } catch { /* handled below */ }
+  if (!data) return fail('Couldn’t load this preview — reopen it from your dashboard.');
+
+  const target = data.target && typeof data.target === 'object'
+    ? resolveLocatorOne(data.target as CompoundLocator, document)
+    : null;
+  if (!target) {
+    return fail('— we couldn’t find this part of the page here. It may live on another page.');
+  }
+  if (data.blocks != null) {
+    applySlotBlocks(target, { preview: data.blocks } as never, 'preview', document);
+  } else if (typeof data.content === 'string') {
+    target.textContent = data.content;
+  } else {
+    return fail('Nothing to preview in that square yet.');
+  }
+  try { target.scrollIntoView({ block: 'center' }); } catch { /* older browsers */ }
+  bar.append(
+    el('span', { fontWeight: '700' }, `Previewing: ${data.slotName ?? slotId}`),
+    el('span', { opacity: '0.85' },
+      `for ${data.personaDisplay ?? persona}${data.status === 'review' ? ' — waiting for your approval' : ''}. Nothing is being tracked.`),
+    exit,
+  );
+  (document.body ?? document.documentElement).append(bar);
+}
+
 async function start(): Promise<void> {
   if (typeof document === 'undefined') return;
   const b = boot();
@@ -2550,6 +2676,14 @@ async function start(): Promise<void> {
   const previewSlot = new URLSearchParams(location.search).get('sentient_preview');
   if (previewSlot) {
     if (!document.getElementById(PREVIEW_BAR_ID)) await mountPreview(b, previewSlot);
+    return;
+  }
+  // Cell preview (generated versions): sentient_preview_cell=<slotId>~<persona>
+  // renders the square's pending-review or live arm in place — real page, real
+  // theme CSS — without recording anything.
+  const previewCell = new URLSearchParams(location.search).get('sentient_preview_cell');
+  if (previewCell) {
+    if (!document.getElementById(PREVIEW_BAR_ID)) await mountCellPreview(b, previewCell);
     return;
   }
   if (document.getElementById(PANEL_ID)) return; // already mounted

@@ -8,11 +8,10 @@ import {
   resolvePersona,
   type PersonaVocabularyMember,
 } from './vocabulary';
-import { PERSONAS, PERSONA_DISPLAY } from './personas';
 
 describe('PERSONA_KEY_RE', () => {
   it('accepts slug keys up to 32 chars', () => {
-    for (const k of ['admin', 'deal_seeker', 'a', 'gift-hunter', 'x'.repeat(32)]) {
+    for (const k of ['admin', 'trial_user', 'a', 'gift-hunter', 'x'.repeat(32)]) {
       expect(k).toMatch(PERSONA_KEY_RE);
     }
   });
@@ -25,24 +24,25 @@ describe('PERSONA_KEY_RE', () => {
 });
 
 describe('RESERVED_PERSONA_KEYS', () => {
-  it('reserves the structural keys and the legacy plural labels', () => {
-    expect(RESERVED_PERSONA_KEYS).toEqual([
-      'unknown',
-      '__all__',
-      'buyers',
-      'researchers',
-      'deal-seekers',
-      'browsers',
-    ]);
+  it('reserves only the structural keys (in sync with migration 153)', () => {
+    expect(RESERVED_PERSONA_KEYS).toEqual(['unknown', '__all__']);
   });
 });
 
 describe('DEFAULT_PERSONA_VOCABULARY', () => {
-  it('is the pinned four with their pinned display names', () => {
-    expect(DEFAULT_PERSONA_VOCABULARY.map((m) => m.key)).toEqual([...PERSONAS]);
-    for (const m of DEFAULT_PERSONA_VOCABULARY) {
-      expect(m.displayName).toBe(PERSONA_DISPLAY[m.key as (typeof PERSONAS)[number]]);
-    }
+  it('is EMPTY — a project that declared nothing has no personas', () => {
+    // Measured across all of production history before this changed: `unknown`
+    // served 10,882 decisions and the four seeded personas served 18 between
+    // them. They were decoration on an axis that was 99.8% empty, and each one
+    // asserted something about visitors nobody had met.
+    expect(DEFAULT_PERSONA_VOCABULARY).toEqual([]);
+  });
+
+  it('resolves everything to unknown without a vocabulary', () => {
+    // The honest answer, and the one the pooled bandit has always acted on.
+    expect(resolvePersona({ declared: 'admin' }).persona).toBe('unknown');
+    expect(resolvePersona({ clusterLabel: 'evaluator' }).persona).toBe('unknown');
+    expect(resolvePersona({ declared: 'admin' }).source).toBe('none');
   });
 });
 
@@ -54,7 +54,7 @@ const SAAS: readonly PersonaVocabularyMember[] = [
 describe('resolvePersona — declared path', () => {
   it('serves a declared member at confidence 1 regardless of inferred state', () => {
     expect(
-      resolvePersona({ declared: 'admin', clusterLabel: 'buyer', inferredConfidence: 0.9 }, SAAS),
+      resolvePersona({ declared: 'admin', clusterLabel: 'evaluator', inferredConfidence: 0.9 }, SAAS),
     ).toEqual({ persona: 'admin', source: 'declared', confidence: 1 });
   });
 
@@ -63,22 +63,22 @@ describe('resolvePersona — declared path', () => {
   });
 
   it('resolves an alias to its member key', () => {
-    const vocab = [{ key: 'purchaser', displayName: 'Purchaser', aliases: ['buyer'] }];
-    expect(resolvePersona({ declared: 'buyer' }, vocab)).toEqual({
+    const vocab = [{ key: 'purchaser', displayName: 'Purchaser', aliases: ['customer'] }];
+    expect(resolvePersona({ declared: 'customer' }, vocab)).toEqual({
       persona: 'purchaser',
       source: 'declared',
       confidence: 1,
     });
   });
 
-  it('resolves a legacy plural label iff its canonical form is a member', () => {
-    expect(resolvePersona({ declared: 'buyers' }).persona).toBe('buyer');
-    expect(resolvePersona({ declared: 'buyers' }, SAAS).persona).toBe('unknown');
-  });
-
-  it('routes a legacy plural through a rename alias', () => {
-    const vocab = [{ key: 'purchaser', displayName: 'Purchaser', aliases: ['buyer'] }];
-    expect(resolvePersona({ declared: 'buyers' }, vocab).persona).toBe('purchaser');
+  it('does not remap plurals — a plural is its own, unrecognized key', () => {
+    // A plural-label alias map keyed on the seeded persona names used to
+    // resolve a plural onto its singular. It went with those names; a
+    // project that wants a second spelling declares it as an alias.
+    const vocab = [{ key: 'admin', displayName: 'Admin' }];
+    const r = resolvePersona({ declared: 'admins' }, vocab);
+    expect(r.persona).toBe('unknown');
+    expect(r.unrecognizedDeclared).toBe('admins');
   });
 
   it('an empty/whitespace declared value is absent, not unrecognized', () => {
@@ -91,10 +91,10 @@ describe('resolvePersona — declared path', () => {
 describe('resolvePersona — unrecognized declared', () => {
   it('falls through byte-identically to the undeclared resolution', () => {
     const declared = resolvePersona(
-      { declared: 'staff', clusterLabel: 'researcher', inferredConfidence: 0.6 },
+      { declared: 'staff', clusterLabel: 'evaluator', inferredConfidence: 0.6 },
       SAAS,
     );
-    const undeclared = resolvePersona({ clusterLabel: 'researcher', inferredConfidence: 0.6 }, SAAS);
+    const undeclared = resolvePersona({ clusterLabel: 'evaluator', inferredConfidence: 0.6 }, SAAS);
     const { unrecognizedDeclared, ...rest } = declared;
     expect(rest).toEqual(undeclared);
     expect(unrecognizedDeclared).toBe('staff');
@@ -126,22 +126,30 @@ describe('resolvePersona — unrecognized declared', () => {
 });
 
 describe('resolvePersona — inferred path', () => {
-  it('canonicalizes legacy cluster labels and passes confidence through', () => {
-    expect(resolvePersona({ clusterLabel: 'deal-seekers', inferredConfidence: 0.45 })).toEqual({
-      persona: 'deal_seeker',
+  it('normalizes cluster labels and passes confidence through', () => {
+    const TRIALS = [{ key: 'trial_user', displayName: 'Trial user' }];
+    expect(resolvePersona({ clusterLabel: ' Trial_User ', inferredConfidence: 0.45 }, TRIALS)).toEqual({
+      persona: 'trial_user',
       source: 'inferred',
       confidence: 0.45,
     });
   });
 
+  it('drops an inferred label when the project declared no vocabulary', () => {
+    // The default case now. Clustering cannot mint a persona on its own — only
+    // `declared` or a `discovered` set that cleared the promotion gate can.
+    expect(resolvePersona({ clusterLabel: 'trial_user', inferredConfidence: 0.9 }).persona)
+      .toBe('unknown');
+  });
+
   it('does not serve an inferred persona the active vocabulary no longer contains', () => {
-    const r = resolvePersona({ clusterLabel: 'buyer', inferredConfidence: 0.8 }, SAAS);
+    const r = resolvePersona({ clusterLabel: 'trial_user', inferredConfidence: 0.8 }, SAAS);
     expect(r).toEqual({ persona: 'unknown', source: 'none', confidence: 0.8 });
   });
 
   it('reroutes an inferred label through a rename alias', () => {
-    const vocab = [{ key: 'purchaser', displayName: 'Purchaser', aliases: ['buyer'] }];
-    expect(resolvePersona({ clusterLabel: 'buyers', inferredConfidence: 0.5 }, vocab).persona).toBe(
+    const vocab = [{ key: 'purchaser', displayName: 'Purchaser', aliases: ['customer'] }];
+    expect(resolvePersona({ clusterLabel: 'customer', inferredConfidence: 0.5 }, vocab).persona).toBe(
       'purchaser',
     );
   });
@@ -155,13 +163,19 @@ describe('resolvePersona — inferred path', () => {
     });
   });
 
-  it('matches the pre-vocabulary decide behaviour for the default set', () => {
-    // decide.ts today: canonicalPersona(cluster_label) + reliability_score.
-    for (const label of ['buyer', 'researchers', null, 'garbage']) {
-      const r = resolvePersona({ clusterLabel: label, inferredConfidence: 0.31 });
+  it('resolves inferred labels against whatever the project actually declared', () => {
+    // Was "matches the pre-vocabulary decide behaviour for the default set".
+    // There is no default set now, so the vocabulary is passed explicitly and
+    // the assertion is the same: canonicalize, then require membership.
+    const VOCAB = [
+      { key: 'admin', displayName: 'Admin' },
+      { key: 'evaluator', displayName: 'Evaluator' },
+    ];
+    for (const label of ['admin', 'Evaluator', null, 'garbage']) {
+      const r = resolvePersona({ clusterLabel: label, inferredConfidence: 0.31 }, VOCAB);
       expect(r.confidence).toBe(0.31);
       expect(r.persona).toBe(
-        label === 'buyer' ? 'buyer' : label === 'researchers' ? 'researcher' : 'unknown',
+        label === 'admin' ? 'admin' : label === 'Evaluator' ? 'evaluator' : 'unknown',
       );
     }
   });
@@ -170,12 +184,11 @@ describe('resolvePersona — inferred path', () => {
 describe('decisionPersona', () => {
   it('trusts vocabulary keys verbatim — no squash through the global union', () => {
     expect(resolvePersonaModule.decisionPersona('admin')).toBe('admin');
-    expect(resolvePersonaModule.decisionPersona('buyer')).toBe('buyer');
+    expect(resolvePersonaModule.decisionPersona('Evaluator ')).toBe('evaluator');
   });
 
-  it('still remaps pre-069 legacy plural labels', () => {
-    expect(resolvePersonaModule.decisionPersona('deal-seekers')).toBe('deal_seeker');
-    expect(resolvePersonaModule.decisionPersona('buyers')).toBe('buyer');
+  it('remaps no label by name — plurals stay as stored', () => {
+    expect(resolvePersonaModule.decisionPersona('admins')).toBe('admins');
   });
 
   it('null, empty, and whitespace are unknown', () => {
@@ -187,7 +200,7 @@ describe('decisionPersona', () => {
 
 describe('normalizeDeclaredPersona', () => {
   it('accepts and normalizes a real persona key', () => {
-    expect(normalizeDeclaredPersona('  Buyer ')).toBe('buyer');
+    expect(normalizeDeclaredPersona('  Admin ')).toBe('admin');
     expect(normalizeDeclaredPersona('power_user')).toBe('power_user');
     expect(normalizeDeclaredPersona('tier-2')).toBe('tier-2');
   });
@@ -209,6 +222,6 @@ describe('normalizeDeclaredPersona', () => {
     // The whole point of the miss counter is to surface a key the app sends
     // that the vocabulary lacks — validation must not swallow those.
     expect(normalizeDeclaredPersona('staff')).toBe('staff');
-    expect(normalizeDeclaredPersona('buyerr')).toBe('buyerr');
+    expect(normalizeDeclaredPersona('adminn')).toBe('adminn');
   });
 });

@@ -19,6 +19,28 @@ describe('wrapSnippet', () => {
     });
   }
 
+  it('next-app wraps with AdaptiveRoot from the /next entry, never AdaptiveProvider', () => {
+    const snippet = wrapSnippet('next-app', envVarName('next-app'));
+    expect(snippet).toContain("import { AdaptiveRoot } from '@sentientui/react/next'");
+    expect(snippet).toContain('<AdaptiveRoot');
+    expect(snippet).not.toContain('AdaptiveProvider');
+    expect(snippet).toContain('suppressHydrationWarning');
+  });
+
+  it('non-App-Router frameworks keep AdaptiveProvider from the main entry', () => {
+    for (const framework of ['next-pages', 'vite', 'remix', 'cra'] as const) {
+      const snippet = wrapSnippet(framework, envVarName(framework));
+      expect(snippet).toContain("import { AdaptiveProvider } from '@sentientui/react'");
+      expect(snippet).not.toContain('@sentientui/react/next');
+    }
+  });
+
+  it('no snippet carries the unused context prop', () => {
+    for (const framework of ADVERTISED) {
+      expect(wrapSnippet(framework, envVarName(framework))).not.toContain('context=');
+    }
+  });
+
   it('next reads NEXT_PUBLIC via process.env', () => {
     const snippet = wrapSnippet('next-app', envVarName('next-app'));
     expect(snippet).toContain('process.env.NEXT_PUBLIC_SENTIENT_API_KEY');

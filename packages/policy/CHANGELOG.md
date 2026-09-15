@@ -1,5 +1,37 @@
 # @sentientui/policy
 
+## 0.12.0
+
+### Minor Changes
+
+- Add `chooseLayoutDetailed`, which returns the chosen order together with the candidate layout hashes and the posteriors the draw ran over, so a caller can log the decision's propensity from the same inputs that produced it. `chooseLayout` is now a thin wrapper and selects identically. `factorCellsForTrial` no longer emits a persona cell for a zero-reliability persona: the row contributed nothing yet created a dead (arm, persona) cell that serving consulted as if it had been observed; the global row still carries the trial.
+
+## 0.11.0
+
+### Minor Changes
+
+- 036af5e: The four seeded personas are gone from the SDK surface. Projects have started with an empty persona vocabulary since 2026-09-13; this removes the last code that still named them.
+
+  **Breaking for anyone importing these from `@sentientui/policy`:** `PERSONAS`, the `Persona` and `PersonaKey` types, `PERSONA_DISPLAY`, `LEGACY_PERSONA_MAP` and the deprecated `CLUSTER_PRIORITY` are removed. Use the project's own vocabulary for persona keys and display names (`UNKNOWN_PERSONA_DISPLAY` covers `'unknown'`), and `LAYOUT_ARCHETYPES` / `orderByArchetype` for orderings.
+
+  `canonicalPersona` no longer looks labels up in a table of those four names: it trims, lowercases and returns any key-shaped label (`PERSONA_KEY_RE`), and `'unknown'` otherwise. Previously every other label — including every key a customer declared — came back `'unknown'`. It still says nothing about vocabulary membership; `resolvePersona` checks that. `decisionPersona` and `resolvePersona` no longer remap the old plural labels (`'buyers'` → `'buyer'`), and `RESERVED_PERSONA_KEYS` is now just `['unknown', '__all__']`.
+
+  `@sentientui/core`: keyless local mode with no forced persona now resolves `unknown` (the authored order and baselines) instead of hashing the session onto one of the four names. `?sentient_persona=<key>` still previews any key.
+
+  `@sentientui/react`: devtools no longer offers the four names as persona buttons when the project vocabulary is unavailable; it lists the vocabulary it fetched, plus `unknown` and a free-text key.
+
+## 0.10.0
+
+### Minor Changes
+
+- 316f827: Layout candidates no longer depend on what a persona is named, and the authored order is always an arm.
+
+  `candidateLayouts` dropped its `persona` parameter and now always includes the page's own order. The set of orderings a page could be shown in is a property of the page; the persona belongs in the posteriors, which is where the caller already had it. Previously the authored order only made the candidate set when the requesting persona's name happened to miss the archetype table — so a project that declared `buyer` had its own layout excluded entirely, leaving the bandit no way to conclude "leave this page alone" and nothing for a holdout to compare against.
+
+  `CLUSTER_PRIORITY` is deprecated in favour of `LAYOUT_ARCHETYPES`, whose keys (`conversion_led`, `evidence_led`, `price_led`, `discovery_led`) name what an ordering does rather than who it is for. The arrays are unchanged and `hashLayout` hashes the resulting order, so every stored `layout_weights` row still joins.
+
+  `applyClusterHeuristic` is deprecated. Server code should use `orderByArchetype` (by archetype); the keyless local engine uses the new `previewOrderForPersona`, which maps ANY key onto an archetype — previously only the four seeded persona strings did anything and every other key silently no-oped, including the ones the CLI and docs told people to try.
+
 ## 0.9.0
 
 ### Minor Changes

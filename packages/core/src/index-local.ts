@@ -10,12 +10,9 @@
  * server/client boundary. No I/O, no randomness, no mutable state.
  */
 import {
-  PERSONAS,
   UNKNOWN_PERSONA,
-  applyClusterHeuristic,
-  fnv1a,
+  previewOrderForPersona,
   pickDeterministicArm,
-  type PersonaKey,
 } from '@sentientui/policy';
 import type { DecideOutcome, SlotDeclInput, SlotResult } from './index.js';
 
@@ -34,7 +31,7 @@ export const LOCAL_CONFIDENCE = 0.5;
 
 /**
  * Maps a section id to a semantic section type by substring so
- * `applyClusterHeuristic` gets a useful sectionTypes map without a DOM graph.
+ * `previewOrderForPersona` gets a useful sectionTypes map without a DOM graph.
  * First matching rule wins, in exactly this order.
  */
 const SECTION_TYPE_RULES: Array<[substr: string, type: string]> = [
@@ -61,15 +58,23 @@ export function inferSectionTypes(sections: string[]): Map<string, string> {
   return types;
 }
 
-function resolvePersona(sessionId: string, forcedPersona?: string): PersonaKey {
-  if (forcedPersona) {
-    if ((PERSONAS as readonly string[]).includes(forcedPersona)) return forcedPersona as PersonaKey;
-    if (forcedPersona === UNKNOWN_PERSONA) return UNKNOWN_PERSONA;
-  }
-  return PERSONAS[fnv1a(sessionId) % PERSONAS.length];
+// A persona key as projects declare them: a low-cardinality role slug.
+const PERSONA_KEY_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+
+function resolvePersona(forcedPersona?: string): string {
+  // Any well-formed key is honoured. This used to accept only the four seeded
+  // keys and hash everything else, so `?sentient_persona=admin` (the key the
+  // CLI, docs and llms.txt tell people to try, now that projects declare their
+  // own vocabulary) silently previewed a random seeded persona instead.
+  if (forcedPersona && PERSONA_KEY_RE.test(forcedPersona)) return forcedPersona;
+  // Unforced → 'unknown', which previews the authored layout. This used to hash
+  // the session onto the four seeded personas, so a keyless page with nothing
+  // declared was reordered as if the visitor were a persona nobody named —
+  // the same unasked assertion the 2026-09-13 removal took out of the server.
+  return UNKNOWN_PERSONA;
 }
 
-function decideSlot(sessionId: string, persona: PersonaKey, slot: SlotDeclInput): SlotResult | null {
+function decideSlot(sessionId: string, persona: string, slot: SlotDeclInput): SlotResult | null {
   // Persona-salted session key — implements the spec's
   // stableHash(sessionId, slotId, sortedArms, forcedPersona) with the pinned
   // pickDeterministicArm signature, so forcing a persona visibly changes
@@ -96,12 +101,12 @@ export function createLocalEngine(opts: { sessionId: string; forcedPersona?: str
     slots?: SlotDeclInput[];
   }): DecideOutcome;
 } {
-  const persona = resolvePersona(opts.sessionId, opts.forcedPersona);
+  const persona = resolvePersona(opts.forcedPersona);
   return {
     decide(input) {
       const layoutOrder =
         input.sections && input.sections.length > 0
-          ? applyClusterHeuristic(input.sections, inferSectionTypes(input.sections), persona)
+          ? previewOrderForPersona(input.sections, inferSectionTypes(input.sections), persona)
           : null;
 
       const assignments: Record<string, string> = {};

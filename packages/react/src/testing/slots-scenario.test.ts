@@ -13,16 +13,16 @@ afterEach(() => resetScenario());
 
 describe('applyScenario — slots + persona', () => {
   it('sets the slot/persona override globals and the persona html attributes', () => {
-    applyScenario({ slots: { hero: { tone: 'urgent' } }, persona: 'buyer', confidence: 0.5 });
+    applyScenario({ slots: { hero: { tone: 'urgent' } }, persona: 'admin', confidence: 0.5 });
     const w = window as unknown as W;
     expect(w.__sentient_slot_overrides).toEqual({ hero: { tone: 'urgent' } });
-    expect(w.__sentient_persona_override).toEqual({ persona: 'buyer', confidence: 0.5 });
-    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('buyer');
+    expect(w.__sentient_persona_override).toEqual({ persona: 'admin', confidence: 0.5 });
+    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('admin');
     expect(document.documentElement.getAttribute('data-sentient-confidence')).toBe('medium');
   });
 
   it('applyScenario without slots/persona clears prior forcing', () => {
-    applyScenario({ slots: { hero: 'a' }, persona: 'buyer' });
+    applyScenario({ slots: { hero: 'a' }, persona: 'admin' });
     applyScenario({ variants: { x: 'y' } });
     const w = window as unknown as W;
     expect(w.__sentient_slot_overrides).toBeUndefined();
@@ -30,7 +30,7 @@ describe('applyScenario — slots + persona', () => {
   });
 
   it('resetScenario clears the new globals and the html attributes', () => {
-    applyScenario({ slots: { hero: 'a' }, persona: 'buyer' });
+    applyScenario({ slots: { hero: 'a' }, persona: 'admin' });
     resetScenario();
     const w = window as unknown as W;
     expect(w.__sentient_slot_overrides).toBeUndefined();
@@ -50,7 +50,7 @@ describe('applyScenario — slots + persona', () => {
 describe('resolveScenario — /v1/decide slots', () => {
   it('serves forced slots for declared slots and echoes persona/confidence', async () => {
     const r = await resolveScenario(
-      { slots: { hero: { tone: 'urgent' } }, persona: 'buyer', confidence: 0.9 },
+      { slots: { hero: { tone: 'urgent' } }, persona: 'admin', confidence: 0.9 },
       'POST',
       DECIDE,
       JSON.stringify({
@@ -63,7 +63,7 @@ describe('resolveScenario — /v1/decide slots', () => {
     expect(r!.status).toBe(200);
     const json = r!.json as Record<string, unknown>;
     expect(json.slots).toEqual({ hero: { tone: 'urgent' }, faq: 'collapsed' });
-    expect(json.persona).toBe('buyer');
+    expect(json.persona).toBe('admin');
     expect(json.confidence).toBe(0.9);
   });
 
@@ -89,14 +89,14 @@ describe('resolveScenario — /v1/decide slots', () => {
 
   it('/v1/explain gains slots and personaAttributes', async () => {
     const r = await resolveScenario(
-      { persona: 'buyer', confidence: 0.2, slots: { hero: { tone: 'urgent' } } },
+      { persona: 'admin', confidence: 0.2, slots: { hero: { tone: 'urgent' } } },
       'POST',
       'https://api.sentient-ui.com/v1/explain',
       JSON.stringify({ slots: [{ id: 'hero', dims: { tone: ['calm', 'urgent'] } }] }),
     );
     const json = r!.json as Record<string, unknown>;
     expect(json.slots).toEqual({ hero: { tone: 'urgent' } });
-    expect(json.personaAttributes).toEqual({ persona: 'buyer', confidence: 'low' });
+    expect(json.personaAttributes).toEqual({ persona: 'admin', confidence: 'low' });
   });
 });
 
@@ -107,14 +107,14 @@ describe('MSW server honors slot scenarios (shared resolver end-to-end)', () => 
     // hook; this is msw scenario plumbing, not a hook.
     const { server, use: applyScenario } = setupSentientServer();
     try {
-      applyScenario({ slots: { hero: 'b' }, persona: 'deal_seeker', confidence: 0.4 });
+      applyScenario({ slots: { hero: 'b' }, persona: 'trial_user', confidence: 0.4 });
       const res = await fetch('https://api.sentient-ui.com/v1/decide', {
         method: 'POST',
         body: JSON.stringify({ slots: [{ id: 'hero', arms: ['a', 'b'] }] }),
       });
       const json = (await res.json()) as Record<string, unknown>;
       expect(json.slots).toEqual({ hero: 'b' });
-      expect(json.persona).toBe('deal_seeker');
+      expect(json.persona).toBe('trial_user');
       expect(json.confidence).toBe(0.4);
     } finally {
       server.close();

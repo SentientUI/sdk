@@ -2,7 +2,11 @@ export type SnippetSlotDecl = { dims: Record<string, string[]>; target?: string;
 
 export type SnippetConfig = {
   apiKey: string;
-  context: 'landing' | 'ecommerce' | 'saas' | 'marketplace';
+  /**
+   * @deprecated Unused — the project's type is set in the dashboard. Safe to omit.
+   * A `context` key in `window.sentient` is still tolerated; it is simply not read.
+   */
+  context?: 'landing' | 'ecommerce' | 'saas' | 'marketplace';
   personaAttributes: boolean;
   /** Consent gate passthrough to core. Omitted when not declared (core defaults to true). */
   consent?: boolean;
@@ -36,7 +40,6 @@ export type SnippetConfig = {
   slots: Record<string, SnippetSlotDecl>;
 };
 
-const CONTEXTS = ['landing', 'ecommerce', 'saas', 'marketplace'] as const;
 
 function parseDims(raw: unknown): Record<string, string[]> | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
@@ -72,10 +75,6 @@ export function parseSnippetConfig(raw: unknown): SnippetConfig | null {
   const r = raw as Record<string, unknown>;
   if (typeof r.apiKey !== 'string' || !r.apiKey.startsWith('pk_')) return null;
 
-  const context = CONTEXTS.includes(r.context as (typeof CONTEXTS)[number])
-    ? (r.context as SnippetConfig['context'])
-    : 'landing';
-
   const slots: Record<string, SnippetSlotDecl> = {};
   if (typeof r.slots === 'object' && r.slots !== null && !Array.isArray(r.slots)) {
     for (const [id, decl] of Object.entries(r.slots as Record<string, unknown>)) {
@@ -94,7 +93,6 @@ export function parseSnippetConfig(raw: unknown): SnippetConfig | null {
 
   const cfg: SnippetConfig = {
     apiKey: r.apiKey,
-    context,
     personaAttributes: r.personaAttributes === true,
     slots,
   };

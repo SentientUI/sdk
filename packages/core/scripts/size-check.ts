@@ -77,7 +77,43 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // ids + client-sensor observations in the shared chunk) — each side fit its
     // own budget, the union measured 14687 against 14592. Both features are
     // always-on capture/serving paths; neither can be lazy.
-    limit: 14 * 1024 + 512,
+    //
+    // +256 (operator decision 2026-09-10 "increase sizes if needed"): baseline-
+    // text capture on reportSlots — the region's rendered text rides the first
+    // registration (normalized, 400-char cap) so generation stops writing
+    // alternatives to text it has never seen. Always-on by nature (fires at
+    // first mount). Measured 14944 against 14848.
+    //
+    // +512 (operator decision 2026-09-13, "I don't mind about size budget"):
+    // the adaptation reveal (`reveal.ts`). It is in the SHARED chunk because
+    // both adapters use it — the snippet on its post-decide apply, React on an
+    // arm change — and duplicating it into each entry would cost more overall.
+    // It is not lazy-loadable by nature: it has to run in the same frame the
+    // content changes, and deferring the stylesheet would mean the first
+    // reveal of a page load silently does nothing. Measured 15535 against
+    // 15104 (over by 431).
+    //
+    // +256 (same operator decision): `requestSlots` + `onSlotsChanged` — the
+    // mounted-slot registry decide that lets AdaptiveSlot serve generated
+    // versions in client-rendered React and Next without an SSR preload
+    // (previously it never served there), scoped to the mounted ids so
+    // unmounted slots stop accruing close-out trials; plus the pre-consent
+    // proxy replay. Always-on serving path. Measured 15949 against 15872.
+    //
+    // +256 (same operator decision, 2026-09-14): `decideSlots` — the same
+    // mounted-only client decide for request-declared slots (useAdaptiveTokens,
+    // AdaptiveGroup), which otherwise served baseline all session for keyed
+    // clients without an SSR `slots` preload. Measured 16117 against 16128.
+    //
+    // +512 (same operator decision, 2026-09-14, data-pipeline audit): three
+    // correctness fixes on the mounted-slot decide path, none lazy-loadable —
+    // `isSlotDecided` (result provenance so React never exposes a snapshot or
+    // failure-baseline arm that has no slot_decisions row), bounded backoff
+    // retry + id release when a batched decide fails (previously a 5xx left
+    // the slot unexposed and untrained for the client lifetime), and
+    // `cancelSlots` (an unmount before the 0 ms batch fires withdraws the ask,
+    // so a redirecting route is not a trial). Measured 16697 against 16384.
+    limit: 16 * 1024 + 512,
   },
   {
     name: '@sentientui/core/graph (additions only)',
@@ -93,7 +129,22 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // +256 at the empty-cell merge: the shared chunk this bundle sits on grew
     // for the same two-sided reason as the lean budget above (AdaptiveSlot
     // stores + main's semantic capture) — measured 17539 against 17408.
-    limit: 17 * 1024 + 256,
+    //
+    // +512 (operator decision 2026-09-10): the shared chunk grew for the same
+    // baseline-text capture as the lean budget above. Measured 17862 against
+    // 17664.
+    // +256 (2026-09-13): the reveal rides the shared chunk this entry also
+    // measures. Same reasoning as the lean budget above. Measured 18340
+    // against 18176 (over by 164).
+    // +512 (2026-09-13, operator decision "increase sizes if needed"): declared
+    // `sectionTypes` threaded through the scanner (replaces per-element
+    // data-sentient-type markup). Measured 18436 against 18432 (over by 4).
+    // +256 (2026-09-14): decideSlots in the shared chunk, same reason as the
+    // lean budget above. Measured 18992 against 18944.
+    // +512 (2026-09-14, data-pipeline audit): isSlotDecided / decide retry /
+    // cancelSlots in the shared chunk, same reason as the lean budget above.
+    // Measured 19545 against 19200.
+    limit: 17 * 1024 + 2304,
   },
 ];
 

@@ -12,7 +12,7 @@ describe('scenarioToHandlers', () => {
   afterAll(() => server.close());
 
   it('serves forced layout, assignments, and persona from /v1/decide', async () => {
-    server.use(...scenarioToHandlers({ layout: ['pricing', 'hero'], variants: { hero: 'b' }, persona: 'buyers' }));
+    server.use(...scenarioToHandlers({ layout: ['pricing', 'hero'], variants: { hero: 'b' }, persona: 'admins' }));
     const res = await fetch(`${BASE}/v1/decide`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sessionId: 's', sections: [{ id: 'hero' }, { id: 'pricing' }], components: [] }),
@@ -20,7 +20,7 @@ describe('scenarioToHandlers', () => {
     const body = await res.json();
     expect(body.layoutOrder).toEqual(['pricing', 'hero']);
     expect(body.assignments).toEqual({ hero: 'b' });
-    expect(body.persona).toBe('buyers');
+    expect(body.persona).toBe('admins');
   });
 
   it('captures posted events from /v1/events', async () => {

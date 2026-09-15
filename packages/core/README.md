@@ -17,7 +17,6 @@ import { init } from '@sentientui/core';
 
 const client = init({
   apiKey: 'pk_your_key',          // from sentient-ui.com → Settings
-  context: 'saas',                // 'landing' | 'ecommerce' | 'saas' | 'marketplace'
 });
 
 // Get a variant assignment for a component (returns null during SSR)
@@ -42,7 +41,7 @@ client.goal('trial_started', { plan: 'pro' });
 | Option | Type | Description |
 |--------|------|-------------|
 | `apiKey` | `string` | Public API key (`pk_…`) from the SentientUI dashboard. |
-| `context` | `'landing' \| 'ecommerce' \| 'saas' \| 'marketplace'` | Local label only — echoed in `debug` logs, never sent to the server. Analytics grouping comes from the project's context type configured in the dashboard. |
+| `context` | `'landing' \| 'ecommerce' \| 'saas' \| 'marketplace'` *(optional, deprecated)* | Unused — the project's type is set in the dashboard. Safe to omit. |
 | `consent` | `boolean` *(default `true`)* | When `false`, returns a no-op client (no cookies, no events). **The default is `true`** — for GDPR-style opt-in, pass `false` until your banner is accepted (see `preConsentBehavior`). |
 | `preConsentBehavior` | `'control' \| 'statistical_winner'` | What to render while `consent` is `false`: `'control'` (the default — shows `variantIds[0]`), or the read-only statistical winner via `/v1/winner` (no session, no events). |
 | `respectDoNotTrack` | `boolean` *(default `true`)* | Honors the browser DNT signal — overrides `consent: true` and blocks `grantConsent()`. |
@@ -159,7 +158,7 @@ const outcome = await client.decide({
 //   layoutOrder: string[] | null,
 //   assignments: Record<string, string>,
 //   slots: { hero: { tone: 'urgent' }, 'pricing-area': 'social_first' },
-//   persona: 'buyer', confidence: 0.8,
+//   persona: 'admin', confidence: 1,   // declared personas serve at full confidence
 // }
 client.getSlotResult('hero');   // sync read of a decided slot
 client.getPersona();            // { persona, confidence, band: 'low' | 'medium' | 'high' }
@@ -167,6 +166,23 @@ client.getPersona();            // { persona, confidence, band: 'low' | 'medium'
 
 Decisions are locked per session. Apply dims results as `data-<dim>` attributes and style them
 with CSS. At least one of `sections` / `components` / `slots` must be present.
+
+### `client.requestSlots(slotIds, baselineTexts?)` / `client.onSlotsChanged(listener)`
+
+Optional client methods behind `@sentientui/react`'s generated-version `<Adaptive>` — regions
+whose versions are written in the dashboard rather than in code. `requestSlots` asks for the
+config of the regions actually mounted: calls made in the same tick are batched into one request
+scoped to exactly those ids, and each id is requested at most once per client. Ids with nothing
+published register as drafts; `baselineTexts` maps an id to the text the region shows today, sent
+with that first registration. `onSlotsChanged` subscribes to the answer landing and returns the
+unsubscribe.
+
+```ts
+const unsubscribe = client.onSlotsChanged?.(() => {
+  const entry = client.getSlotConfig('hero-cta'); // null → keep rendering the original
+});
+client.requestSlots?.(['hero-cta'], { 'hero-cta': 'Start free trial' });
+```
 
 ## Decision snapshot (pre-paint on return visits)
 
@@ -191,7 +207,7 @@ session, zero network — via the separate entry `@sentientui/core/local`:
 ```ts
 import { createLocalEngine } from '@sentientui/core/local';
 
-const engine = createLocalEngine({ sessionId, forcedPersona: 'deal_seeker' });
+const engine = createLocalEngine({ sessionId, forcedPersona: 'evaluator' });
 const outcome = engine.decide({ slots: [{ id: 'hero', dims: { tone: ['calm', 'urgent'] } }] });
 ```
 
@@ -206,7 +222,7 @@ physically contain none of it. Production without a key short-circuits to defaul
 ```ts
 import { init } from '@sentientui/core/graph';
 
-const client = init({ apiKey: 'pk_…', context: 'saas', graph: true });
+const client = init({ apiKey: 'pk_…', graph: true });
 ```
 
 A client created by the lean `init` can never activate graph mode later (`getGraph()` stays empty). The lean bundle is ~8 KB gzip (CI budget: 10 KB); graph adds ~3–4 KB gzip on top of the lean bundle (combined CI budget: 16 KB).

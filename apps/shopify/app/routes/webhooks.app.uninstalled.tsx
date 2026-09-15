@@ -2,6 +2,8 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { isStaleUninstall } from "../lib/drop-visibility";
+import { syncPlan } from "../lib/plan-sync.server";
+import { decryptSecret } from "../lib/secret-box";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   // Read the trigger time BEFORE authenticate.webhook consumes the request.
@@ -26,6 +28,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (isStaleUninstall(triggeredAt, settings?.updatedAt ?? null, newestSession?.createdAt ?? null)) {
     console.log(`[sentient] ignoring a stale ${topic} for ${shop} — reinstalled since it fired`);
     return new Response();
+  }
+
+  // Uninstalling cancels any Shopify Managed Pricing subscription, and the
+  // app_subscriptions/update CANCELLED event can land AFTER the keys below
+  // are deleted — at which point the sync can no longer authenticate and the
+  // account would keep paid entitlements it stopped paying for. Release the
+  // plan here first, best-effort (the API only downgrades accounts the
+  // Shopify rail owns, so this is a no-op for Stripe-billed customers).
+  if (settings?.secretKey) {
+    // The raw Prisma row carries the enveloped sk_ (getSettings would decrypt,
+    // but this handler reads directly for the staleness check above).
+    await syncPlan(decryptSecret(settings.secretKey), "free", shop);
   }
 
   await db.session.deleteMany({ where: { shop } });

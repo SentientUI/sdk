@@ -1,5 +1,29 @@
 # @sentientui/cli
 
+## 0.3.2
+
+### Patch Changes
+
+- f304caf: The scaffold and the integration guide now teach the shape that actually works.
+
+  `@sentientui/cli`:
+
+  - `init` scaffolds an `<Adaptive id>` hero instead of a `useAdaptiveTokens` one.
+    A tokens slot only decides when it is also declared in `slots` on the root, and
+    the wrap snippet the CLI printed never declared it — so with a real API key the
+    scaffolded example looked live while serving its baseline forever. A generated
+    `<Adaptive>` needs no declaration: the id registers the region on first mount.
+  - The Next.js App Router snippet wraps with `AdaptiveRoot` from
+    `@sentientui/react/next` rather than `AdaptiveProvider`. A root layout is a
+    Server Component, and only `AdaptiveRoot` resolves the decision server-side and
+    emits the pre-paint persona script; the provider meant no SSR assignment (a
+    flash of the baseline on first paint) and no persona attributes at all.
+  - The deprecated `context` prop is gone from every printed snippet.
+
+  `@sentientui/mcp`: the integration guide documents generated versions as the
+  starting point for Rung 2, the children-or-`variants` rule, the two-tag snippet
+  install with the CSP-safe split form, and drops the `<AdaptiveSlot>` framing.
+
 ## 0.3.1
 
 ### Patch Changes

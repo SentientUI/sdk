@@ -24,10 +24,11 @@ export function setBlockPalette(p: SitePalette | null | undefined): void {
  *  display, so exiting composition restores the DOM exactly. */
 const ORIG_HIDDEN_ATTR = 'data-sentient-blocks-hid';
 
-// Token → CSS maps. Neutral, inherit-first defaults on purpose: palette
-// derivation (spec §4 "derived, not chosen") is Phase-2 work — until then a
-// block must look plausible on any site, which means currentColor and em units,
-// not brand guesses.
+// Token → CSS maps. Neutral, inherit-first defaults stay as the FALLBACK: a
+// block must look plausible on any site without a palette (currentColor, em
+// units, never brand guesses). When the served palette carries brand tokens
+// (accent/muted/border — crawl-derived, spec §4 "derived, not chosen"), tone
+// and emphasis resolve to them instead.
 const GAP: Record<string, string> = { none: '0', sm: '8px', md: '16px', lg: '24px' };
 const FLEX_POS: Record<string, string> = { start: 'flex-start', center: 'center', end: 'flex-end', stretch: 'stretch', between: 'space-between' };
 const FONT_SIZE: Record<string, string> = { sm: '0.875em', md: '1em', lg: '1.25em' };
@@ -44,8 +45,17 @@ function styled(el: HTMLElement, styles: Record<string, string | undefined>): HT
   return el;
 }
 
+// Brand tokens when the palette carries them; the original neutral fallbacks
+// otherwise — mirrors packages/react/src/blocks-render.tsx. Kept dense: this
+// file lives in the always-on bundle, whose size budget is nearly spent.
 function toneStyles(tone?: string): Record<string, string | undefined> {
-  return { opacity: tone === 'muted' ? '0.7' : undefined, 'font-weight': tone === 'accent' ? '600' : undefined };
+  return tone === 'muted'
+    ? palette?.muted
+      ? { color: palette.muted }
+      : { opacity: '0.7' }
+    : tone === 'accent'
+      ? { 'font-weight': '600', color: palette?.accent }
+      : {};
 }
 
 /** Render one node (recursively). Null for anything unrenderable — fail-safe. */
@@ -86,6 +96,22 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
             'align-items': g.align ? FLEX_POS[g.align] : undefined,
           });
         }
+        // Rung 1 (spec 2026-09-10 §4): pad reuses the GAP scale byte-for-byte;
+        // a raised stack with no pad defaults to md — a zero-padding card is a
+        // design bug, not a choice. Surface bg/text apply only when the palette
+        // carries them (inherit-first otherwise); the hairline + radius follow
+        // the badge/button precedent so an unsampled site still looks plausible.
+        const raised = node.type === 'stack' && (node as StackBlock).surface === 'raised';
+        const pad = (node as StackBlock | GridBlock).pad ?? (raised ? 'md' : undefined);
+        if (pad) styled(el, { padding: GAP[pad] ?? GAP['md'] });
+        if (raised) {
+          styled(el, {
+            background: palette?.surface,
+            color: palette?.surface ? palette?.surfaceText : undefined,
+            border: `1px solid ${palette?.border ?? 'currentColor'}`,
+            'border-radius': palette?.radius ?? '8px',
+          });
+        }
         for (const child of node.children ?? []) {
           const c = renderBlock(child, doc);
           if (c) el.appendChild(c);
@@ -99,6 +125,7 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
           margin: '0', 'font-size': node.size ? FONT_SIZE[node.size] : undefined,
           'font-weight': node.weight ? WEIGHT[node.weight] : undefined,
           'text-align': node.align, ...toneStyles(node.tone),
+          'max-width': node.maxWidth === 'measure' ? '65ch' : undefined,
         });
       }
       case 'heading': {
@@ -106,6 +133,7 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
         el.textContent = node.value;
         return styled(el, {
           margin: '0', 'font-size': HEADING_SIZE[node.size ?? 'md'], 'text-align': node.align,
+          'max-width': node.maxWidth === 'measure' ? '65ch' : undefined,
         });
       }
       case 'button': {
@@ -120,8 +148,10 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
           font: 'inherit', 'font-size': node.size ? FONT_SIZE[node.size] : undefined,
           'text-decoration': emphasis === 'ghost' ? 'underline' : 'none', cursor: 'pointer',
           background: emphasis === 'primary' ? palette?.primaryBg ?? '#111827' : 'transparent',
-          color: emphasis === 'primary' ? palette?.primaryText ?? '#ffffff' : 'inherit',
-          border: emphasis === 'secondary' ? '1px solid currentColor' : 'none',
+          // Secondary/ghost resolve to the accent token when present —
+          // currentColor/inherit otherwise (the pre-token behavior).
+          color: emphasis === 'primary' ? palette?.primaryText ?? '#ffffff' : palette?.accent ?? 'inherit',
+          border: emphasis === 'secondary' ? `1px solid ${palette?.accent ?? 'currentColor'}` : 'none',
         });
       }
       case 'link': {
@@ -146,11 +176,18 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
         el.textContent = node.value;
         return styled(el, {
           display: 'inline-block', padding: '2px 10px', 'border-radius': '999px',
-          'font-size': '0.75em', border: '1px solid currentColor', ...toneStyles(node.tone),
+          'font-size': '0.75em', border: `1px solid ${palette?.border ?? 'currentColor'}`, ...toneStyles(node.tone),
         });
       }
       case 'spacer':
         return styled(doc.createElement('div'), { height: SPACER[node.size] ?? SPACER.md });
+      case 'divider':
+        // <hr> for semantics; border-top (not the default inset border) so the
+        // hairline matches form fields and badges in the palette border color.
+        return styled(doc.createElement('hr'), {
+          border: 'none', 'border-top': `1px solid ${palette?.border ?? 'currentColor'}`,
+          margin: '0', width: '100%',
+        });
       default:
         return null; // newer-server node type — skip, never throw
     }

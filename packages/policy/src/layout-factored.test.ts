@@ -57,21 +57,21 @@ describe('factorCellsForOrder', () => {
 
 describe('chooseLayoutFactored', () => {
   it('returns a candidate order (a permutation of the sections)', () => {
-    const order = chooseLayoutFactored(SECTIONS, TYPES, 'buyer', [], seeded(1));
+    const order = chooseLayoutFactored(SECTIONS, TYPES, 'admin', [], seeded(1));
     expect([...order].sort()).toEqual([...SECTIONS].sort());
-    const candidates = candidateLayouts(SECTIONS, TYPES, 'buyer');
+    const candidates = candidateLayouts(SECTIONS, TYPES);
     expect([...candidates.values()]).toContainEqual(order);
   });
 
   it('is reproducible under a seeded RNG', () => {
-    const a = chooseLayoutFactored(SECTIONS, TYPES, 'buyer', [], seeded(42));
-    const b = chooseLayoutFactored(SECTIONS, TYPES, 'buyer', [], seeded(42));
+    const a = chooseLayoutFactored(SECTIONS, TYPES, 'admin', [], seeded(42));
+    const b = chooseLayoutFactored(SECTIONS, TYPES, 'admin', [], seeded(42));
     expect(a).toEqual(b);
   });
 
   it('cold start still explores across candidates (not a constant pick)', () => {
     const picks = new Set<string>();
-    for (let s = 0; s < 200; s++) picks.add(chooseLayoutFactored(SECTIONS, TYPES, 'buyer', [], seeded(s)).join(','));
+    for (let s = 0; s < 200; s++) picks.add(chooseLayoutFactored(SECTIONS, TYPES, 'admin', [], seeded(s)).join(','));
     expect(picks.size).toBeGreaterThan(1);
   });
 
@@ -99,7 +99,7 @@ describe('chooseLayoutFactored', () => {
     let pricingFirst = 0;
     const N = 300;
     for (let s = 0; s < N; s++) {
-      const order = chooseLayoutFactored(SECTIONS, TYPES, 'buyer', cells, seeded(s));
+      const order = chooseLayoutFactored(SECTIONS, TYPES, 'admin', cells, seeded(s));
       if (TYPES.get(order[0]!) === 'pricing') pricingFirst++;
     }
     expect(pricingFirst / N).toBeGreaterThan(0.8);
@@ -114,21 +114,21 @@ describe('chooseLayoutFactored', () => {
         cell(GLOBAL_FACTOR_PERSONA, 'pricing', 0, 2000, 400),
         cell(GLOBAL_FACTOR_PERSONA, 'hero', 0, 2000, 40),
       ]),
-      cell('buyer', 'pricing', 0, 3, 0),
+      cell('admin', 'pricing', 0, 3, 0),
     ];
     let pricingFirst = 0;
     const N = 300;
     for (let s = 0; s < N; s++) {
-      const order = chooseLayoutFactored(SECTIONS, TYPES, 'buyer', cells, seeded(s));
+      const order = chooseLayoutFactored(SECTIONS, TYPES, 'admin', cells, seeded(s));
       if (TYPES.get(order[0]!) === 'pricing') pricingFirst++;
     }
     expect(pricingFirst / N).toBeGreaterThan(0.6);
   });
 
   it('another persona\'s cells are never consulted', () => {
-    const noise = [cell('deal_seeker', 'hero', 0, 10_000, 9_999)];
-    const a = chooseLayoutFactored(SECTIONS, TYPES, 'buyer', [], seeded(7));
-    const b = chooseLayoutFactored(SECTIONS, TYPES, 'buyer', noise, seeded(7));
+    const noise = [cell('evaluator', 'hero', 0, 10_000, 9_999)];
+    const a = chooseLayoutFactored(SECTIONS, TYPES, 'admin', [], seeded(7));
+    const b = chooseLayoutFactored(SECTIONS, TYPES, 'admin', noise, seeded(7));
     expect(b).toEqual(a);
   });
 
@@ -140,7 +140,7 @@ describe('chooseLayoutFactored', () => {
       ['footer', 'structural'],
     ]);
     for (let s = 0; s < 25; s++) {
-      const order = chooseLayoutFactored(secs, t, 'buyer', [], seeded(s), roles);
+      const order = chooseLayoutFactored(secs, t, 'admin', [], seeded(s), roles);
       expect(order[0]).toBe('nav');
       expect(order[order.length - 1]).toBe('footer');
     }

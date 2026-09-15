@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readSnapshot, writeSnapshot } from '@sentientui/core';
 import { run, reapply, parsePreview, parseEditorToken, parsePersonaPreview } from './index';
 
@@ -40,10 +40,27 @@ const CONFIG = {
   slots: { hero: { dims: { tone: ['calm', 'urgent'] }, target: '#hero' } },
 };
 
+/** Published locators the stubbed GET /v1/registry/locators serves. Default:
+ *  one `hero` component with `locator: null` (targets <html>, so it is always
+ *  on the page) — registry-mode tests below that predate page scoping decide
+ *  `hero` exactly as before. `null` makes the request fail. */
+let publishedLocators: Array<{ id: string; kind: string; locator: unknown }> | null;
+const fetchMock = vi.fn();
+
 beforeEach(() => {
   vi.resetAllMocks();
   resetDom();
   (window as Window).sentient = CONFIG;
+  publishedLocators = [{ id: 'hero', kind: 'arms', locator: null }];
+  // Registry mode now fetches locators before deciding; never hit the network.
+  fetchMock.mockImplementation(async (url: string) =>
+    url.endsWith('/v1/registry/locators') && publishedLocators
+      ? { ok: true, json: async () => ({ slots: publishedLocators }) }
+      : url.endsWith('/v1/locator-miss')
+        ? { ok: true, json: async () => ({}) }
+        : Promise.reject(new Error('offline')),
+  );
+  vi.stubGlobal('fetch', fetchMock);
 });
 
 describe('run — success path', () => {
@@ -53,22 +70,22 @@ describe('run — success path', () => {
         layoutOrder: null,
         assignments: {},
         slots: { hero: { tone: 'urgent' } },
-        persona: 'buyer',
+        persona: 'admin',
         confidence: 0.8,
       }),
-      getPersona: vi.fn().mockReturnValue({ persona: 'buyer', confidence: 0.8, band: 'high' }),
+      getPersona: vi.fn().mockReturnValue({ persona: 'admin', confidence: 0.8, band: 'high' }),
     } as never);
 
     await run();
 
-    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('buyer');
+    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('admin');
     expect(document.documentElement.getAttribute('data-sentient-confidence')).toBe('high');
     expect(document.getElementById('hero')!.getAttribute('data-tone')).toBe('urgent');
 
     const snap = readSnapshot('pk_test');
     expect(snap).not.toBeNull();
     expect(snap!.slots).toEqual({ hero: { tone: 'urgent' } });
-    expect(snap!.persona).toBe('buyer');
+    expect(snap!.persona).toBe('admin');
   });
 });
 
@@ -102,11 +119,11 @@ describe('run — window.SentientSnippet global', () => {
   function mockDecided() {
     const decide = vi.fn().mockResolvedValue({
       layoutOrder: null, assignments: {},
-      slots: { hero: { tone: 'urgent' } }, persona: 'buyer', confidence: 0.8,
+      slots: { hero: { tone: 'urgent' } }, persona: 'admin', confidence: 0.8,
     });
     mockInit.mockReturnValue({
       decide,
-      getPersona: vi.fn().mockReturnValue({ persona: 'buyer', confidence: 0.8, band: 'high' }),
+      getPersona: vi.fn().mockReturnValue({ persona: 'admin', confidence: 0.8, band: 'high' }),
       goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(),
     } as never);
     return decide;
@@ -120,7 +137,7 @@ describe('run — window.SentientSnippet global', () => {
     expect(typeof api.componentGoal).toBe('function');
     expect(typeof api.reapply).toBe('function');
     const state = (api.getState as () => { persona: string; slots: unknown; matchCounts: Record<string, number> })();
-    expect(state.persona).toBe('buyer');
+    expect(state.persona).toBe('admin');
     expect(state.slots).toEqual({ hero: { tone: 'urgent' } });
     expect(state.matchCounts.hero).toBe(1);
   });
@@ -220,11 +237,11 @@ describe('run — registry boot', () => {
       layoutOrder: null, assignments: {},
       slots: { hero: 'urgent' },
       slotConfig: { hero: { kind: 'arms', target: '#hero', content: 'Act now' } },
-      persona: 'buyer', confidence: 0.8,
+      persona: 'admin', confidence: 0.8,
     });
     mockInit.mockReturnValue({
       decide,
-      getPersona: vi.fn().mockReturnValue({ persona: 'buyer', confidence: 0.8, band: 'high' }),
+      getPersona: vi.fn().mockReturnValue({ persona: 'admin', confidence: 0.8, band: 'high' }),
     } as never);
 
     await run();
@@ -242,12 +259,275 @@ describe('run — registry boot', () => {
   it('does not send slotsFrom when slots are declared (classic mode)', async () => {
     (window as Window).sentient = CONFIG; // declares hero slot
     const decide = vi.fn().mockResolvedValue({
-      layoutOrder: null, assignments: {}, slots: { hero: { tone: 'urgent' } }, persona: 'buyer', confidence: 0.8,
+      layoutOrder: null, assignments: {}, slots: { hero: { tone: 'urgent' } }, persona: 'admin', confidence: 0.8,
     });
     mockInit.mockReturnValue({ decide, getPersona: vi.fn().mockReturnValue(null) } as never);
 
     await run();
     expect(decide.mock.calls[0]![0].slotsFrom).toBeUndefined();
+  });
+});
+
+describe('run — registry decides only components on this page (phantom trials)', () => {
+  // Every decided registry component is a close-out trial. Deciding components
+  // whose element is not on the page diluted every component's learning, and
+  // reporting their absence as a locator miss auto-suspended healthy ones.
+  const EMPTY = { layoutOrder: null, assignments: {}, slots: {}, persona: 'unknown', confidence: 0 };
+  const missCalls = () =>
+    fetchMock.mock.calls
+      .filter(([url]) => String(url).endsWith('/v1/locator-miss'))
+      .map(([, init]) => JSON.parse((init as { body: string }).body).slots as string[]);
+  function registryClient(decide: ReturnType<typeof vi.fn>): void {
+    mockInit.mockReturnValue({
+      decide, getPersona: vi.fn().mockReturnValue(null),
+      goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(),
+    } as never);
+  }
+  beforeEach(() => { (window as Window).sentient = { apiKey: 'pk_test' }; });
+
+  it('sends only resolvable ids; <html> components always; an absent unscoped one is neither decided nor a miss', async () => {
+    document.body.innerHTML = '<section id="hero">Hi</section>';
+    publishedLocators = [
+      { id: 'hero', kind: 'arms', locator: { v: 1, id: 'hero', fingerprint: { tag: 'section' } } },
+      { id: 'site-tone', kind: 'tokens', locator: null },
+      { id: 'plans', kind: 'arms', locator: { v: 1, id: 'plans' } }, // lives on another page, unscoped
+    ];
+    const decide = vi.fn().mockResolvedValue(EMPTY);
+    registryClient(decide);
+
+    await run();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.sentient-ui.com/v1/registry/locators',
+      expect.objectContaining({ headers: { authorization: 'Bearer pk_test' } }),
+    );
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(decide.mock.calls[0]![0]).toMatchObject({ slotsFrom: 'registry', registrySlotIds: ['hero', 'site-tone'] });
+    expect(decide.mock.calls[0]![0].bootstrap).toBeUndefined(); // goals + section map still needed
+    expect(missCalls()).toEqual([]);
+  });
+
+  it('classifies misses when the watch window ends: scoped here and absent, or present but rejected; never scoped elsewhere', async () => {
+    vi.useFakeTimers();
+    try {
+      document.body.innerHTML = '<section id="hero">Hi</section>';
+      publishedLocators = [
+        { id: 'faq', kind: 'arms', locator: { v: 1, id: 'faq', page: '/' } }, // expected here, absent
+        { id: 'cta', kind: 'arms', locator: { v: 1, id: 'hero', fingerprint: { tag: 'button' } } }, // there, wrong element
+        { id: 'plans', kind: 'arms', locator: { v: 1, id: 'plans', page: '/pricing' } }, // expected elsewhere
+        { id: 'promo', kind: 'arms', locator: { v: 1, id: 'hero', urlMatch: '/pricing' } }, // URL-scoped out
+      ];
+      const decide = vi.fn().mockResolvedValue(EMPTY);
+      registryClient(decide);
+
+      await run();
+      expect(decide.mock.calls[0]![0].registrySlotIds).toEqual([]);
+
+      // A hydrating page may still render them: no page-scoped miss yet.
+      await vi.advanceTimersByTimeAsync(2900);
+      expect(missCalls()).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(missCalls()).toEqual([['faq', 'cta']]);
+      expect(decide).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a failed locators request decides nothing and applies nothing — never an unscoped decide', async () => {
+    publishedLocators = null;
+    // Even a response that ignores registrySlotIds must not apply what was not asked for.
+    const decide = vi.fn().mockResolvedValue({
+      ...EMPTY,
+      slots: { hero: 'urgent' },
+      slotConfig: { hero: { kind: 'arms', target: '#hero', content: 'Act now' } },
+      goals: [{ goalId: 'demo', event: 'click', locator: { id: 'hero' } }],
+    });
+    registryClient(decide);
+
+    await run();
+
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(decide.mock.calls[0]![0]).toMatchObject({ slotsFrom: 'registry', registrySlotIds: [] });
+    const hero = document.getElementById('hero')!;
+    expect(hero.getAttribute('data-sentient-arm')).toBeNull();
+    expect(hero.textContent).toBe('');
+    expect(readSnapshot('pk_test')!.slotConfig).toBeUndefined();
+    // Bootstrap still happened: capture started.
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+  });
+
+  describe('late render (hydration / client routing)', () => {
+    const LOCATORS = () => [
+      { id: 'hero', kind: 'arms', locator: { v: 1, id: 'hero' } },
+      { id: 'plans', kind: 'arms', locator: { v: 1, id: 'plans' } },
+      { id: 'faq', kind: 'arms', locator: { v: 1, id: 'faq', page: '/pricing' } },
+    ];
+    const CONFIGS: Record<string, unknown> = {
+      hero: { kind: 'arms', locator: { v: 1, id: 'hero' }, content: 'Hero copy' },
+      plans: { kind: 'arms', locator: { v: 1, id: 'plans' }, content: 'Plans copy' },
+    };
+    function echoDecide() {
+      const decide = vi.fn(async (input: { registrySlotIds: string[] }) => ({
+        ...EMPTY,
+        slots: Object.fromEntries(input.registrySlotIds.map((id) => [id, 'b'])),
+        slotConfig: Object.fromEntries(input.registrySlotIds.map((id) => [id, CONFIGS[id]])),
+      }));
+      registryClient(decide);
+      return decide;
+    }
+    function addPlans(): void {
+      const el = document.createElement('div');
+      el.id = 'plans';
+      el.textContent = 'Old';
+      document.body.appendChild(el);
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      document.body.innerHTML = '<section id="hero">Hi</section>';
+      publishedLocators = LOCATORS();
+    });
+    afterEach(async () => {
+      window.history.pushState({}, '', '/');
+      await vi.advanceTimersByTimeAsync(WINDOW_END); // settle debounces and watch windows
+      vi.useRealTimers();
+    });
+    const WINDOW_END = 3000;
+
+    it('a component rendered after DOMContentLoaded, within the window, is decided and applied', async () => {
+      const decide = echoDecide();
+      await run();
+      expect(decide.mock.calls[0]![0].registrySlotIds).toEqual(['hero']);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      addPlans();
+      await vi.advanceTimersByTimeAsync(100); // observer debounce
+
+      expect(decide).toHaveBeenCalledTimes(2);
+      expect(decide.mock.calls[1]![0]).toMatchObject({ slotsFrom: 'registry', registrySlotIds: ['plans'] });
+      expect(document.getElementById('plans')!.textContent).toBe('Plans copy');
+      expect(document.getElementById('hero')!.textContent).toBe('Hero copy');
+      expect(Object.keys(readSnapshot('pk_test')!.slotConfig!)).toEqual(['hero', 'plans']);
+    });
+
+    it('a component rendered after the window ends is not decided', async () => {
+      const decide = echoDecide();
+      await run();
+      await vi.advanceTimersByTimeAsync(WINDOW_END + 100);
+      addPlans();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(decide).toHaveBeenCalledTimes(1);
+      expect(document.getElementById('plans')!.textContent).toBe('Old');
+    });
+
+    it('SPA navigation decides newly-resolving components once, merged, persisted; misses wait for the window', async () => {
+      const decide = echoDecide();
+      await run();
+      expect(document.getElementById('hero')!.textContent).toBe('Hero copy');
+
+      document.body.innerHTML = '<section id="hero">Hi</section><div id="plans">Old</div>';
+      window.history.pushState({}, '', '/pricing');
+      await vi.advanceTimersByTimeAsync(150);
+
+      expect(decide).toHaveBeenCalledTimes(2);
+      expect(decide.mock.calls[1]![0]).toMatchObject({ slotsFrom: 'registry', registrySlotIds: ['plans'] });
+      expect(document.getElementById('plans')!.textContent).toBe('Plans copy');
+      expect(document.getElementById('hero')!.getAttribute('data-sentient-arm')).toBe('b');
+      const snap = readSnapshot('pk_test')!;
+      expect(snap.slots).toEqual({ hero: 'b', plans: 'b' });
+      expect(Object.keys(snap.slotConfig!)).toEqual(['hero', 'plans']);
+      // faq is expected on /pricing but may still render: reported only at window end.
+      expect(missCalls()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(WINDOW_END);
+      expect(missCalls()).toEqual([['faq']]);
+
+      // Back to a path where everything that resolves is already decided.
+      window.history.pushState({}, '', '/');
+      await vi.advanceTimersByTimeAsync(WINDOW_END + 100);
+      expect(decide).toHaveBeenCalledTimes(2);
+    });
+
+    it('a decided, page-scoped component gets the whole window to re-render after navigation before it is a miss', async () => {
+      // /pricing's component was decided during an earlier visit to /pricing;
+      // navigating back runs the first check before the router has rendered.
+      // "Decided" is not "pending", so the window used to end on that first
+      // check and beacon a miss for a component that rendered 200ms later.
+      publishedLocators = [
+        { id: 'hero', kind: 'arms', locator: { v: 1, id: 'hero' } },
+        { id: 'plans', kind: 'arms', locator: { v: 1, id: 'plans', page: '/pricing' } },
+      ];
+      const decide = echoDecide();
+      await run();
+
+      document.body.innerHTML = '<section id="hero">Hi</section><div id="plans">Old</div>';
+      window.history.pushState({}, '', '/pricing');
+      await vi.advanceTimersByTimeAsync(150);
+      expect(decide.mock.calls[1]![0].registrySlotIds).toEqual(['plans']);
+
+      // Away, then back — the router renders /pricing's content a beat later.
+      document.body.innerHTML = '<section id="hero">Hi</section>';
+      window.history.pushState({}, '', '/about');
+      await vi.advanceTimersByTimeAsync(WINDOW_END + 100);
+      window.history.pushState({}, '', '/pricing');
+      await vi.advanceTimersByTimeAsync(100);
+      expect(missCalls()).toEqual([]);
+      document.body.innerHTML = '<section id="hero">Hi</section><div id="plans">Old</div>';
+      await vi.advanceTimersByTimeAsync(WINDOW_END + 100);
+
+      expect(missCalls()).toEqual([]);
+      expect(decide).toHaveBeenCalledTimes(2); // sticky — no re-decide
+      expect(document.getElementById('plans')!.textContent).toBe('Plans copy');
+    });
+
+    it('a legacy bare-selector component matching several elements is decided (apply writes them all)', async () => {
+      // The server synthesizes { selector } for a Phase-2 string target; apply()
+      // stamps every match for that target, so requiring exactly one match at
+      // scan time silently stopped serving it after the page-scope upgrade.
+      document.body.innerHTML = '<a class="cta">A</a><a class="cta">B</a>';
+      publishedLocators = [{ id: 'ctas', kind: 'arms', locator: { selector: '.cta' } }];
+      const decide = vi.fn(async (_input: { registrySlotIds: string[] }) => ({
+        ...EMPTY,
+        slots: { ctas: 'bold' },
+        slotConfig: { ctas: { kind: 'arms', target: '.cta', content: 'Go' } },
+      }));
+      registryClient(decide);
+      await run();
+
+      expect(decide.mock.calls[0]![0].registrySlotIds).toEqual(['ctas']);
+      const els = Array.from(document.querySelectorAll('.cta'));
+      expect(els.map((e) => e.getAttribute('data-sentient-arm'))).toEqual(['bold', 'bold']);
+      await vi.advanceTimersByTimeAsync(WINDOW_END + 100);
+      expect(missCalls()).toEqual([]);
+    });
+
+    it('navigation disconnects the previous page’s observer', async () => {
+      const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+      try {
+        echoDecide();
+        await run(); // plans + faq unresolved → watching
+        expect(disconnect).not.toHaveBeenCalled();
+
+        window.history.pushState({}, '', '/about');
+        await vi.advanceTimersByTimeAsync(60); // reapply debounce, well inside the window
+        expect(disconnect).toHaveBeenCalledTimes(1);
+      } finally {
+        disconnect.mockRestore();
+      }
+    });
+  });
+
+  it('declared-slot mode never fetches locators', async () => {
+    (window as Window).sentient = CONFIG;
+    const decide = vi.fn().mockResolvedValue(EMPTY);
+    registryClient(decide);
+
+    await run();
+
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/v1/registry/locators'), expect.anything());
+    expect(decide.mock.calls[0]![0].registrySlotIds).toBeUndefined();
   });
 });
 
@@ -322,20 +602,20 @@ describe('run — editor mode', () => {
 
 describe('parsePersonaPreview', () => {
   it('reads the persona key from the URL', () => {
-    expect(parsePersonaPreview('?sentient_persona=buyer')).toBe('buyer');
+    expect(parsePersonaPreview('?sentient_persona=admin')).toBe('admin');
     expect(parsePersonaPreview('?foo=bar')).toBeNull();
   });
 });
 
 describe('run — persona preview', () => {
   it('simulates a persona via /v1/explain, event-free (no init, no tracking, no snapshot)', async () => {
-    window.history.pushState({}, '', '/?sentient_persona=buyer');
+    window.history.pushState({}, '', '/?sentient_persona=admin');
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         slots: { hero: { tone: 'urgent' } },
-        persona: 'buyer',
-        personaAttributes: { persona: 'buyer', confidence: 'high' },
+        persona: 'admin',
+        personaAttributes: { persona: 'admin', confidence: 'high' },
       }),
     });
     const origFetch = global.fetch;
@@ -356,7 +636,7 @@ describe('run — persona preview', () => {
       );
       // Simulated content is applied to the page.
       expect(document.getElementById('hero')!.getAttribute('data-tone')).toBe('urgent');
-      expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('buyer');
+      expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('admin');
       // The "Exit preview" affordance is shown.
       expect(document.getElementById('sentient-persona-preview-banner')).not.toBeNull();
     } finally {
@@ -366,10 +646,10 @@ describe('run — persona preview', () => {
   });
 
   it('registry-mode sites (no declared slots) ask the server for their published slots', async () => {
-    window.history.pushState({}, '', '/?sentient_persona=researcher');
+    window.history.pushState({}, '', '/?sentient_persona=evaluator');
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ slots: {}, slotConfig: {}, persona: 'researcher', personaAttributes: { persona: 'researcher', confidence: 'high' } }),
+      json: async () => ({ slots: {}, slotConfig: {}, persona: 'evaluator', personaAttributes: { persona: 'evaluator', confidence: 'high' } }),
     });
     const origFetch = global.fetch;
     global.fetch = fetchMock as never;
@@ -381,7 +661,7 @@ describe('run — persona preview', () => {
 
       expect(mockInit).not.toHaveBeenCalled();
       const sent = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
-      expect(sent).toEqual({ persona: 'researcher', slotsFrom: 'registry' });
+      expect(sent).toEqual({ persona: 'evaluator', slotsFrom: 'registry' });
     } finally {
       global.fetch = origFetch;
       window.history.pushState({}, '', '/');
@@ -467,9 +747,9 @@ describe('run — section reordering (B1.1)', () => {
   function client(layoutOrder: string[] | null) {
     return {
       decide: vi.fn().mockResolvedValue({
-        layoutOrder, assignments: {}, slots: {}, persona: 'buyer', confidence: 0.8,
+        layoutOrder, assignments: {}, slots: {}, persona: 'admin', confidence: 0.8,
       }),
-      getPersona: vi.fn().mockReturnValue({ persona: 'buyer', confidence: 0.8, band: 'high' }),
+      getPersona: vi.fn().mockReturnValue({ persona: 'admin', confidence: 0.8, band: 'high' }),
       goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(),
     };
   }
@@ -530,7 +810,7 @@ describe('run — section reordering (B1.1)', () => {
   it('pre-paints the cached snapshot order even when decide never confirms it', async () => {
     sectionsDom();
     writeSnapshot('pk_test', {
-      v: 1, persona: 'buyer', band: 'high', slots: {},
+      v: 1, persona: 'admin', band: 'high', slots: {},
       layoutOrder: ['#s2', '#s3', '#s1'], savedAt: Date.now(),
     } as never);
     (window as Window).sentient = { apiKey: 'pk_test', registry: false, sections: SECTIONS };
@@ -548,7 +828,7 @@ describe('run — section reordering (B1.1)', () => {
   it('a cached order that no longer matches the page/config applies nothing', async () => {
     sectionsDom();
     writeSnapshot('pk_test', {
-      v: 1, persona: 'buyer', band: 'high', slots: {},
+      v: 1, persona: 'admin', band: 'high', slots: {},
       layoutOrder: ['#s2', '#gone', '#s1'], savedAt: Date.now(),
     } as never);
     (window as Window).sentient = { apiKey: 'pk_test', registry: false, sections: SECTIONS };
@@ -601,17 +881,17 @@ describe('run — registry slotConfig lifecycle (audit: cached config never clea
     // longer publishes it (decide returns no slotConfig) — the cached config must
     // be dropped, not re-applied and re-persisted.
     writeSnapshot('pk_test', {
-      v: 1, persona: 'buyer', band: 'high',
+      v: 1, persona: 'admin', band: 'high',
       slots: { hero: 'urgent' }, layoutOrder: null, savedAt: Date.now(),
       slotConfig: { hero: { kind: 'arms', target: '#hero', content: 'Old copy' } },
     } as never);
     (window as Window).sentient = { apiKey: 'pk_test' }; // registry mode
     mockInit.mockReturnValue({
       decide: vi.fn().mockResolvedValue({
-        layoutOrder: null, assignments: {}, slots: { hero: 'urgent' }, persona: 'buyer', confidence: 0.8,
+        layoutOrder: null, assignments: {}, slots: { hero: 'urgent' }, persona: 'admin', confidence: 0.8,
         // no slotConfig
       }),
-      getPersona: vi.fn().mockReturnValue({ persona: 'buyer', confidence: 0.8, band: 'high' }),
+      getPersona: vi.fn().mockReturnValue({ persona: 'admin', confidence: 0.8, band: 'high' }),
       goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(),
     } as never);
 
@@ -631,7 +911,7 @@ describe('run — reapply during the decide window (audit: stale-content flash)'
     // confirms, it must NOT restamp the (possibly stale) copy — a decide timeout
     // would otherwise leave it stuck for the whole visit.
     writeSnapshot('pk_test', {
-      v: 1, persona: 'buyer', band: 'high',
+      v: 1, persona: 'admin', band: 'high',
       slots: { hero: 'urgent' }, layoutOrder: null, savedAt: Date.now(),
       slotConfig: { hero: { kind: 'arms', target: '#hero', content: 'Stale copy' } },
     } as never);
@@ -709,9 +989,9 @@ describe('run — grantConsent starts capture for a consent-after-load visitor (
     (window as Window).sentient = { ...CONFIG, consent: false };
     mockInit.mockReturnValue({
       decide: vi.fn().mockResolvedValue({
-        layoutOrder: null, assignments: {}, slots: { hero: { tone: 'urgent' } }, persona: 'buyer', confidence: 0.8,
+        layoutOrder: null, assignments: {}, slots: { hero: { tone: 'urgent' } }, persona: 'admin', confidence: 0.8,
       }),
-      getPersona: vi.fn().mockReturnValue({ persona: 'buyer', confidence: 0.8, band: 'high' }),
+      getPersona: vi.fn().mockReturnValue({ persona: 'admin', confidence: 0.8, band: 'high' }),
       goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(),
     } as never);
 
@@ -764,9 +1044,9 @@ describe('run — reapply always detaches prior-page slot detectors (audit: SPA 
         layoutOrder: null, assignments: {},
         slots: { hero: 'urgent' },
         slotConfig: { hero: { kind: 'arms', target: '#hero', content: 'Act now' } },
-        persona: 'buyer', confidence: 0.8,
+        persona: 'admin', confidence: 0.8,
       }),
-      getPersona: vi.fn().mockReturnValue({ persona: 'buyer', confidence: 0.8, band: 'high' }),
+      getPersona: vi.fn().mockReturnValue({ persona: 'admin', confidence: 0.8, band: 'high' }),
       goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(),
     } as never);
 
@@ -791,7 +1071,7 @@ describe('run — reapply always detaches prior-page slot detectors (audit: SPA 
 describe('run — snapshot round-trip (pre-paint on return visit)', () => {
   it('applies a previously written snapshot even when decide fails', async () => {
     writeSnapshot('pk_test', {
-      v: 1, persona: 'deal_seeker', band: 'medium',
+      v: 1, persona: 'trial_user', band: 'medium',
       slots: { hero: { tone: 'calm' } }, layoutOrder: null, savedAt: Date.now(),
     });
     mockInit.mockReturnValue({
@@ -802,7 +1082,7 @@ describe('run — snapshot round-trip (pre-paint on return visit)', () => {
     await run();
 
     // Pre-paint application from the snapshot survives the failed decide.
-    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('deal_seeker');
+    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('trial_user');
     expect(document.documentElement.getAttribute('data-sentient-confidence')).toBe('medium');
     expect(document.getElementById('hero')!.getAttribute('data-tone')).toBe('calm');
   });
@@ -918,7 +1198,7 @@ describe('run — late decide after the timeout (audit SNIP-18: timeout meant to
     const goal = vi.fn();
     mockInit.mockReturnValue({
       decide: vi.fn(() => new Promise((res) => { resolveDecide = res; })),
-      getPersona: vi.fn().mockReturnValue({ persona: 'buyer', confidence: 0.8, band: 'high' }),
+      getPersona: vi.fn().mockReturnValue({ persona: 'admin', confidence: 0.8, band: 'high' }),
       goal, componentGoal: vi.fn(), destroy: vi.fn(),
     } as never);
     return { resolve: (v: unknown) => resolveDecide(v), goal };
@@ -928,7 +1208,7 @@ describe('run — late decide after the timeout (audit SNIP-18: timeout meant to
     layoutOrder: null, assignments: {},
     slots: { hero: 'urgent' },
     slotConfig: { hero: { kind: 'arms', target: '#hero', content: 'Act now' } },
-    persona: 'buyer', confidence: 0.8,
+    persona: 'admin', confidence: 0.8,
     goals: [{ goalId: 'demo', event: 'click', locator: { id: 'cta' } }],
   };
 
@@ -961,7 +1241,7 @@ describe('run — late decide after the timeout (audit SNIP-18: timeout meant to
       const snap = readSnapshot('pk_test');
       expect(snap).not.toBeNull();
       expect(snap!.slots).toEqual({ hero: 'urgent' });
-      expect(snap!.persona).toBe('buyer');
+      expect(snap!.persona).toBe('admin');
     } finally {
       vi.useRealTimers();
     }
@@ -1035,7 +1315,7 @@ describe('run — inline pre-paint hand-off (spec 2026-09-07 §3.4)', () => {
     hero.setAttribute('data-tone', 'urgent');
     seedPrePaint({ stamped: [[hero, 'data-tone', null]] });
     writeSnapshot('pk_test', {
-      v: 1, persona: 'deal_seeker', band: 'medium',
+      v: 1, persona: 'trial_user', band: 'medium',
       slots: { hero: { tone: 'urgent' } }, layoutOrder: null, savedAt: Date.now(),
     });
     offlineClient();
@@ -1054,7 +1334,7 @@ describe('run — inline pre-paint hand-off (spec 2026-09-07 §3.4)', () => {
     document.body.appendChild(stranger);
     seedPrePaint({ stamped: [[stranger, 'data-tone', null]] });
     writeSnapshot('pk_test', {
-      v: 1, persona: 'deal_seeker', band: 'medium',
+      v: 1, persona: 'trial_user', band: 'medium',
       slots: { hero: { tone: 'urgent' } }, layoutOrder: null, savedAt: Date.now(),
     });
     offlineClient();
@@ -1082,11 +1362,11 @@ describe('run — inline pre-paint hand-off (spec 2026-09-07 §3.4)', () => {
     // personaAttributes is not `true` here, so our pass writes nothing on <html>
     // — the inline script's looser truthiness check must not outlive it.
     (window as Window).sentient = { ...CONFIG, personaAttributes: 1 };
-    document.documentElement.setAttribute('data-sentient-persona', 'deal_seeker');
+    document.documentElement.setAttribute('data-sentient-persona', 'trial_user');
     document.documentElement.setAttribute('data-sentient-confidence', 'medium');
     seedPrePaint({ html: ['data-sentient-persona', 'data-sentient-confidence'] });
     writeSnapshot('pk_test', {
-      v: 1, persona: 'deal_seeker', band: 'medium',
+      v: 1, persona: 'trial_user', band: 'medium',
       slots: {}, layoutOrder: null, savedAt: Date.now(),
     });
     offlineClient();
@@ -1111,7 +1391,7 @@ describe('run — inline pre-paint hand-off (spec 2026-09-07 §3.4)', () => {
   it('ignores a malformed record without breaking the visit', async () => {
     (window as unknown as { __sntPP?: unknown }).__sntPP = { v: 1, stamped: 'not an array', html: 7 };
     writeSnapshot('pk_test', {
-      v: 1, persona: 'deal_seeker', band: 'medium',
+      v: 1, persona: 'trial_user', band: 'medium',
       slots: { hero: { tone: 'calm' } }, layoutOrder: null, savedAt: Date.now(),
     });
     offlineClient();
@@ -1128,7 +1408,7 @@ describe('run — inline pre-paint hand-off (spec 2026-09-07 §3.4)', () => {
 
   it('reports the inline contract version on decide, and 0 for a two-tag install', async () => {
     const decide = vi.fn().mockResolvedValue({
-      layoutOrder: null, assignments: {}, slots: {}, persona: 'buyer', confidence: 0.8,
+      layoutOrder: null, assignments: {}, slots: {}, persona: 'admin', confidence: 0.8,
     });
     mockInit.mockReturnValue({ decide, getPersona: vi.fn().mockReturnValue(null) } as never);
 

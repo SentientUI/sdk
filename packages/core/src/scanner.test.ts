@@ -171,6 +171,43 @@ describe('createDOMScanner', () => {
     vi.stubGlobal('requestIdleCallback', orig);
   });
 
+  it('declared sectionTypes win over data-sentient-type markup and the classifier', async () => {
+    // A contact band with a form and little copy classifies `generic`; the
+    // declaration is how an integrator fixes that without extra markup.
+    document.body.innerHTML = `
+      <section data-sentient-id="about"><p>We have been in business since 1998.</p></section>
+      <section data-sentient-id="legacy" data-sentient-type="features"><p>Plain text.</p></section>
+      <section data-sentient-id="both" data-sentient-type="features"><p>Plain text.</p></section>
+      <section data-sentient-id="bogus"><p>Plain text.</p></section>
+    `;
+    const scanner = createDOMScanner({
+      sectionTypes: { about: 'trust', both: 'cta', bogus: 'not_a_type' },
+    });
+    const { nodes } = await scanner.scan();
+    const typeOf = (id: string) => nodes.find((n) => n.componentId === id)?.semanticType;
+    expect(typeOf('about')).toBe('trust');
+    expect(typeOf('legacy')).toBe('features');
+    expect(typeOf('both')).toBe('cta');
+    // Out-of-vocabulary declarations fall through instead of violating the
+    // graph_nodes CHECK constraint.
+    expect(typeOf('bogus')).toBe('generic');
+    scanner.destroy();
+  });
+
+  it('declared sectionTypes apply to sections inserted after the initial scan', async () => {
+    document.body.innerHTML = '<main></main>';
+    const scanner = createDOMScanner({ sectionTypes: { late: 'faq' } });
+    await scanner.scan();
+    const events: Array<{ nodes: Array<{ componentId: string; semanticType: string }> }> = [];
+    scanner.observe((e) => events.push(e));
+    const el = document.createElement('section');
+    el.setAttribute('data-sentient-id', 'late');
+    document.querySelector('main')!.appendChild(el);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(events.flatMap((e) => e.nodes).find((n) => n.componentId === 'late')?.semanticType).toBe('faq');
+    scanner.destroy();
+  });
+
   it('detectStructuralEdges dedups: nested registered components produce one parent→child edge', async () => {
     document.body.innerHTML = `
       <section data-sentient-id="parent-1" aria-label="p">

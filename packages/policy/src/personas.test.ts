@@ -1,61 +1,41 @@
 import { describe, expect, it } from 'vitest';
-import {
-  PERSONAS,
-  UNKNOWN_PERSONA,
-  PERSONA_DISPLAY,
-  LEGACY_PERSONA_MAP,
-  canonicalPersona,
-} from './personas';
+import * as policy from './index';
+import { UNKNOWN_PERSONA, UNKNOWN_PERSONA_DISPLAY } from './personas';
+import { canonicalPersona } from './vocabulary';
 
-describe('PERSONAS', () => {
-  it('is the pinned canonical vocabulary, in order', () => {
-    expect(PERSONAS).toEqual(['buyer', 'researcher', 'deal_seeker', 'browser']);
-  });
-
-  it('UNKNOWN_PERSONA is "unknown" and is not a learnable persona', () => {
+describe('UNKNOWN_PERSONA', () => {
+  it('is "unknown", displayed as "Unknown"', () => {
     expect(UNKNOWN_PERSONA).toBe('unknown');
-    expect(PERSONAS as readonly string[]).not.toContain('unknown');
+    expect(UNKNOWN_PERSONA_DISPLAY).toBe('Unknown');
   });
-});
 
-describe('PERSONA_DISPLAY', () => {
-  it('has the pinned display name for every persona key', () => {
-    expect(PERSONA_DISPLAY).toEqual({
-      buyer: 'Buyer',
-      researcher: 'Researcher',
-      deal_seeker: 'Deal seeker',
-      browser: 'Browser',
-      unknown: 'Unknown',
-    });
+  it('the package ships no persona list, display table, or name-keyed layout table', () => {
+    // Removed 2026-09-13 with the seeded personas. A persona vocabulary is a
+    // property of the customer's project, never of this package.
+    for (const name of ['PERSONAS', 'PERSONA_DISPLAY', 'LEGACY_PERSONA_MAP', 'CLUSTER_PRIORITY']) {
+      expect(policy).not.toHaveProperty(name);
+    }
   });
 });
 
 describe('canonicalPersona', () => {
-  it('maps legacy plural/hyphen labels to canonical personas', () => {
-    expect(canonicalPersona('buyers')).toBe('buyer');
-    expect(canonicalPersona('researchers')).toBe('researcher');
-    expect(canonicalPersona('deal-seekers')).toBe('deal_seeker');
-    expect(canonicalPersona('browsers')).toBe('browser');
+  it('passes any key-shaped label through, normalized', () => {
+    expect(canonicalPersona('admin')).toBe('admin');
+    expect(canonicalPersona(' Power_User ')).toBe('power_user');
+    expect(canonicalPersona('trial-user')).toBe('trial-user');
   });
 
-  it('is the identity on canonical labels', () => {
-    for (const p of PERSONAS) expect(canonicalPersona(p)).toBe(p);
+  it('does not remap plurals — no label is special-cased by name', () => {
+    expect(canonicalPersona('admins')).toBe('admins');
   });
 
-  it('returns unknown for null, undefined, empty, and unrecognized labels', () => {
+  it('returns unknown for null, empty, structural, and non-key-shaped labels', () => {
     expect(canonicalPersona(null)).toBe('unknown');
     expect(canonicalPersona(undefined)).toBe('unknown');
     expect(canonicalPersona('')).toBe('unknown');
     expect(canonicalPersona('unknown')).toBe('unknown');
-    expect(canonicalPersona('power-user')).toBe('unknown');
-  });
-
-  it('normalizes case and surrounding whitespace', () => {
-    expect(canonicalPersona(' Buyers ')).toBe('buyer');
-    expect(canonicalPersona('Deal_Seeker')).toBe('deal_seeker');
-  });
-
-  it('LEGACY_PERSONA_MAP includes identity mappings for all canonical personas', () => {
-    for (const p of PERSONAS) expect(LEGACY_PERSONA_MAP[p]).toBe(p);
+    expect(canonicalPersona('__all__')).toBe('unknown');
+    expect(canonicalPersona('a@b.com')).toBe('unknown');
+    expect(canonicalPersona('two words')).toBe('unknown');
   });
 });

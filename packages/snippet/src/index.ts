@@ -1,11 +1,11 @@
-import { init, grantConsent as coreGrantConsent, isDoNotTrackEnabled, readSnapshot, writeSnapshot, type CompoundLocator, type DecideOutcome, type GoalDefinition, type SentientClient, type SlotConfigEntry } from '@sentientui/core';
+import { init, grantConsent as coreGrantConsent, isDoNotTrackEnabled, readSnapshot, writeSnapshot, type CompoundLocator, type DecideOutcome, type DecisionSnapshot, type GoalDefinition, type SentientClient, type SlotConfigEntry } from '@sentientui/core';
 import { startEngagementCapture, type SemanticType } from '@sentientui/core/engagement';
 import { parseSnippetConfig, type SnippetConfig } from './config';
 import { applyPersonaAttributes, applySlotAttributes, applySlotArms, applyRegistrySlots, type AttrSink } from './apply';
 import { setBlockPalette, sweepOrphanBlocks } from './blocks';
 import { attachSlotSignals, type AppliedSlot } from './slot-signals';
 import { installGoalListeners, clearFiredGoals, type GoalListeners } from './goal-wiring';
-import { resolveLocatorOne } from './locator';
+import { isLocatorMiss, locatorOnPage, resolveLocatorOne } from './locator';
 import { planReorder } from './layout-order';
 import type { PrePaintRecord } from './prepaint-script';
 import { cacheEditorToken, readCachedEditorToken } from './editor-token';
@@ -33,6 +33,8 @@ export const version: string =
  * as the project's SDK version, permanently reading as "behind" (audit M12).
  */
 const SDK_IDENT = version !== '0.0.0-dev' ? { name: 'snippet', version } : undefined;
+// Same rule for the decide-path version-skew report (see run()).
+const REPORT_V = version !== '0.0.0-dev' ? { v: version } : {};
 
 const DECIDE_TIMEOUT_MS = 5000;
 const REAPPLY_DEBOUNCE_MS = 50;
@@ -101,6 +103,28 @@ let consentGranted = false;
 // client, and grant must NOT mint a tracking client there).
 let consentRevoked = false;
 
+// --- Registry scoping (phantom trials) -------------------------------------
+// Every decided registry component is a close-out TRIAL (CONTRACTS.md §2). A
+// bare `slotsFrom: 'registry'` decided every published component on every page
+// view, including ones whose element is not on the page, so each component's
+// denominator was diluted by views that could never have shown it. The snippet
+// now resolves the published locators first and decides only what is here.
+type RegistryLocator = { id: string; locator: CompoundLocator | null };
+// Published locators, kept for the page lifetime so SPA navigations can
+// re-resolve without refetching. null = not registry mode, or the fetch failed
+// (then nothing is decided on navigation either — no locators, no trials).
+let registryLocators: RegistryLocator[] | null = null;
+// Registry ids already decided on this page load (initial + SPA decides).
+let decidedIds: string[] = [];
+// The pathname the locator list was last resolved against.
+let routePath: string | null = null;
+// Last snapshot this page load wrote, so an SPA decide can extend it.
+let lastSnap: DecisionSnapshot | null = null;
+// Stops the bounded late-render watch (see watchRoute), or null when idle.
+let stopWatch: (() => void) | null = null;
+const WATCH_MS = 3000;
+const WATCH_DEBOUNCE_MS = 100;
+
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
   // Clear the timer once the race settles either way: a fast decide otherwise
   // left the 5s timeout callback (and its closure) pinned alive on every page
@@ -133,7 +157,14 @@ function applyAll(
   applySlotArms(activeSlots, activeCfg.slots, doc, opts?.onAttr);
   // Registry-mode slots carry their own target/content (no page-declared decl).
   // Returns the slot ids whose locator found nothing (a health signal).
-  if (activeSlotConfig) return applyRegistrySlots(activeSlots, activeSlotConfig, doc, opts);
+  if (activeSlotConfig) {
+    // Persona rides along as reveal provenance — recorded on the element as a
+    // data attribute for devtools and the editor, never rendered to a visitor.
+    return applyRegistrySlots(activeSlots, activeSlotConfig, doc, {
+      ...opts,
+      ...(activePersona ? { persona: activePersona.persona } : {}),
+    });
+  }
   // No registry config at all: the project reverted to code-declared slots, or
   // decide answered without one. A pre-paint pass may still have applied blocks
   // from the snapshot and hidden the merchant's own content, and nothing else
@@ -252,12 +283,150 @@ function ingestUrlFrom(cfg: SnippetConfig): string | undefined {
   return cfg.apiBase ? `${cfg.apiBase.replace(/\/+$/, '')}/v1/events` : undefined;
 }
 
+function apiBase(cfg: SnippetConfig): string {
+  return cfg.apiBase ?? 'https://api.sentient-ui.com';
+}
+
+/** The project's published component locators, or null on any failure. */
+function fetchLocators(cfg: SnippetConfig): Promise<RegistryLocator[] | null> {
+  return Promise.resolve()
+    .then(() => fetch(`${apiBase(cfg)}/v1/registry/locators`, { headers: { authorization: `Bearer ${cfg.apiKey}` } }))
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d: { slots?: unknown } | null) => (Array.isArray(d?.slots) ? (d!.slots as RegistryLocator[]) : null))
+    .catch(() => null);
+}
+
+/** [ids whose element is on this page, ids whose absence is a locator miss].
+ *  `locator: null` targets <html>, which is always on the page. */
+function scanLocators(list: RegistryLocator[], doc: Document): [string[], string[]] {
+  const on: string[] = [];
+  const missed: string[] = [];
+  for (const s of list) {
+    try {
+      if (typeof s?.id !== 'string') continue;
+      if (!s.locator || locatorOnPage(s.locator, doc)) on.push(s.id);
+      else if (isLocatorMiss(s.locator, doc)) missed.push(s.id);
+    } catch { /* fail-safe — a malformed entry is neither decided nor a miss */ }
+  }
+  return [on, missed];
+}
+
+/** Only the ids this page asked the server about, or null when none came back.
+ *  The server already scopes to registrySlotIds; filtering here too keeps "not
+ *  decided ⇒ not applied" true against a response that ignored the field. */
+function pickConfig(cfg: Record<string, SlotConfigEntry> | undefined, ids: string[]): Record<string, SlotConfigEntry> | null {
+  let out: Record<string, SlotConfigEntry> | null = null;
+  for (const id of ids) if (cfg?.[id]) (out ??= {})[id] = cfg[id]!;
+  return out;
+}
+
+/**
+ * SPA navigation in registry mode: on a real path change (and once after the
+ * initial decide applies), resolve the cached locator list for this page via
+ * watchRoute. Runs only once the visit is decided — a navigation during the
+ * initial decide is caught up by the call at the end of applyOutcome.
+ */
+function syncRoute(): void {
+  if (!registryLocators || !decided || routePath === window.location.pathname) return;
+  routePath = window.location.pathname;
+  watchRoute();
+}
+
+/**
+ * Resolve the cached locators now and, while published components that are not
+ * decided yet still match nothing, keep watching the DOM for a bounded window.
+ * Hydrating frameworks and client routers render AFTER DOMContentLoaded / the
+ * history call; before page scoping, a late-rendered component still applied on
+ * a later reapply because its config was already there, so resolving only
+ * once would have silently lost it. Newly resolving ids get one claimed scoped
+ * decide per debounced check. Misses are classified once, when the window ends
+ * (or nothing is pending): a slow render is not a page-scoped miss.
+ */
+function watchRoute(): void {
+  stopWatch?.();
+  const cfg = activeCfg;
+  const list = registryLocators;
+  if (!cfg || !list) return;
+  let debounce: ReturnType<typeof setTimeout> | undefined;
+  let obs: MutationObserver | undefined;
+  const stop = (): void => {
+    clearTimeout(debounce);
+    clearTimeout(windowEnd);
+    obs?.disconnect();
+    if (stopWatch === stop) stopWatch = null;
+  };
+  let seenOn: Set<string> | null = null;
+  const check = (final?: boolean): void => {
+    const [on, missed] = scanLocators(list, document);
+    const ids = on.filter((id) => !decidedIds.includes(id));
+    // An ALREADY-decided component that renders late (return to a route it
+    // was decided on earlier): decideLate re-applies only what it decides, and
+    // the route-change reapply ran before the router rendered, so nothing
+    // else would stamp its config. Restamp when such an id newly resolves.
+    if (seenOn !== null && on.some((id) => !seenOn!.has(id) && !ids.includes(id))) reapply();
+    seenOn = new Set(on);
+    if (ids.length > 0) void decideLate(ids).catch(() => undefined);
+    // Pending = still worth waiting for: an undecided component not on the
+    // page yet, OR anything currently classified as a miss. The second clause
+    // matters for ids decided on an EARLIER route: they are not "undecided",
+    // so without it the first check after a client-side navigation — run
+    // before the router has rendered the new page — ended the window at once
+    // and reported the page-scoped, already-decided component as absent.
+    // Same rule for both: a slow render is not a miss; the window end decides.
+    if (final || (missed.length === 0 && !list.some((e) => !on.includes(e.id) && !decidedIds.includes(e.id)))) {
+      stop();
+      reportLocatorMisses(cfg, missed);
+    }
+  };
+  const windowEnd = setTimeout(() => check(true), WATCH_MS);
+  stopWatch = stop;
+  check();
+  // Nothing pending after the first look: no observer at all.
+  if (stopWatch !== stop) return;
+  try {
+    obs = new MutationObserver(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(check, WATCH_DEBOUNCE_MS);
+    });
+    obs.observe(document.documentElement, { childList: true, subtree: true });
+  } catch { /* fail-safe — no observer: the window end still classifies */ }
+}
+
+/** One scoped decide for ids that just resolved, merged into (never replacing)
+ *  the visit's state — the core client keeps earlier ids sticky per session. */
+async function decideLate(ids: string[]): Promise<void> {
+  const cfg = activeCfg;
+  const client = activeClient;
+  if (!cfg || !client) return;
+  // Claimed before the await so a later check cannot decide the same ids
+  // twice; released on failure so a later navigation retries.
+  decidedIds = decidedIds.concat(ids);
+  const out = await withTimeout(
+    client.decide({ slotsFrom: 'registry', registrySlotIds: ids, ...REPORT_V }),
+    DECIDE_TIMEOUT_MS,
+  );
+  if (!out) decidedIds = decidedIds.filter((id) => !ids.includes(id));
+  if (!out || consentRevoked || activeClient !== client) return;
+  activeSlots = { ...activeSlots, ...out.slots };
+  const picked = pickConfig(out.slotConfig, ids);
+  if (picked) activeSlotConfig = { ...activeSlotConfig, ...picked };
+  reapply();
+  dbg(cfg, 'late decide', ids);
+  if (lastSnap) {
+    writeSnapshot(cfg.apiKey, lastSnap = {
+      ...lastSnap,
+      slots: activeSlots,
+      savedAt: Date.now(),
+      ...(activeSlotConfig ? { slotConfig: activeSlotConfig } : {}),
+    });
+  }
+}
+
 /** Best-effort beacon of locator misses so the worker can suspend broken slots. */
 function reportLocatorMisses(cfg: SnippetConfig, slots: string[]): void {
   if (slots.length === 0) return;
   try {
-    const base = cfg.apiBase ?? 'https://api.sentient-ui.com';
-    void fetch(`${base}/v1/locator-miss`, {
+    void fetch(`${apiBase(cfg)}/v1/locator-miss`, {
       method: 'POST',
       keepalive: true,
       headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.apiKey}` },
@@ -389,6 +558,7 @@ function scheduleReapply(): void {
     // Catch url_reached goals on pushState/replaceState navigations (popstate is
     // handled directly by the goal listeners).
     try { goalListeners?.checkUrl(); } catch { /* fail-safe */ }
+    syncRoute();
   }, REAPPLY_DEBOUNCE_MS);
 }
 
@@ -469,7 +639,7 @@ function loadEditor(cfg: SnippetConfig, token: string): void {
   try {
     (window as unknown as { __sentientEditor?: unknown }).__sentientEditor = {
       token,
-      apiBase: cfg.apiBase ?? 'https://api.sentient-ui.com',
+      apiBase: apiBase(cfg),
     };
     // Restrictive referrer policy while the editor is active (defense in depth
     // for the token, Phase 3 §1.4).
@@ -635,7 +805,7 @@ function showPreviewBanner(persona: string, unrecognized?: boolean): void {
  * ask the server for their published slots; declared-slot sites send their own.
  */
 async function previewPersona(cfg: SnippetConfig, persona: string): Promise<void> {
-  const base = cfg.apiBase ?? 'https://api.sentient-ui.com';
+  const base = apiBase(cfg);
   const registryMode = cfg.registry ?? Object.keys(cfg.slots).length === 0;
   const reqBody = registryMode
     ? { persona, slotsFrom: 'registry' as const }
@@ -731,7 +901,6 @@ function exposeGlobal(cfg: SnippetConfig): void {
           // DNT/GPC, so a global opt-out cannot be overridden here.
           activeClient = init({
             apiKey: cfg.apiKey,
-            context: cfg.context,
             consent: true,
             preConsentBehavior: cfg.preConsentBehavior,
             debug: cfg.debug,
@@ -784,6 +953,7 @@ function exposeGlobal(cfg: SnippetConfig): void {
         lastCapturePath = null;
         slotSignalsCleanup?.();
         slotSignalsCleanup = null;
+        stopWatch?.();
         // Tear down the editor-defined goal listeners too — otherwise the
         // delegated click/submit/popstate handlers keep calling goal() on the
         // client we're about to destroy (leak on a destroyed client, audit).
@@ -911,6 +1081,11 @@ export async function run(): Promise<void> {
     consentGranted = false;
     consentRevoked = false;
     activeGoals = null;
+    registryLocators = null;
+    decidedIds = [];
+    routePath = null;
+    lastSnap = null;
+    stopWatch?.();
 
     // Editor mode (?sentient_editor=<token>) — load the on-site editor overlay
     // and stop. No decide, events, snapshot, or slot apply (the editor suppresses
@@ -975,6 +1150,17 @@ export async function run(): Promise<void> {
     // Registry mode: bare `{ apiKey }` (no declared slots) opts in by default;
     // an explicit `registry` flag overrides either way.
     const registryMode = cfg.registry ?? Object.keys(cfg.slots).length === 0;
+    // Declaring ANY slot silently turned dashboard-published versions off: a
+    // site that added one `slots` entry saw its published components stop
+    // applying with no signal at all. The default stays (changing it would flip
+    // serving for existing installs); debug installs at least get told why.
+    if (cfg.registry === undefined && !registryMode) {
+      dbg(cfg, 'slots declared without registry: true, so dashboard-published components are not applied');
+    }
+    // Registry mode: fetch the published locators NOW, in parallel with the
+    // pre-paint pass and core init (decide awaits the session upsert anyway),
+    // so scoping the decide to this page adds no serial round trip.
+    const locatorsPromise = registryMode ? fetchLocators(cfg) : null;
 
     // Hand-off from the inline pre-paint script (spec 2026-09-07 §3.4). Null on
     // a two-tag install — the config-plus-loader install must keep working
@@ -1024,7 +1210,6 @@ export async function run(): Promise<void> {
 
     const client = init({
       apiKey: cfg.apiKey,
-      context: cfg.context,
       consent: cfg.consent,
       preConsentBehavior: cfg.preConsentBehavior,
       debug: cfg.debug,
@@ -1044,7 +1229,7 @@ export async function run(): Promise<void> {
     // Only report a real, released version. The dev sentinel ('0.0.0-dev', used
     // in non-tsup builds) passes the server's semver check and would be persisted
     // as the project's snippet_version, permanently reading as "behind" (audit M12).
-    const reportVersion = version !== '0.0.0-dev' ? { v: version } : {};
+    const reportVersion = REPORT_V;
     // Which inline pre-paint contract this install carries: its version, or 0 for
     // "the two-tag install, no inline script". Rides the same version-skew report
     // so the dashboard's install-health surface can nudge sites that pasted the
@@ -1059,12 +1244,34 @@ export async function run(): Promise<void> {
     // Fewer than two left → nothing to reorder, so the field is omitted and the
     // server's layout machinery never engages.
     const sectionIds = Array.from(resolveSections(document).keys());
+    // Registry ids this page view decides — only components whose element is
+    // on the page (see registryLocators). Resolution waits for DOMContentLoaded
+    // on async/GTM installs: resolving mid-parse would miss not-yet-parsed
+    // elements, silently dropping their trials and reporting false misses.
+    // A failed/timed-out locators fetch decides NOTHING (`[]`), never an
+    // unscoped decide: the visitor sees the original page and no phantom trial
+    // is written, while goals and the section map still bootstrap.
+    let registryIds: string[] = [];
+    if (locatorsPromise) {
+      const [list] = await Promise.all([
+        withTimeout(locatorsPromise, DECIDE_TIMEOUT_MS),
+        document.readyState === 'loading'
+          ? new Promise((res) => document.addEventListener('DOMContentLoaded', res, { once: true }))
+          : null,
+      ]);
+      registryLocators = list;
+      // Misses are NOT reported here: hydrating frameworks render after
+      // DOMContentLoaded, so they are classified when the post-decide watch
+      // window ends (watchRoute), not from this first look.
+      if (list) decidedIds = registryIds = scanLocators(list, document)[0];
+      dbg(cfg, 'registry scope', list && registryIds);
+    }
     const decidePromise = client.decide({
       slots,
       ...reportVersion,
       ...reportPrePaint,
       ...(sectionIds.length >= 2 ? { sections: sectionIds } : {}),
-      ...(registryMode ? { slotsFrom: 'registry' as const } : {}),
+      ...(registryMode ? { slotsFrom: 'registry' as const, registrySlotIds: registryIds } : {}),
     });
     const outcome = await withTimeout(decidePromise, DECIDE_TIMEOUT_MS);
     // Everything downstream of a successful decide, extracted so the late-
@@ -1075,12 +1282,14 @@ export async function run(): Promise<void> {
       if (persona) activePersona = { persona: persona.persona, band: persona.band };
       else if (outcome.persona) activePersona = { persona: outcome.persona, band: 'low' };
       activeSlots = outcome.slots;
-      // Registry mode: adopt the served slotConfig UNCONDITIONALLY (?? null) so a
-      // decide response with no slotConfig CLEARS the cached one — otherwise an
-      // unpublished/removed registry slot from the prior visit's snapshot keeps
-      // being re-applied and re-persisted (audit). Declared-slot mode carries no
-      // server slotConfig, so only overwrite when present.
-      if (registryMode) activeSlotConfig = outcome.slotConfig ?? null;
+      // Registry mode: adopt the served slotConfig UNCONDITIONALLY (null when
+      // absent) so a decide response with no slotConfig CLEARS the cached one —
+      // otherwise an unpublished/removed registry slot from the prior visit's
+      // snapshot keeps being re-applied and re-persisted (audit). Scoped to the
+      // ids this page decided, which also drops snapshot entries for components
+      // not on this page. Declared-slot mode carries no server slotConfig, so
+      // only overwrite when present.
+      if (registryMode) activeSlotConfig = pickConfig(outcome.slotConfig, registryIds);
       else if (outcome.slotConfig) activeSlotConfig = outcome.slotConfig;
       // Served palette wins over the snapshot's; an absent one leaves the cached
       // palette standing for this view (same one-visit-drift rule as layoutOrder
@@ -1095,11 +1304,18 @@ export async function run(): Promise<void> {
       // Post-decide apply is authoritative — report any locator misses (not from
       // pre-paint or reapply, which would be noisy/premature). Collect the applied
       // (slot, arm, element) triples for per-option behavior signals.
+      // Registry mode hands miss classification to the route watch that
+      // syncRoute() starts right after this (bounded window, then one report):
+      // every id decided here resolved at scan time, so an apply-time absence
+      // is a hydration swap in flight, and reporting it here AND from the
+      // watch's window end booked the same absence twice — halving the 10-in-
+      // 24h auto-suspension threshold for exactly the sites that re-render.
       const applyDecided = (): void => {
         const appliedSlots: AppliedSlot[] = [];
-        reportLocatorMisses(cfg, applyAll(document, {
+        const applyMissed = applyAll(document, {
           onApplied: (slotId, arm, el) => appliedSlots.push({ slotId, arm, el }),
-        }));
+        });
+        if (!registryMode) reportLocatorMisses(cfg, applyMissed);
         applyLayoutOrder(activeLayoutOrder, document);
         // From here copy/ops are confirmed by the server — a subsequent reapply()
         // (SPA nav / hydration) may safely restamp content, not just attributes.
@@ -1142,7 +1358,8 @@ export async function run(): Promise<void> {
       // typeOf hook for the new path when capture restarts. Resolution reuses the
       // slot locator machinery inside startSectionCapture (resolveLocatorOne: id →
       // data-attr → selector, must be unique, fingerprint must match — never
-      // guesses). Explicit data-sentient-type markup still wins inside capture.
+      // guesses). Explicit data-sentient-type markup still wins inside capture —
+      // the no-code path has no provider to declare sectionTypes on.
       activeSectionMap =
         (outcome as { sectionMap?: Array<{ urlMatch: string; locator: unknown; type: string }> }).sectionMap ?? null;
 
@@ -1160,7 +1377,7 @@ export async function run(): Promise<void> {
       // snapshot: forget-me means the next visit starts clean, not
       // re-personalized from a decision the visitor already refused (audit SNIP-3).
       if (consentRevoked) return;
-      writeSnapshot(cfg.apiKey, {
+      writeSnapshot(cfg.apiKey, lastSnap = {
         v: 1,
         persona: activePersona?.persona ?? outcome.persona,
         band: activePersona?.band ?? 'low',
@@ -1173,6 +1390,11 @@ export async function run(): Promise<void> {
         ...(activeSlotConfig ? { slotConfig: activeSlotConfig } : {}),
         ...(outcome.palette ? { palette: outcome.palette } : {}),
       });
+      // Start this page's late-render watch and deferred miss classification —
+      // on whatever path we are on NOW, so a navigation that landed while decide
+      // was in flight (skipped by syncRoute: `decided` was false) is caught up.
+      routePath = null;
+      syncRoute();
     };
     if (!outcome) {
       dbg(cfg, 'decide timeout/null — snapshot state stands', matchCounts(cfg));

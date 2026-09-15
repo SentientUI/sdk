@@ -2,7 +2,7 @@
 // `type JSX` from react, not the global namespace removed in @types/react@19
 // (peers allow react >=18) — see adaptive-text.tsx.
 import { useEffect, useReducer, useState, useSyncExternalStore, type CSSProperties, type JSX } from 'react';
-import { PERSONAS, PERSONA_DISPLAY, confidenceBand } from '@sentientui/policy';
+import { UNKNOWN_PERSONA, UNKNOWN_PERSONA_DISPLAY, confidenceBand, normalizeDeclaredPersona } from '@sentientui/policy';
 import { LEGACY_SESSION_COOKIE_NAME, SNAPSHOT_STORAGE_KEY_PREFIX, sessionCookieName } from '@sentientui/core';
 import {
   getRegistered,
@@ -117,18 +117,18 @@ function slotDecls(): Array<{ id: string; arms?: string[]; dims?: RegisteredSlot
 /** One member of the project's persona vocabulary, as /v1/personas serves it. */
 type VocabMember = { key: string; displayName: string };
 
-const DEFAULT_PERSONA_CHOICES: VocabMember[] = PERSONAS.map((key) => ({
-  key,
-  displayName: PERSONA_DISPLAY[key],
-}));
+/** Always offered: previewing the unidentified visitor is meaningful on every
+ *  project, and it is the only persona the product itself defines. */
+const UNKNOWN_CHOICE: VocabMember = { key: UNKNOWN_PERSONA, displayName: UNKNOWN_PERSONA_DISPLAY };
 
 /**
  * Keyed mode: the project's ACTIVE vocabulary from /v1/personas. Personas are
- * per-project (persona_sets, migration 113) — discovery can promote new ones
- * and retire the pinned four — so hardcoding PERSONAS here offered buttons
- * that silently simulated the default experience on any project whose
- * vocabulary differs. null on any failure → the caller keeps the pinned-four
- * fallback (an old API without the endpoint degrades to today's behavior).
+ * per-project (persona_sets, migration 113) — declared by the app or promoted
+ * by discovery. This used to fall back to a hardcoded list of four seeded
+ * personas, which offered buttons that silently simulated the default
+ * experience on any project whose vocabulary differs, and named audiences
+ * nobody had declared. null on any failure → the panel offers only `unknown`
+ * and a free-text key.
  */
 async function fetchPersonaVocabulary(
   apiKey: string,
@@ -265,10 +265,11 @@ function SentientMark({ size = 26 }: { size?: number } = {}): JSX.Element {
 export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const [activePersona, setActivePersona] = useState<string | null>(null);
-  // The project's vocabulary (keyed mode); null = not loaded → pinned-four
-  // fallback. Local mode never fetches: the local engine only knows the
-  // pinned four, and its banner already frames everything as simulated.
+  // The project's vocabulary (keyed mode); null = not loaded → no persona
+  // buttons beyond `unknown`. Local mode never fetches: there is no project,
+  // and the local engine previews ANY key typed into the free-text field.
   const [vocab, setVocab] = useState<VocabMember[] | null>(null);
+  const [customKey, setCustomKey] = useState('');
   // Discovered SHADOW personas — display-only. They never serve until
   // promotion, so there is no button: forcing one would simulate a persona
   // that cannot occur on this project.
@@ -435,10 +436,9 @@ export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Elem
           <div style={{ borderBottom: '1px solid #333', paddingBottom: 8, marginBottom: 8 }}>
             <div style={{ opacity: .7, marginBottom: 4 }}>Preview persona</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-              {/* Keyed mode renders the project's OWN vocabulary (falling back
-                  to the pinned four until /v1/personas answers); local mode
-                  keeps the pinned four the local engine simulates. */}
-              {(useLocalEngine ? DEFAULT_PERSONA_CHOICES : vocab ?? DEFAULT_PERSONA_CHOICES).map((p) => (
+              {/* Keyed mode renders the project's OWN vocabulary once
+                  /v1/personas answers; nothing is invented while it hasn't. */}
+              {[...(useLocalEngine ? [] : vocab ?? []), UNKNOWN_CHOICE].map((p) => (
                 <button key={p.key} onClick={() => choosePersona(p)} style={btn(activePersona === p.key)}>
                   {p.displayName}
                 </button>
@@ -449,6 +449,24 @@ export function AdaptiveDevtools({ apiKey }: { apiKey?: string } = {}): JSX.Elem
                 </button>
               )}
             </div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const key = normalizeDeclaredPersona(customKey);
+                if (key) choosePersona({ key, displayName: key });
+              }}
+              style={{ display: 'flex', gap: 4, marginTop: 6 }}
+            >
+              <input
+                aria-label="Persona key"
+                placeholder="any persona key, e.g. admin"
+                value={customKey}
+                onChange={(e) => setCustomKey(e.target.value)}
+                style={{ flex: 1, minWidth: 0, background: '#111', color: '#fff', border: '1px solid #333',
+                         borderRadius: 4, padding: '4px 6px', fontSize: 12 }}
+              />
+              <button type="submit" style={btn(false)}>Preview</button>
+            </form>
             {personaNote && (
               <div style={{ marginTop: 6, fontSize: 11, color: '#fbbf24' }}>{personaNote}</div>
             )}

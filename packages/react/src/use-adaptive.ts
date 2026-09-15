@@ -1,18 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { attachMicroSignalDetectors, type ComponentGoalOptions } from '@sentientui/core';
-import { useAdaptiveApiKey, useSentient } from './provider.js';
-import { useAssignment } from './use-assignment.js';
-import { registerComponent } from './devtools-registry.js';
-import {
-  attachGoalListeners,
-  goalLabelOf,
-  goalValueOf,
-  isDevBuild,
-  maybeDeclareFunnel,
-  normalizeGoal,
-  trackExposure,
-  type GoalConfig,
-} from './adaptive-shared.js';
+import { useCallback, useEffect, useMemo } from 'react';
+import type { ComponentGoalOptions } from '@sentientui/core';
+import { isDevBuild, type GoalConfig } from './adaptive-shared.js';
+import { useVariantComponent, type MicroSignalGoals } from './use-variant-component.js';
 
 export type UseAdaptiveBind = {
   ref: (el: HTMLElement | null) => void;
@@ -54,6 +43,9 @@ export function useAdaptive<T>(
     /** Funnel this component serves (stable funnel id, e.g. "checkout") —
      *  same declaration semantics as <Adaptive funnel="...">. */
     funnel?: string;
+    /** When a passive micro-signal fires on the bound element, also record a
+     *  named goal — same mapping as <Adaptive microSignalGoals>. */
+    microSignalGoals?: MicroSignalGoals;
   },
 ): UseAdaptiveResult<T> {
   if (isDevBuild() && !config.goal) {
@@ -62,131 +54,18 @@ export function useAdaptive<T>(
     );
   }
 
-  const client = useSentient();
-  const apiKey = useAdaptiveApiKey();
-  // Freeze the variant-id array on the KEY SET (same convention as <Adaptive> /
-  // AdaptiveGroup / useAdaptiveTokens): stable across renders for the same keys
-  // yet updates if the declared set changes. Declared space is normally fixed
-  // per slot id for a session.
-  const variantKey = Object.keys(config.variants).join(' ');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const variantIds = useMemo(() => Object.keys(config.variants), [variantKey]);
-  const { variantId, isOverride, settled } = useAssignment(id, variantIds);
+  // Selection + exposure/funnel/goal/micro-signal wiring is the engine shared
+  // with <Adaptive variants>. No cursor_signal here: the hook never sent one and
+  // adding an event stream is not a refactor.
+  const { client, variantIds, variantId, isOverride, goalLabel, ref, nodeRef } = useVariantComponent(
+    id,
+    config.variants,
+    { goal: config.goal, funnel: config.funnel, microSignalGoals: config.microSignalGoals },
+  );
+  // Unlike <Adaptive> (which renders nothing without a variant), the headless
+  // hook always hands back a value: the first key until a variant resolves.
   const variant = variantId ?? variantIds[0] ?? '';
   const value = config.variants[variant] as T;
-
-  const [node, setNode] = useState<HTMLElement | null>(null);
-  const nodeRef = useRef<HTMLElement | null>(null);
-  const ref = useCallback((el: HTMLElement | null) => {
-    nodeRef.current = el;
-    setNode(el);
-  }, []);
-
-  const goalKey = typeof config.goal === 'string' ? config.goal : JSON.stringify(config.goal);
-  // Missing-goal misuse fails SOFT in production (dev throws above): the old
-  // unconditional goalLabelOf(config.goal) crashed the whole prod render on
-  // `undefined.type`. Consistent with how the package treats other prod misuse
-  // (unbound bind, failed assigns): serve and expose the variant, wire no goal.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const goal = useMemo(() => (config.goal ? normalizeGoal(config.goal) : null), [goalKey]);
-  const goalLabel = config.goal ? goalLabelOf(config.goal) : '';
-
-  useEffect(() => registerComponent({ id, variantIds, goal: goalLabel }), [id, variantIds, goalLabel]);
-
-  // Exposure — same variant_assigned mechanics as <Adaptive>, fired once per
-  // (id, variant) once the bind target is in the DOM.
-  const exposedRef = useRef<string | null>(null);
-  useEffect(() => {
-    // Forced variants are a dev/test view — no exposure, no goals, no
-    // micro-signals may be recorded (same gate as <Adaptive>).
-    if (isOverride) return;
-    // Only the SETTLED assignment is a real exposure; the interim variantIds[0]
-    // placeholder shown while assign() is in flight must not accrue a phantom
-    // baseline impression (same gate as <Adaptive>).
-    if (!settled) return;
-    if (!client || !variant || !node) return;
-    if (exposedRef.current === variant) return;
-    exposedRef.current = variant;
-    trackExposure(client, apiKey, id, variant);
-  }, [client, apiKey, id, variant, node, isOverride, settled]);
-
-  // Funnel membership declaration — same gates as <Adaptive>.
-  const funnel = config.funnel;
-  useEffect(() => {
-    if (isOverride || !settled) return;
-    // `goal` is null only on the missing-goal misuse path (fail-soft above).
-    if (!client || !funnel || !goal) return;
-    maybeDeclareFunnel(client, apiKey, id, funnel, goal);
-  }, [client, apiKey, id, funnel, goal, isOverride, settled]);
-
-  // Goal listeners — identical machinery to <Adaptive> (shared helper).
-  const goalFiredRef = useRef(false);
-  useEffect(() => {
-    goalFiredRef.current = false;
-  }, [variant, goalKey]);
-  useEffect(() => {
-    if (isOverride) return;
-    // Same settle gate as the exposure effect above: before assign() resolves,
-    // `variant` is the interim variantIds[0] placeholder, which never recorded
-    // an impression — a conversion in that window would attribute to an arm
-    // with zero exposures and corrupt its stats.
-    if (!settled) return;
-    if (!client || !variant || !node || !goal) return;
-    // A static goal-config value rides on both writes (spec §5); steps carry
-    // weights, never values (spec §9.4).
-    const declaredValue = goalValueOf(goal);
-    return attachGoalListeners(node, goal, {
-      fireGoal: () => {
-        if (goalFiredRef.current) return;
-        goalFiredRef.current = true;
-        client.track({
-          projectId: apiKey,
-          componentId: id,
-          variantId: variant,
-          eventType: 'goal_achieved',
-          goalType: goalLabel,
-          payload: { reward: 1.0, ...(declaredValue !== undefined ? { goalValue: declaredValue } : {}) },
-        });
-        client.goal(goalLabel, {
-          metadata: { componentId: id, variantId: variant },
-          weight: 1.0,
-          stepIndex: 0,
-          ...(declaredValue !== undefined ? { value: declaredValue } : {}),
-        });
-      },
-      fireStep: (name, weight, stepIndex) => {
-        client.track({
-          projectId: apiKey,
-          componentId: id,
-          variantId: variant,
-          eventType: 'goal_achieved',
-          goalType: name,
-          payload: { reward: weight },
-        });
-        client.goal(name, { metadata: {}, weight, stepIndex });
-      },
-    }, goalLabel);
-  }, [client, node, variant, apiKey, id, goal, goalLabel, isOverride, settled]);
-
-  // Micro-signal detectors — the third thing <Adaptive>'s container wires.
-  useEffect(() => {
-    if (isOverride) return;
-    if (!client || !variant || !node) return;
-    const assignedAt = Date.now();
-    return attachMicroSignalDetectors(
-      (signalType, extra = {}) => {
-        client.track({
-          projectId: apiKey,
-          componentId: id,
-          variantId: variant,
-          eventType: 'micro_signal',
-          payload: { signalType, ...extra },
-        });
-      },
-      node,
-      assignedAt,
-    );
-  }, [client, node, variant, apiKey, id, isOverride]);
 
   // Dev warning: bind never attached shortly after mount → exposures would
   // never fire and the slot cannot learn. Once per slot id.

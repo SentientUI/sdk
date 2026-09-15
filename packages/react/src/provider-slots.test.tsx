@@ -5,6 +5,10 @@ import { AdaptiveProvider } from './provider.js';
 import { init } from '@sentientui/core';
 
 vi.mock('@sentientui/core', () => ({
+  // AdaptiveSlot imports `reveal` from core (the adaptation reveal). These
+  // mocks are deliberately minimal — they exist so the suite never loads real
+  // core — so every core import the component tree makes has to be listed here.
+  reveal: vi.fn(),
   init: vi.fn(() => ({ dispose: vi.fn(), destroy: vi.fn(), fetchWeights: vi.fn().mockResolvedValue([]) })),
   detectDeviceClass: () => 'desktop',
   detectTrafficSource: () => 'direct',
@@ -22,14 +26,14 @@ describe('AdaptiveProvider slot/persona plumbing', () => {
         context: 'saas',
         consent: true,
         initialSlots: { hero: { tone: 'urgent' } },
-        initialPersona: { persona: 'buyer', confidence: 0.8 },
+        initialPersona: { persona: 'admin', confidence: 0.8 },
         children: null,
       } as never),
     );
     expect(vi.mocked(init)).toHaveBeenCalledWith(
       expect.objectContaining({
         initialSlots: { hero: { tone: 'urgent' } },
-        initialPersona: { persona: 'buyer', confidence: 0.8 },
+        initialPersona: { persona: 'admin', confidence: 0.8 },
       }),
     );
   });
