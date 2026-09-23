@@ -115,7 +115,18 @@ const bundles: Array<{ name: string; file: string; limit: number }> = [
   // navigation, and is restamped when it does; registry mode no longer books
   // the same absence from both the post-decide apply and the watch's window
   // end. All on the decide/miss gate — always-on. Measured 26352.
-  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 26 * 1024 },
+  //
+  // +1536 (2026-09-22, spec agent-axis §4.1): session-level interaction
+  // aggregates in engagement capture (`interaction-stats.ts`) — passive
+  // pointer/scroll/keystroke/action-gap listeners, Welford mean/variance, and
+  // a WebGL renderer probe. The snippet imports startEngagementCapture
+  // STATICALLY, so unlike React (which lazy-imports @sentientui/core/engagement)
+  // it pays for this in the always-on bundle. Not lazy-loadable on its own
+  // either: the collector must observe from first paint or it misses the
+  // behaviour it exists to measure, and short visits — the ones that most need
+  // separating from a JS-less crawler — are over before a lazy chunk lands. Measured 27807 against 26624
+  // (over by 1183). Budget moves one step and no further.
+  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 26 * 1024 + 1536 },
   // 20 KiB (was 18, 12): re-baselined 2026-09-07 for the editor audit
   // remediation — the 18 KiB note reserved ~1.8 KiB for "the review card and
   // the NL command box" and said the next addition needs a deliberate
@@ -155,7 +166,11 @@ const bundles: Array<{ name: string; file: string; limit: number }> = [
   // (applySlotBlocks) into this bundle for designed layouts. Lazy bundle,
   // zero bytes on the normal path; the budget only guards unbounded growth.
   // Measured 21448 (+1759 on the 19689 baseline, most of it the renderer).
-  { name: '@sentientui/snippet (editor overlay)', file: 'editor.global.js', limit: 22 * 1024 },
+  // Re-baselined 22→25 KB for the in-editor AI chat (2026-09-15): SSE turn
+  // streaming, the ref→element context builder, and draft save + in-place
+  // preview for chat-created components and goals, net of the removed 💡
+  // suggestion cards. Lazy bundle, zero bytes on the normal path.
+  { name: '@sentientui/snippet (editor overlay)', file: 'editor.global.js', limit: 25 * 1024 },
 ];
 
 let allOk = true;

@@ -62,8 +62,13 @@ export type AdaptiveRootProps = Omit<
    */
   consentFrom?: Omit<NonNullable<AdaptiveProviderProps['consentFrom']>, 'check'>;
   /**
-   * Components to assign server-side (SEO-safe). Optional — omit when the
-   * tree uses only slots/sections, or assigns client-side via hooks.
+   * Code-variant components to assign server-side (SEO-safe). Optional — an
+   * `<Adaptive>` works without an entry here and assigns after mount.
+   *
+   * List only ids this tree actually renders. Each one is assigned on every
+   * request, rendered or not, and every assignment logs an impression (or a
+   * holdout exposure). An id the page never renders therefore accrues trials
+   * that cannot convert, and in a root layout that happens on every route.
    */
   components?: PreloadComponent[];
   /**
@@ -176,7 +181,8 @@ function assignmentsToBlocks(assignments: ServerAssignments): AgentBlock[] {
  * Without `sections`, individual `/v1/assign` calls are made per component.
  *
  * @example
- * // app/page.tsx — with section layout
+ * // app/page.tsx — with section layout. Declared on the page (not the root
+ * // layout) because hero_cta renders only here; see the `components` prop.
  * import { AdaptiveRoot } from '@sentientui/react/next';
  *
  * export default async function Page() {
@@ -295,6 +301,10 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   let initialPersona: { persona: string; confidence: number } | null = null;
   let ssrSessionId: string | undefined;
 
+  // Registry mode only when ids were declared: an unscoped registry decide
+  // records a close-out trial for every published slot on every page.
+  const registry = !!registrySlotIds?.length;
+
   if (initialAssignmentsOverride) {
     initialAssignments = initialAssignmentsOverride;
     ssrSessionId = ssrSessionIdProp;
@@ -304,16 +314,10 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
     // consents — via the `consent` prop or grantConsent(), neither of which
     // needs a page reload.
     initialAssignments = {};
-  } else if (
-    (sections && sections.length > 0) ||
-    (slots && slots.length > 0) ||
-    (registrySlotIds && registrySlotIds.length > 0)
-  ) {
-    // Registry mode only when ids were declared: `loadAdaptiveDecision` already
-    // accepted `registrySlotIds` but AdaptiveRoot never passed them, so an
-    // `<Adaptive id>` under AdaptiveRoot showed its original children on first
-    // paint until the client-side decide returned.
-    const registry = registrySlotIds && registrySlotIds.length > 0;
+  } else if ((sections && sections.length > 0) || (slots && slots.length > 0) || registry) {
+    // `loadAdaptiveDecision` accepted `registrySlotIds` long before AdaptiveRoot
+    // passed them, so an `<Adaptive id>` under AdaptiveRoot showed its original
+    // children on first paint until the client-side decide returned.
     const decision = await loadAdaptiveDecision({
       sections: sections ?? [],
       components,

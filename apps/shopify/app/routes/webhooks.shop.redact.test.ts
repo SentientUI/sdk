@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHmac } from 'node:crypto';
 import { authenticate } from '../shopify.server';
 import db from '../db.server';
 import { action } from './webhooks.shop.redact';
@@ -104,5 +105,63 @@ describe('webhooks.shop.redact — staleness guard', () => {
     mockDb.session.findFirst.mockResolvedValue({ createdAt: AFTER_EVENT });
     await action({ request: makeRequest(), params: {}, context: {} } as never);
     expect(mockDb.session.deleteMany).not.toHaveBeenCalled();
+  });
+});
+
+// The 2026-09-21 failure, end to end. The library refreshes the shop's offline
+// token on EVERY webhook, compliance included; for a closed store that refresh
+// can never succeed and it throws a hardcoded 500 — so shop/redact failed 100%
+// of the time and the erasure it exists to perform never happened.
+describe('webhooks.shop.redact — a shop whose offline token is dead', () => {
+  const SECRET = 'test-app-secret';
+  const BODY = JSON.stringify({ shop_id: 1, shop_domain: 'dead.myshopify.com' });
+
+  function signedRequest() {
+    return new Request('https://app.test/webhooks/shop/redact', {
+      method: 'POST',
+      headers: {
+        'x-shopify-triggered-at': TRIGGERED_AT,
+        'x-shopify-shop-domain': 'dead.myshopify.com',
+        'x-shopify-topic': 'shop/redact',
+        'x-shopify-hmac-sha256': createHmac('sha256', SECRET).update(BODY, 'utf8').digest('base64'),
+      },
+      body: BODY,
+    });
+  }
+
+  beforeEach(() => {
+    process.env.SHOPIFY_API_SECRET = SECRET;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockDb.sentientSettings.findUnique.mockResolvedValue({ updatedAt: BEFORE_EVENT });
+    mockDb.session.findFirst.mockResolvedValue({ createdAt: BEFORE_EVENT });
+    // What the library actually does when the refresh fails.
+    webhook.mockRejectedValue(new Response(undefined, { status: 500 }));
+  });
+  afterEach(() => {
+    delete process.env.SHOPIFY_API_SECRET;
+  });
+
+  it('still erases the shop and acks, instead of 500ing for 48h', async () => {
+    const res = await action({ request: signedRequest(), params: {}, context: {} } as never);
+    expect(res.status).toBe(200);
+    expect(mockDb.session.deleteMany).toHaveBeenCalledWith({ where: { shop: 'dead.myshopify.com' } });
+    expect(mockDb.sentientSettings.deleteMany).toHaveBeenCalledWith({ where: { shop: 'dead.myshopify.com' } });
+  });
+
+  it('erases nothing when the signature does not check out', async () => {
+    const forged = new Request('https://app.test/webhooks/shop/redact', {
+      method: 'POST',
+      headers: {
+        'x-shopify-shop-domain': 'attacker.myshopify.com',
+        'x-shopify-topic': 'shop/redact',
+        'x-shopify-hmac-sha256': createHmac('sha256', 'wrong').update(BODY, 'utf8').digest('base64'),
+      },
+      body: BODY,
+    });
+    await expect(
+      action({ request: forged, params: {}, context: {} } as never),
+    ).rejects.toBeDefined();
+    expect(mockDb.session.deleteMany).not.toHaveBeenCalled();
+    expect(mockDb.sentientSettings.deleteMany).not.toHaveBeenCalled();
   });
 });

@@ -799,6 +799,72 @@ function showPreviewBanner(persona: string, unrecognized?: boolean): void {
 }
 
 /**
+ * Event-free forced preview (?sentient_preview=hero:urgent): apply the given
+ * arms/dims and stop. No init, no tracking, no snapshot.
+ *
+ * Registry (no-code) slot definitions live server-side, and this branch runs
+ * BEFORE the snapshot/decide paths that populate activeSlotConfig — so without
+ * the explain fetch below, applyAll only ever reaches page-declared cfg.slots
+ * and applyRegistrySlots is skipped, making the whole mode a silent no-op for
+ * dashboard-defined slots (the case the dashboard's preview iframe depends on).
+ * Explain is the same read-only endpoint persona preview uses; `persona` is
+ * omitted so it simulates the pre-portrait state. The URL always wins over the
+ * arms explain would have served — this is QA, not a simulation.
+ */
+async function previewForced(cfg: SnippetConfig, forced: SlotResults): Promise<void> {
+  const registryMode = cfg.registry ?? Object.keys(cfg.slots).length === 0;
+  if (registryMode) {
+    const base = apiBase(cfg);
+    const outcome = await withTimeout(
+      fetch(`${base}/v1/explain`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.apiKey}` },
+        // `force` makes explain resolve THESE arms' content/ops, not the ones
+        // it would serve. Without it the response carries only the served
+        // arm's content and the forced arm id would set data-sentient-arm
+        // while the copy on the page stayed unchanged — a preview that lies.
+        // Dims results are not arms, so only string results are forced.
+        body: JSON.stringify({
+          slotsFrom: 'registry' as const,
+          // Drafts too: previewing exists to decide whether to publish, so a
+          // slot that is not live yet is precisely what needs looking at.
+          includeDrafts: true,
+          force: Object.fromEntries(
+            Object.entries(forced).filter((e): e is [string, string] => typeof e[1] === 'string'),
+          ),
+        }),
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+      DECIDE_TIMEOUT_MS,
+    );
+    const data = outcome as {
+      slotConfig?: Record<string, SlotConfigEntry>;
+      palette?: import('@sentientui/core').SitePalette;
+    } | null;
+    if (!data?.slotConfig) {
+      // No definitions means nothing can be applied faithfully. Leave the page
+      // as the visitor's own markup rather than half-applying — but still
+      // expose the API, same rule as the other preview modes.
+      exposeGlobal(cfg);
+      dbg(cfg, 'preview mode: slot config unavailable — page left as-is');
+      return;
+    }
+    activeSlotConfig = data.slotConfig;
+    // Palette parity with live serving: block arms render in the site's colors.
+    setBlockPalette(data.palette);
+  }
+  activeSlots = forced;
+  activePersona = null;
+  applyAll(document);
+  installSpaHooks();
+  // Same as editor mode: the API must exist (no-op without a client) so page
+  // code calling SentientSnippet.goal(...) doesn't throw.
+  exposeGlobal(cfg);
+  dbg(cfg, 'preview mode', forced);
+}
+
+/**
  * Event-free persona preview: simulate what one audience is served via
  * /v1/explain (read-only — no impression, decision, or slot_decisions write),
  * apply it, and stop. No `init`, no tracking, no snapshot. Registry-mode sites
@@ -1125,14 +1191,7 @@ export async function run(): Promise<void> {
     // Preview mode — apply forced state and stop. No init, no tracking.
     const preview = typeof window !== 'undefined' ? parsePreview(window.location.search) : null;
     if (preview) {
-      activeSlots = preview;
-      activePersona = null;
-      applyAll(document);
-      installSpaHooks();
-      // Same as editor mode above: the API must exist (no-op without a client)
-      // so page code calling SentientSnippet.goal(...) doesn't throw.
-      exposeGlobal(cfg);
-      dbg(cfg, 'preview mode', preview);
+      await previewForced(cfg, preview);
       return;
     }
 

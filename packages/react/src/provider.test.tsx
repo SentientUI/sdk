@@ -26,7 +26,7 @@ function makeClient() {
     getAssignment: vi.fn().mockReturnValue(null),
     assign: vi.fn().mockResolvedValue(null),
     destroy: vi.fn(),
-    dispose: vi.fn(),
+    flush: vi.fn(), dispose: vi.fn(),
     track: vi.fn(),
     goal: vi.fn(),
     componentGoal: vi.fn(),

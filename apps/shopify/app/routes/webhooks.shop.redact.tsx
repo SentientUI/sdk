@@ -1,7 +1,7 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { isStaleUninstall } from "../lib/drop-visibility";
+import { authenticateWebhookAllowingExpiredToken } from "../lib/webhook-auth.server";
 
 // GDPR compliance webhook — mandatory for every App Store listing. Delivered
 // 48h after an uninstall, and it is the obligation the uninstall handler cannot
@@ -13,9 +13,13 @@ import { isStaleUninstall } from "../lib/drop-visibility";
 // never delivered (or was dropped during a deploy) leaves rows behind, and this
 // is the backstop that catches them.
 export const action = async ({ request }: ActionFunctionArgs) => {
-  // Read the trigger time BEFORE authenticate.webhook consumes the request.
+  // Read the trigger time BEFORE the body is consumed for HMAC validation.
   const triggeredAt = Date.parse(request.headers.get("x-shopify-triggered-at") ?? "");
-  const { shop, topic } = await authenticate.webhook(request);
+  // NOT authenticate.webhook: this topic fires for a shop that is already
+  // gone, whose offline token the library would try (and fail) to refresh,
+  // 500ing before any of the erasure below could run. See
+  // webhook-auth.server.ts — the HMAC is still proved, just by us.
+  const { shop, topic } = await authenticateWebhookAllowingExpiredToken(request);
 
   // Same staleness guard as webhooks.app.uninstalled — and it MUST be the same
   // one. This handler needs it even more: shop/redact fires ~48h AFTER the

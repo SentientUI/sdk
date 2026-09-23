@@ -9,7 +9,7 @@ vi.mock('@sentientui/core', () => ({
   // mocks are deliberately minimal — they exist so the suite never loads real
   // core — so every core import the component tree makes has to be listed here.
   reveal: vi.fn(),
-  init: vi.fn(() => ({ dispose: vi.fn(), destroy: vi.fn(), fetchWeights: vi.fn().mockResolvedValue([]) })),
+  init: vi.fn(() => ({ flush: vi.fn(), dispose: vi.fn(), destroy: vi.fn(), fetchWeights: vi.fn().mockResolvedValue([]) })),
   detectDeviceClass: () => 'desktop',
   detectTrafficSource: () => 'direct',
 }));

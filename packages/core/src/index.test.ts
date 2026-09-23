@@ -1418,3 +1418,26 @@ describe('componentGoal() value passthrough (spec §5)', () => {
     expect(goals[0]!.payload).toEqual({ reward: 1 });
   });
 });
+
+// The engagement capture banks dwell and the interaction snapshot INSIDE the
+// pagehide/visibilitychange handlers — after the queue's own leave-path flush,
+// which was registered when this client was built. Without a public drain it
+// had no way to get those events out before the page went away, and a visit
+// shorter than the 5 s queue tick delivered nothing at all.
+describe('client.flush()', () => {
+  it('drains queued events on demand', async () => {
+    const client = init({ ...BASE_CONFIG });
+    client.track({ componentId: 'hero', variantId: 'A', eventType: 'variant_assigned', projectId: 'p', payload: {} });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(
+      BASE_CONFIG.ingestUrl,
+      expect.anything(),
+    );
+
+    client.flush();
+
+    await vi.waitFor(
+      () => expect(vi.mocked(fetch).mock.calls.some(([url]) => url === BASE_CONFIG.ingestUrl)).toBe(true),
+      { timeout: 10_000, interval: 10 },
+    );
+  });
+});

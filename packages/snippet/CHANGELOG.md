@@ -1,5 +1,28 @@
 # @sentientui/snippet
 
+## 0.29.0
+
+### Minor Changes
+
+- ed8c721: Forced preview (`?sentient_preview=`) now works for registry (no-code) slots.
+
+  The preview branch runs before the snapshot/decide paths that populate
+  `slotConfig`, so `applyRegistrySlots` was skipped entirely and the mode was a
+  silent no-op for dashboard-defined slots — it only ever applied page-declared
+  slots. Preview mode now fetches the published slot config from the read-only
+  `/v1/explain` endpoint (the same one persona preview uses, still event-free:
+  no init, no tracking, no snapshot) and sends the forced arms as `force`, so the
+  server resolves that arm's content rather than the one it would have served.
+  Without `force` the arm id set `data-sentient-arm` while the copy on the page
+  stayed unchanged — a preview that lied. When the config cannot be fetched the
+  page is left exactly as the visitor's own markup rather than half-applied.
+
+## 0.28.0
+
+### Minor Changes
+
+- 5d46be1: The on-site editor has an AI chat in place of the 💡 suggestion cards. Describe what you want and it creates component versions or goals as drafts, on the element you selected or on the page, and previews them in place; nothing goes live until you publish. Discarding a draft now takes one press, since only drafts can be deleted.
+
 ## 0.27.0
 
 ### Minor Changes

@@ -7,7 +7,7 @@ function fakeClient(): SentientClient {
     track: vi.fn(), goal: vi.fn(), componentGoal: vi.fn(), identify: vi.fn(),
     getAssignment: vi.fn(() => ({ variantId: 'a', content: null })),
     assign: vi.fn(async () => null), fetchWeights: vi.fn(async () => []),
-    getGraph: vi.fn(() => ({ pageNodes: [], capturedAt: 0 })), dispose: vi.fn(), destroy: vi.fn(),
+    getGraph: vi.fn(() => ({ pageNodes: [], capturedAt: 0 })), flush: vi.fn(), dispose: vi.fn(), destroy: vi.fn(),
   } as unknown as SentientClient;
 }
 

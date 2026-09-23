@@ -138,16 +138,41 @@ export function AdaptiveSlot({
     trackExposure(client, apiKey, id, arm);
   }, [client, apiKey, id, arm, source, armBlocked]);
 
-  // Optional container goal (click/scroll/composite) — slot-goal shape, with
-  // the same source gates as the exposure above. armBlocked gates here too:
-  // the visitor saw the baseline children, and a goal stamped with the served
-  // arm (componentGoal also resolves it from slot state) would let close-out's
-  // first-pass reconciliation — goal_achieved counts as an implied exposure
-  // (CONTRACTS §2) — re-mint the very phantom impression the exposure gate
+  // Optional container goal (click/scroll/composite) — slot-goal shape.
+  //
+  // Two writes, two different gates, because they answer different questions.
+  //
+  // `componentGoal` credits an ARM. It is suppressed whenever no arm earned
+  // the conversion — nothing decided ('none'), decided-but-not-yet-confirmed
+  // ('seeded'), or a served tree that never reached the page (armBlocked) —
+  // because a goal stamped with the served arm would let close-out's
+  // first-pass reconciliation (goal_achieved counts as an implied exposure,
+  // CONTRACTS §2) re-mint the very phantom impression the exposure gate
   // suppressed, plus credit the arm for baseline's conversion.
+  //
+  // `goal` writes the SESSION funnel record, which is about the visitor, not
+  // the arm. It fires whenever a real visitor converts. This effect used to
+  // share the exposure gate and record NEITHER, which silently deleted the
+  // conversion: measured on prod 2026-09-22 (Bodyshop Manchester), an
+  // <Adaptive> switched from `variants` to generated mode registers a DRAFT
+  // slot, sits at source 'none' until someone publishes a version, and its CTA
+  // recorded nothing for five days while the funnel read 0%. `fireFormGoal`
+  // above already makes exactly this split for a seeded arm; the container
+  // goal disagreeing with it thirty lines away was the bug.
+  //
+  // 'override' is the one source that still records NOTHING: a forced arm is a
+  // devtools/test preview, and a conversion nobody made must not reach either
+  // write.
+  //
+  // When the arm is not creditable the session record carries NO arm either:
+  // '' is the same shape an undecided slot already writes, and stamping the
+  // arm the visitor never saw would re-introduce the attribution through the
+  // metadata after the componentGoal write had been suppressed.
+  const armCreditable = source !== 'none' && source !== 'seeded' && !armBlocked;
+  const goalArm = armCreditable ? arm : '';
   const goalKey = goal === undefined ? null : typeof goal === 'string' ? goal : JSON.stringify(goal);
   useEffect(() => {
-    if (!client || !goal || source === 'override' || source === 'none' || source === 'seeded' || armBlocked) return;
+    if (!client || !goal || source === 'override') return;
     const node = nodeRef.current;
     if (!node) return;
     const label = goalLabelOf(goal);
@@ -160,24 +185,26 @@ export function AdaptiveSlot({
         fireGoal: () => {
           if (fired) return;
           fired = true;
-          if (declaredValue !== undefined) client.componentGoal(id, label, { value: declaredValue });
-          else client.componentGoal(id, label);
+          if (armCreditable) {
+            if (declaredValue !== undefined) client.componentGoal(id, label, { value: declaredValue });
+            else client.componentGoal(id, label);
+          }
           client.goal(label, {
-            metadata: { componentId: id, arm },
+            metadata: { componentId: id, arm: goalArm },
             weight: 1.0,
             stepIndex: 0,
             ...(declaredValue !== undefined ? { value: declaredValue } : {}),
           });
         },
         fireStep: (name, weight, stepIndex) => {
-          client.componentGoal(id, name, { reward: weight });
-          client.goal(name, { metadata: { componentId: id, arm }, weight, stepIndex });
+          if (armCreditable) client.componentGoal(id, name, { reward: weight });
+          client.goal(name, { metadata: { componentId: id, arm: goalArm }, weight, stepIndex });
         },
       },
       label,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, id, goalKey, arm, source, armBlocked]);
+  }, [client, id, goalKey, arm, source, armBlocked, armCreditable, goalArm]);
 
   // The adaptation reveal. Fires only when the ARM CHANGES after mount — an
   // SSR-rendered slot arrives with its arm already in the HTML, so the page was

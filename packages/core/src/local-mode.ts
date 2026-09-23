@@ -186,6 +186,7 @@ export function createLocalModeClient(config: SentientConfig): SentientClient {
     getAssignment: () => null,
     fetchWeights: () => Promise.resolve([]),
     getGraph: () => ({ pageNodes: [], capturedAt: 0 }),
+    flush: () => undefined, // nothing is queued: local mode never reaches the network
     dispose: () => undefined, // no timers/network in local mode; keep the session
     destroy: () => session.destroy(),
   };

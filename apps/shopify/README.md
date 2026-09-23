@@ -11,17 +11,36 @@ app embed carrying the snippet one-liner, a web pixel firing funnel-step goals
 and the cart-token → session binding, and app-backend webhooks forwarding
 server-truth orders/refunds to the SentientUI API.
 
-## Status: in review — two rejections fixed, Managed Pricing shipped
+## Status: in review — three rejections fixed
 
 - **Round 1 (2026-09-06):** missing test credentials (4.5.4 — the review
   account existed but held no project) + billing wording read as mandatory
   off-platform billing (1.2.1/1.2.2). Fixed: keys inline in the review
   instructions, free-plan-first copy.
 - **Round 2 (2026-09-09, ref 133916):** subscription must go through
-  Shopify billing (now Managed Pricing — see "Pricing and billing") and a
+  Shopify billing (now App Pricing — see "Pricing and billing") and a
   real pixel bug: `ensureWebPixel`'s lookup-first order treated the thrown
   "No web pixel was found for this app." as fatal, so FRESH stores never
   created the pixel (dev stores masked it — their pixel pre-existed).
+- **Round 3 (2026-09-21):** two findings, both of which this repo had
+  recorded as DONE while they were not.
+  - *1.2.1, subscribing 404s.* The four plans existed only under **"Manual
+    pricing (legacy)"** — App Store listing copy that charges nothing.
+    Shopify App Pricing itself was never enabled (the migration wizard still
+    read "App Pricing enabled — not started"), and
+    `/charges/<handle>/pricing_plans` does not exist until it is. Enabled
+    2026-09-22; the four App Pricing plans were already drafted and their
+    handles already matched `PLAN_NAME_MAP`, so nothing else moved. The app
+    handle in the link (`sentientui-app`) was correct all along — the 404 was
+    the missing switch, not the handle.
+  - *5.1.2, every storefront request 403s.* `origin_not_allowed` is the only
+    403 `/v1/sessions`, `/v1/decide` and `/v1/events` can return, and the
+    shop's origin is only allowlisted when the merchant presses "Save and
+    connect". The theme embed is a separate surface with its own pasted pk_,
+    so it can be enabled and configured with no allowlisting having happened
+    — and nothing anywhere said so. Fixed by re-affirming the origins on
+    every admin page view and by showing the result: see "Storefront
+    reachability" below.
 
 Every checklist item below passed live on `sentientui-store.myshopify.com`,
 including the pixel path and the three-step checkout funnel, and the backend
@@ -41,9 +60,13 @@ What is left is **operator work, not code**:
 - **Fill the listing** from `listing/LISTING.md` — copy, URLs, review
   instructions, and the screenshot/screencast plan are pre-written there;
   the 1200×1200 icon is `listing/icon-1200.png`.
-- **Configure Managed Pricing plans** in the Partner dashboard (Free $0
-  default + Starter/Growth/Scale) with names matching PLAN_NAME_MAP in
-  `app/lib/plan-sync.server.ts` — see "Pricing and billing" below.
+- ~~**Configure the pricing plans**~~ — the four plans exist and their
+  handles match PLAN_NAME_MAP in `app/lib/plan-sync.server.ts`, and
+  **Shopify App Pricing is ENABLED** (2026-09-22). Verified live:
+  `https://admin.shopify.com/store/sentientui-store/charges/sentientui-app/pricing_plans`
+  renders "Select a plan" with all four. Drafting plans is NOT the same as
+  enabling App Pricing — the plans sat in "Manual pricing (legacy)" for two
+  review rounds while that link 404'd.
 - **Set `SHOPIFY_CONNECTOR_SECRET`** (same value on `sentient-api` and
   `sentientui-shopify` via `fly secrets set`) — without it the plan sync is
   disabled and the API refuses plan writes (fail closed).
@@ -114,6 +137,69 @@ Uninstall deletes the shop's sessions AND its stored SentientUI keys.
       as-is (no app-proxy detour needed; do NOT weaken `requireOrigin`).
 - [x] Funnel `checkout` three-step view: report shows all three steps reached
       by one session, zero drop-off, US$32.95 revenue on the final step.
+
+## Storefront reachability — why the 403s were invisible
+
+`requireAuth` in the API refuses a `pk_` request whose `Origin` is not in the
+project's `allowed_origins`, and `origin_not_allowed` is the ONLY 403
+`/v1/sessions`, `/v1/decide` and `/v1/events` can return. So a storefront on
+an unallowed domain fails completely and silently: no error in the theme, no
+error in this app, just a dashboard that never fills up. The App Store
+rejected the app for it (5.1.2, round 3).
+
+Three things now stand between a merchant and that silence:
+
+1. **Allowlisting is re-affirmed on every admin page view**, not only on
+   "Save and connect" (`app/routes/app._index.tsx` loader). Saving was a
+   single point of failure: enable the theme embed without ever visiting
+   this screen, reinstall against the empty production database, or add a
+   custom primary domain, and the allowlist no longer covers the domain
+   visitors actually use.
+2. **The screen says whether the storefront is accepted** — a red banner
+   naming the domain when it is not, a green one when it is.
+   `checkStorefrontOrigin` (`app/lib/settings.server.ts`) asks
+   `GET /v1/origin-check`, which runs the same `requireAuth` check with no
+   side effects, forging the shop's `Origin` from the server.
+3. The check uses the key **saved in this app**. The theme embed carries its
+   own pasted copy, so the green banner also reminds the merchant the two
+   must match — a mismatch allowlists the wrong project and looks identical
+   from here.
+
+Known gap, deliberately not fixed here: the API caches auth records
+(`allowed_origins` included) for 30s per instance, and `clearKeyCache()` only
+clears the instance that handled the write. A storefront view in the seconds
+right after a save can still be refused by another machine. Bounded by the
+TTL and self-healing; closing it properly needs a shared invalidation channel.
+
+## Webhooks and the dead offline token
+
+`@shopify/shopify-app-remix` runs `ensureValidOfflineSession` on EVERY webhook,
+GDPR compliance topics included. With `expiringOfflineAccessTokens` enabled
+(`app/shopify.server.ts`), an offline token within five minutes of expiry makes
+it call Shopify's token endpoint, and the library's `refresh-token` helper
+throws a hardcoded **500 Internal Server Error** when that call fails.
+
+For an uninstalled or closed store that refresh can never succeed, so the
+topics that fire *after* the shop is gone — `app/uninstalled` and the three
+GDPR ones — 500 inside authentication, before a line of handler code runs, and
+Shopify retries them for 48h against something permanent.
+
+That is the 2026-09-21 incident: `app/uninstalled` at a 90% failure rate and
+`shop/redact` at 100%, every failure the same closed review store, while a
+different shop's uninstall succeeded in the middle of the same window (which is
+what ruled out an outage). The failure rate was the visible part; the damage
+was that **the erasure those webhooks exist to perform never happened**.
+
+Those four routes therefore use
+`authenticateWebhookAllowingExpiredToken` (`app/lib/webhook-auth.server.ts`)
+instead of `authenticate.webhook`. It delegates first, and only when
+authentication fails for a reason that is *not* a rejection of the request
+(400/401/405) does it verify the HMAC itself and carry on with no session —
+which those handlers never used. **The HMAC is the gate**: a forged request
+fails it and the original error is rethrown, so nothing is widened.
+
+Leave the revenue topics on plain `authenticate.webhook`; they only fire for a
+live shop, and they want the session.
 
 ## Deploying to production (operator-run, never CI)
 
@@ -228,20 +314,33 @@ itself carries (pixel, webhooks, provisioning, tag → persona mapping) is
 live the moment the app version is released — no coupling between the two
 deploys beyond that.
 
-## Pricing and billing — Shopify Managed Pricing (since 2026-09-09)
+## Pricing and billing — Shopify App Pricing (enabled 2026-09-22)
 
-**The app is free to install; paid plans are Shopify Managed Pricing.**
+**The app is free to install; paid plans are Shopify App Pricing.**
 
-Two review rejections got us here: round 1 (2026-09-06) killed wording that
+Three review rejections got us here: round 1 (2026-09-06) killed wording that
 framed the SentientUI service as paid-and-required with an external billing
 link; round 2 (2026-09-09, ref 133916) ruled that even the OPTIONAL Stripe
 subscription must go through Shopify once reviewers could see it in the
-dashboard. So for Shopify-installed merchants, Shopify billing REPLACES
-Stripe (never alongside — nobody pays on two rails):
+dashboard; round 3 (2026-09-21) found that the plans had been described but
+never actually switched on. So for Shopify-installed merchants, Shopify
+billing REPLACES Stripe (never alongside — nobody pays on two rails):
 
 - Plans (Free $0 default, Starter/Growth/Scale flat monthly) are configured
-  as Managed Pricing in the Partner dashboard. Their NAMES are a contract
+  as App Pricing in the Partner dashboard. Their NAMES are a contract
   with `app/lib/plan-sync.server.ts` (PLAN_NAME_MAP).
+- **Drafting plans is not enabling App Pricing.** Both steps of the migration
+  wizard must be green. Until the second one is, the plans render on the App
+  Store listing and `/charges/<handle>/pricing_plans` 404s — which reads to a
+  reviewer as an app that cannot be paid for.
+- The rail is claimed when a store **connects**, not when a plan is bought:
+  `/v1/provision/shopify` sets `users.billing_source = 'shopify'` for free
+  accounts. Claiming it only at purchase left every free Shopify merchant —
+  which is exactly what a reviewer is — looking at the dashboard's Stripe
+  upgrade button, and that is what round 3 flagged as off-platform billing.
+  Uninstall releases it again (`disconnect: true` on the plan sync); a mere
+  cancellation does not, because that merchant can still re-subscribe through
+  Shopify.
 - The `app_subscriptions/update` webhook maps the active subscription to a
   SentientUI plan and syncs it via `POST /v1/provision/shopify/plan` —
   authorized by the shop's sk_ PLUS `SHOPIFY_CONNECTOR_SECRET` (a Fly secret

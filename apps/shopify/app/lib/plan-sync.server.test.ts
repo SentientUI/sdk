@@ -42,6 +42,26 @@ describe('syncPlan', () => {
     expect(JSON.parse(String(init.body))).toEqual({ plan: 'growth', shopDomain: 'x.myshopify.com' });
   });
 
+  it('marks an uninstall as a disconnect, which is what hands the billing rail back to card billing', async () => {
+    process.env.SHOPIFY_CONNECTOR_SECRET = 'shared';
+    const f = vi.fn(async () => ({ ok: true })) as unknown as typeof fetch;
+    await syncPlan('sk_test', 'free', 'x.myshopify.com', f, { disconnect: true });
+    const [, init] = (f as ReturnType<typeof vi.fn>).mock.calls[0]! as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      plan: 'free',
+      shopDomain: 'x.myshopify.com',
+      disconnect: true,
+    });
+  });
+
+  it('a plain cancellation is NOT a disconnect — the merchant still has the app and can re-subscribe through Shopify', async () => {
+    process.env.SHOPIFY_CONNECTOR_SECRET = 'shared';
+    const f = vi.fn(async () => ({ ok: true })) as unknown as typeof fetch;
+    await syncPlan('sk_test', 'free', 'x.myshopify.com', f);
+    const [, init] = (f as ReturnType<typeof vi.fn>).mock.calls[0]! as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).not.toHaveProperty('disconnect');
+  });
+
   it('a non-2xx or unreachable API returns false so the webhook 500s and Shopify retries', async () => {
     process.env.SHOPIFY_CONNECTOR_SECRET = 'shared';
     const bad = vi.fn(async () => ({ ok: false })) as unknown as typeof fetch;

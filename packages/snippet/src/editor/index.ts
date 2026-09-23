@@ -622,7 +622,7 @@ export function mount(b: Boot): void {
   const moveDownBtn = el('button', btnStyle('#374151'), 'Move down') as HTMLButtonElement;
   const saveArrangeBtn = el('button', btnStyle('#6366f1'), 'Save this arrangement') as HTMLButtonElement;
   const undoBtn = el('button', btnStyle('#374151'), 'Undo') as HTMLButtonElement;
-  const closeBtn = el('button', { ...btnStyle('transparent'), opacity: '0.6' }, 'Close editor') as HTMLButtonElement;
+  const closeBtn = iconBtn('close', 'Close editor');
   // Publishing a just-saved draft live — the on-site golden path (no dashboard
   // round-trip). Hidden until a slot draft is saved this session.
   const publishBtn = el('button', btnStyle('#10b981'), 'Publish now — go live') as HTMLButtonElement;
@@ -746,20 +746,6 @@ export function mount(b: Boot): void {
   // Drafts tab: every saved test with an in-editor Preview — the per-arm
   // preview mode existed but was only reachable from the dashboard, so saved
   // work vanished from view and previewing meant a round-trip.
-  // Two-step discard arming on the button itself: first press asks ("Sure?"),
-  // second within 4s runs. No native confirm — a blocking dialog would freeze
-  // the page the editor overlays.
-  const armTwoStep = (btn: HTMLButtonElement, label: string, run: () => void): void => {
-    btn.onclick = () => {
-      if (btn.dataset.armed === '1') { btn.dataset.armed = ''; run(); return; }
-      btn.dataset.armed = '1';
-      btn.textContent = 'Sure?';
-      setTimeout(() => {
-        if (btn.isConnected && btn.dataset.armed === '1') { btn.dataset.armed = ''; btn.textContent = label; }
-      }, 4000);
-    };
-  };
-
   const smallBtn = (bg: string, label: string): HTMLButtonElement =>
     el('button', {
       ...btnStyle(bg), display: 'inline-block', width: 'auto', margin: '0',
@@ -777,17 +763,19 @@ export function mount(b: Boot): void {
     window.location.assign(url.toString());
   };
 
-  /** A Discard button wired to a draft-delete endpoint: two-step, disabled
-   *  while in flight, reports through the shared failure mapping. */
+  /** A Discard button wired to a draft-delete endpoint: one press deletes,
+   *  disabled while in flight, reports through the shared failure mapping.
+   *  No "Sure?" arming — the server only deletes DRAFT rows, so nothing live
+   *  can be lost, and the confirm step was friction on a cheap, safe action. */
   const discardBtn = (path: string, okMsg: string, done: () => void): HTMLButtonElement => {
     const btn = smallBtn('#374151', 'Discard');
-    armTwoStep(btn, 'Discard', async () => {
+    btn.onclick = async () => {
       btn.disabled = true;
       const r = await del(b, path);
       btn.disabled = false;
       reportSave(r, okMsg);
       if (r.r === 'ok') done();
-    });
+    };
     return btn;
   };
 
@@ -948,24 +936,18 @@ export function mount(b: Boot): void {
   // an invisible editor silently selecting elements would be worse than the
   // old always-open column.
   let pausedBeforeCollapse = false;
+  // Same launcher as the React dev tools (packages/react/src/devtools): black
+  // rounded square with the Sentient mark, so both surfaces read as one product.
   const bubble = el('button', {
     position: 'fixed', bottom: '16px', right: '16px', zIndex: '2147483647',
-    width: '46px', height: '46px', borderRadius: '50%', border: '1px solid rgba(99,102,241,0.55)',
-    background: '#111827', color: '#fff', cursor: 'pointer', display: 'none',
-    alignItems: 'center', justifyContent: 'center', gap: '4px',
-    font: '700 15px system-ui, sans-serif', boxShadow: '0 10px 34px rgba(0,0,0,0.45)',
+    width: '44px', height: '44px', borderRadius: '12px', border: '1px solid #2a2a2a',
+    background: '#000', cursor: 'pointer', display: 'none', padding: '0',
+    alignItems: 'center', justifyContent: 'center', boxShadow: '0 6px 18px rgba(0,0,0,0.4)',
   }) as HTMLButtonElement;
-  const bubbleDot = el('span', {
-    width: '7px', height: '7px', borderRadius: '50%', background: '#34d399', display: 'inline-block',
-  });
-  bubbleDot.className = 'sntedi-dot';
-  bubble.append(bubbleDot, el('span', {}, 'S'));
+  bubble.append(sentientMark(26));
   bubble.title = 'Open the SentientUI editor';
-  const collapseBtn = el('button', {
-    display: 'inline-block', width: 'auto', margin: '0', padding: '3px 8px',
-    fontSize: '10.5px', borderRadius: '999px', background: '#374151', color: '#fff',
-    border: 'none', cursor: 'pointer', whiteSpace: 'nowrap',
-  }, 'Minimize') as HTMLButtonElement;
+  bubble.setAttribute('aria-label', 'Open the SentientUI editor');
+  const collapseBtn = iconBtn('minimize', 'Minimize');
   collapseBtn.onclick = () => {
     panel.style.display = 'none';
     bubble.style.display = 'flex';
@@ -983,10 +965,6 @@ export function mount(b: Boot): void {
     display: 'inline-block', width: 'auto', margin: '0', padding: '3px 8px',
     fontSize: '10.5px', borderRadius: '999px', background: '#374151', whiteSpace: 'nowrap',
   });
-  Object.assign(closeBtn.style, {
-    display: 'inline-block', width: 'auto', margin: '0', padding: '3px 8px',
-    fontSize: '10.5px', borderRadius: '999px', whiteSpace: 'nowrap',
-  });
   headerRow.append(title, pauseBtn, collapseBtn, closeBtn);
 
   // Footer: what just happened + the next action, pinned under every tab.
@@ -998,8 +976,9 @@ export function mount(b: Boot): void {
   Object.assign(status.style, { marginBottom: '4px' });
   footer.append(reviewHost, status, publishBtn, activateGoalBtn);
 
+  // Always visible: page-level goals need no selection, so the chat does not either.
   const suggestBtn = el('button', {
-    display: 'none', width: 'auto', margin: '0', padding: '5px 10px', flex: '0 0 auto',
+    display: 'inline-block', width: 'auto', margin: '0', padding: '5px 10px', flex: '0 0 auto',
     fontSize: '11px', borderRadius: '999px', background: 'rgba(250,204,21,0.15)',
     border: '1px solid rgba(250,204,21,0.45)', color: '#fde68a', cursor: 'pointer', whiteSpace: 'nowrap',
   }, '✨ Ask AI') as HTMLButtonElement;
@@ -1026,13 +1005,17 @@ export function mount(b: Boot): void {
   let previewRestore: (() => void) | null = null;
   const discardPreview = (): void => { previewRestore?.(); previewRestore = null; };
   const commitPreview = (): void => { previewRestore = null; };
+  // Which slot the current UNcommitted preview belongs to, when the AI chat
+  // made it — so discarding that draft puts the page back, without also
+  // wiping some unrelated form's live preview that replaced it since.
+  let chatPreviewSlot: string | null = null;
   // Dirty tracking: a form the operator has typed into must not be discarded
   // by ONE stray page click — in picking mode the whole viewport is a click
   // target, so a misclick was the single biggest way to lose work. The first
   // conflicting click warns; a repeat click on the same element confirms.
   let formDirty = false;
   let discardArmed: Element | null = null;
-  const closeForm = (): void => { discardPreview(); formHost.textContent = ''; formDirty = false; discardArmed = null; closeArmed = false; };
+  const closeForm = (): void => { discardPreview(); chatPreviewSlot = null; formHost.textContent = ''; formDirty = false; discardArmed = null; closeArmed = false; };
 
   // Renders an inline labeled form into the panel (no native prompt, no innerHTML).
   // Field types: 'text' (default), 'color' (<input type=color>, only counts if the
@@ -1204,6 +1187,7 @@ export function mount(b: Boot): void {
   // activate, or discard (including a discard from the Drafts tab).
   const dropPendingSlot = (slotId: string): void => {
     if (pendingPublishSlotId !== slotId) return;
+    if (chatPreviewSlot === slotId) { discardPreview(); chatPreviewSlot = null; }
     pendingPublishSlotId = null;
     publishBtn.style.display = 'none';
     attachFunnelBtn.style.display = 'none';
@@ -1436,8 +1420,7 @@ export function mount(b: Boot): void {
     setStatus(unique ? '✓ Matches exactly 1 element' : '', unique);
     if (!unique) renderSuggestion(t);
     hint.style.display = 'none';
-    suggestBtn.style.display = 'inline-block';
-    aiHost.textContent = ''; // stale suggestions describe the previous element
+    updateChatScope(); // the conversation survives a new selection; its context line follows it
     // Reveal the element actions now there is something for them to act on.
     for (const btn of elementButtons) btn.style.display = 'block';
     // Text/Style are headless triggers now — their TAB opens the form
@@ -1485,12 +1468,11 @@ export function mount(b: Boot): void {
     prevEl = null; nextEl = null; prevLocator = null; nextLocator = null;
     positionSelectionRing(); // hides the ring (nothing is selected)
     suggestHost.textContent = '';
-    aiHost.textContent = '';
+    updateChatScope();
     crumbHost.textContent = '';
     crumbHost.style.display = 'none';
     selectedLabel.textContent = '';
     selectedLabel.style.display = 'none';
-    suggestBtn.style.display = 'none';
     for (const btn of elementButtons) btn.style.display = 'none';
     hint.style.display = 'block';
     setStatus('');
@@ -1894,14 +1876,15 @@ export function mount(b: Boot): void {
     goalId: string,
     payload: {
       event: 'click' | 'form_submit' | 'url_reached' | 'scroll_depth';
-      locator?: CompoundLocator; urlPattern?: string; threshold?: number;
+      locator?: CompoundLocator; urlPattern?: string; threshold?: number; displayName?: string;
     },
     label?: string,
-  ): Promise<void> => {
+  ): Promise<SaveOutcome> => {
     setStatus('Saving…');
     const r = await save(b, `/v1/editor/goals/${encodeURIComponent(goalId)}`, payload);
     if (r.r === 'ok') { emit('draft_saved', { kind: 'goal' }); offerGoalActivation(goalId, label); }
     reportSave(r, '✓ Goal saved. Click “Start tracking” below to go live.');
+    return r;
   };
 
   goalBtn.onclick = () => {
@@ -2179,183 +2162,352 @@ export function mount(b: Boot): void {
     }
   };
 
-  // 💡 AI suggestions (conservative by construction): the model only ever
-  // PROPOSES — applying a card opens the matching form prefilled (live
-  // preview included), and the operator still saves or cancels. The server
-  // total-validates the model output, so a bad style value never gets here.
-  // "Try it" needs the matching form OPEN and prefillable. setActiveTab is a
-  // deliberate no-op on the current tab, so re-open the form explicitly when
-  // it isn't on screen (e.g. the operator cancelled it and stayed on the tab).
-  // Returns false — with the reason in the status line — when the element
-  // can't take this kind of edit, instead of a silent nothing-happened.
-  const ensureFormFor = (kind: 'text' | 'style'): boolean => {
-    const btn = kind === 'text' ? textBtn : styleBtn;
-    if (btn.disabled) {
-      setStatus(btn.title || 'This element can’t be targeted reliably — try a heading, a button, or a whole section.', false);
-      return false;
+  // ---- ✨ AI chat -----------------------------------------------------------
+  // The chat replaces the old one-shot 💡 suggestion box (type → cards →
+  // "Try it" → form → Save). Saying what you want now CREATES the draft and
+  // previews it on the page: the server's editor tools validate a component or
+  // goal draft inside the model loop, and the artifact lands here, where it is
+  // saved through the same draft endpoints as the forms (plan caps, audit) and
+  // shown in place. Nothing publishes — the review card's Publish / Start
+  // tracking stay the human step.
+  //
+  // Context is rebuilt on every send: the selected element plus the audit
+  // targets that resolve on this page, each under an opaque ref. The model
+  // only ever names refs; chatRefs maps them back to live nodes + locators,
+  // so it can never invent a selector.
+  type ChatMsg = { role: 'user' | 'assistant'; content: string };
+  const chatHistory: ChatMsg[] = [];
+  const chatRefs = new Map<string, { node: Element; locator: CompoundLocator }>();
+  let chatBusy = false;
+  let chatLog: HTMLElement | null = null;
+  let chatInput: HTMLInputElement | null = null;
+  let chatScope: HTMLElement | null = null;
+
+  const buildChatContext = () => {
+    chatRefs.clear();
+    const elements: Array<{ ref: string; tag: string; text: string; isLeaf: boolean; inForm: boolean; selected?: boolean; label?: string }> = [];
+    const add = (node: Element, locator: CompoundLocator, label?: string): void => {
+      if (elements.length >= 16 || [...chatRefs.values()].some((r) => r.node === node)) return;
+      const isSel = node === selected;
+      const ref = isSel ? 'selected' : `e${elements.length}`;
+      chatRefs.set(ref, { node, locator });
+      elements.push({
+        ref, tag: node.tagName.toLowerCase().slice(0, 16),
+        text: (node.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 300),
+        isLeaf: node.childElementCount === 0, inForm: !!node.closest('form'),
+        ...(isSel ? { selected: true } : {}), ...(label ? { label: label.slice(0, 120) } : {}),
+      });
+    };
+    // A non-unique selection is left out on purpose: a draft on it would
+    // save a locator that resolves to the wrong element (or several).
+    if (selected && currentLocator && selectedUnique) add(selected, currentLocator);
+    for (const t of keyboardTargets) {
+      const node = resolveLocatorOne(t.locator, document);
+      if (node) add(node, t.locator, t.label);
     }
-    setActiveTab(kind);
-    const probe = kind === 'text' ? '[data-field="alt"]' : '[data-field="color"]';
-    if (!formHost.querySelector(probe)) btn.onclick?.(new MouseEvent('click') as never);
-    return true;
+    return { pagePath: normalizePagePath(location.pathname), pageTitle: document.title.slice(0, 200), elements };
   };
 
-  // Clicking ✨ opens an instruction box rather than firing straight away. The
-  // dashboard used to carry a separate "Test copy with AI" chat for saying what
-  // you WANTED, next to an editor button that only handed back ideas — two doors
-  // to the same intent, and only one of them could see the element. This is that
-  // door, on the element: type what to try, or submit empty for ideas.
-  const openAiPrompt = (): void => {
-    if (!selected) return;
-    aiHost.textContent = '';
-    const box = el('div', {
-      margin: '0 0 8px', padding: '9px 11px', borderRadius: '10px',
-      background: 'rgba(250,204,21,0.08)', border: '1px solid rgba(250,204,21,0.3)',
+  const chatBubble = (role: 'user' | 'assistant' | 'note', text = ''): HTMLElement => {
+    const mine = role === 'user';
+    const bubble = el('div', {
+      margin: '6px 0', padding: '7px 10px', borderRadius: '10px', fontSize: '12px', lineHeight: '1.45',
+      whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: '88%',
+      marginLeft: mine ? 'auto' : '0',
+      background: mine ? '#6366f1' : role === 'note' ? 'transparent' : 'rgba(255,255,255,0.07)',
+      opacity: role === 'note' ? '0.75' : '1',
+    }, text);
+    chatLog?.append(bubble);
+    if (chatLog) chatLog.scrollTop = chatLog.scrollHeight;
+    return bubble;
+  };
+
+  const updateChatScope = (): void => {
+    if (!chatScope) return;
+    chatScope.textContent = selected
+      ? selectedUnique
+        ? `Looking at: ${describeElement(selected)}`
+        : 'This element can’t be targeted reliably — pick a heading, button, or section.'
+      : 'Nothing selected — click an element, or ask for a page goal.';
+  };
+
+  /** Live preview of one draft version on the real element (null = original).
+   *  Rides previewRestore, so moving on (new selection, tab switch, close)
+   *  puts the page back exactly like a form preview. */
+  const previewVersion = (node: HTMLElement, ops: SlotOps | null): void => {
+    discardPreview();
+    const origText = node.textContent ?? '';
+    const origCss = node.style.cssText;
+    previewRestore = () => { node.textContent = origText; node.style.cssText = origCss; };
+    if (!ops) return;
+    if (typeof ops.text === 'string') node.textContent = ops.text;
+    for (const [k, v] of Object.entries(ops.style ?? {})) {
+      const prop = CSS_PROP[k];
+      if (prop && typeof v === 'string' && cssValueSafe(v)) node.style.setProperty(prop, v.trim(), 'important');
+    }
+  };
+
+  const createComponentDraft = async (p: { ref: string; label: string; versions: Array<{ id: string; displayName: string; ops: SlotOps }> }): Promise<string> => {
+    const hit = chatRefs.get(p.ref);
+    if (!hit || !hit.node.isConnected) return '⚠ That element is no longer on the page — click it and ask again.';
+    const { node, locator } = hit;
+    const hasText = p.versions.some((v) => typeof v.ops.text === 'string');
+    const slotId = deriveSlotId(hasText ? 'text' : 'style', locator, node);
+    const page = pageScopeChoices(location.pathname, knownPages[slotId])[0];
+    setStatus('Saving…');
+    const r = await save(b, `/v1/editor/slots/${encodeURIComponent(slotId)}`, {
+      kind: 'arms',
+      target: withPage(locator, page),
+      draftConfig: { arms: [
+        { id: 'a', displayName: 'Original', ops: hasText ? { text: (node.textContent ?? '').trim() } : {} },
+        ...p.versions,
+      ] },
     });
-    const input = el('input', {
-      width: '100%', boxSizing: 'border-box', padding: '6px 8px', borderRadius: '7px',
-      border: '1px solid rgba(255,255,255,0.18)', background: 'rgba(0,0,0,0.25)',
-      color: '#fff', font: '12px system-ui, sans-serif',
-    }) as HTMLInputElement;
-    input.type = 'text';
-    input.maxLength = 300;
-    input.placeholder = 'e.g. shorter and more urgent';
-    input.setAttribute('data-field', 'ai-instruction');
-    const go = el('button', {
-      ...btnStyle('#6366f1'), display: 'inline-block', width: 'auto', margin: '8px 0 0',
-      padding: '4px 10px', fontSize: '11px',
-    }, 'Go') as HTMLButtonElement;
-    // Named so it can be addressed unambiguously — "Go" is a substring of the
-    // Goals tab label, which sits in the same panel.
-    go.setAttribute('data-action', 'ai-go');
-    go.onclick = () => { void runSuggest(input.value.trim()); };
-    input.onkeydown = (e) => { if ((e as KeyboardEvent).key === 'Enter') { e.preventDefault(); go.onclick?.(new MouseEvent('click') as never); } };
-    box.append(
-      el('div', { fontWeight: '600', marginBottom: '4px' }, 'What should this element do differently?'),
-      input,
-      el('div', { opacity: '0.7', fontSize: '11px', marginTop: '4px' }, 'Leave it blank for ideas. Nothing goes live — you review and save whatever comes back.'),
-      go,
-    );
-    aiHost.append(box);
-    input.focus();
+    reportSave(r, '✓ Draft saved and previewing — nothing is live until you publish.');
+    if (r.r !== 'ok') return status.textContent ?? '⚠ Couldn’t save the draft.';
+    emit('draft_saved', { kind: 'slot', via: 'chat' });
+    if (node !== selected) selectElement(node);
+    closeForm(); // the tab's auto-opened form would fight the preview
+    const target = node as HTMLElement;
+    previewVersion(target, p.versions[0]!.ops);
+    chatPreviewSlot = slotId;
+    try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { /* older browsers */ }
+    offerPublish(slotId, p.label, p.versions[0]!.id);
+
+    // Version switcher in the chat, so each version can be eyeballed in place.
+    const card = chatBubble('assistant');
+    card.textContent = '';
+    card.append(el('div', { fontWeight: '600', marginBottom: '6px' }, `Draft: ${p.label}`));
+    const row = el('div', { display: 'flex', gap: '5px', flexWrap: 'wrap' });
+    const chips: HTMLButtonElement[] = [];
+    const choose = (chip: HTMLButtonElement, ops: SlotOps | null): void => {
+      for (const c of chips) c.style.background = '#374151';
+      chip.style.background = '#6366f1';
+      previewVersion(target, ops);
+      chatPreviewSlot = slotId;
+    };
+    for (const [label, ops] of [['Original', null], ...p.versions.map((v) => [v.displayName, v.ops])] as Array<[string, SlotOps | null]>) {
+      const chip = smallBtn('#374151', label);
+      chip.onclick = () => choose(chip, ops);
+      chips.push(chip);
+      row.append(chip);
+    }
+    chips[1]!.style.background = '#6366f1';
+    card.append(row);
+    return `[Created draft "${p.label}" with ${p.versions.length} version(s)]`;
   };
 
-  suggestBtn.onclick = () => openAiPrompt();
+  /** Point at what a goal counts: the element (or form) outlined, or for a
+   *  reading-depth goal a line at that depth. Its own class — the audit hint
+   *  class clears on the first mousemove, which would erase this instantly. */
+  const flashGoal = (node: Element | null, threshold: number | undefined, label: string): void => {
+    const marks: HTMLElement[] = [];
+    const chipStyle: Partial<CSSStyleDeclaration> = {
+      position: 'absolute', pointerEvents: 'none', zIndex: '2147483645', padding: '2px 6px', borderRadius: '4px',
+      background: '#f59e0b', color: '#111827', font: '600 11px system-ui, sans-serif', whiteSpace: 'nowrap',
+    };
+    let top: number | null = null;
+    if (node) {
+      const r = node.getBoundingClientRect();
+      top = r.top + window.scrollY;
+      marks.push(
+        el('div', {
+          position: 'absolute', pointerEvents: 'none', zIndex: '2147483645', left: `${r.left + window.scrollX - 3}px`, top: `${top - 3}px`,
+          width: `${r.width + 6}px`, height: `${r.height + 6}px`, border: '2px dashed #f59e0b', borderRadius: '6px',
+        }),
+        el('div', { ...chipStyle, left: `${r.left + window.scrollX}px`, top: `${Math.max(0, top - 24)}px` }, `Goal: ${label}`),
+      );
+    } else if (threshold !== undefined) {
+      top = Math.round(document.documentElement.scrollHeight * threshold);
+      marks.push(
+        el('div', { position: 'absolute', pointerEvents: 'none', zIndex: '2147483645', left: '0', right: '0', top: `${top}px`, borderTop: '2px dashed #f59e0b' }),
+        el('div', { ...chipStyle, left: '16px', top: `${top + 4}px` }, `Goal counts here: ${label}`),
+      );
+    }
+    if (marks.length === 0) return;
+    (document.body ?? document.documentElement).append(...marks);
+    if (top !== null) { try { window.scrollTo({ top: Math.max(0, top - window.innerHeight / 3), behavior: 'smooth' }); } catch { /* jsdom */ } }
+    setTimeout(() => { for (const m of marks) m.remove(); }, 6000);
+  };
 
-  const runSuggest = async (instruction: string): Promise<void> => {
-    if (!selected) return;
-    // Capture the request's element: the response can land after the operator
-    // selects something else, and stale cards must never render — let alone
-    // prefill a live preview — against the NEW element (same stale-fetch
-    // guard as renderDrafts).
-    const requestTarget = selected;
-    suggestBtn.disabled = true;
-    const oldLabel = suggestBtn.textContent;
-    suggestBtn.textContent = 'Thinking…';
-    aiHost.textContent = '';
-    emit('form_opened', { kind: 'suggest' });
-    type Suggestion =
-      | { kind: 'text'; title: string; reason: string; variant: string }
-      | { kind: 'style'; title: string; reason: string; style: Record<string, string> }
-      | { kind: 'goal'; title: string; reason: string; goalType: 'click' | 'form_submit' };
-    let body: { suggestions?: Suggestion[]; locked?: boolean; exhausted?: boolean } = {};
-    // A failed call must not render as "no suggestions" — that presents a
-    // retry-worthy network blip (or an expired token) as a definitive verdict.
-    let failed: 'expired' | 'error' | null = null;
+  const createGoalDraft = async (p: { event: 'click' | 'form_submit' | 'url_reached' | 'scroll_depth'; displayName: string; ref?: string; urlPattern?: string; threshold?: number }): Promise<string> => {
+    let node: Element | null = null;
+    let goalId: string;
+    let payload: Parameters<typeof saveGoal>[1];
+    if (p.event === 'click' || p.event === 'form_submit') {
+      const hit = p.ref ? chatRefs.get(p.ref) : undefined;
+      if (!hit || !hit.node.isConnected) return '⚠ That element is no longer on the page — click it and ask again.';
+      if (p.event === 'click') {
+        node = hit.node;
+        goalId = deriveGoalId(goalSeed(node), JSON.stringify(hit.locator));
+        payload = { event: 'click', locator: hit.locator };
+      } else {
+        const form = hit.node.closest('form');
+        if (!form) return '⚠ That element isn’t inside a form.';
+        const formLoc = generateLocator(form, document);
+        if (!resolvesUniquely(formLoc, form, document)) return '⚠ This form can’t be targeted reliably, so it can’t be tracked.';
+        node = form;
+        goalId = deriveGoalId(form.getAttribute('id') ?? form.getAttribute('name') ?? 'form-submitted', JSON.stringify(formLoc));
+        payload = { event: 'form_submit', locator: formLoc };
+      }
+    } else if (p.event === 'url_reached') {
+      const path = p.urlPattern ?? normalizePagePath(location.pathname);
+      goalId = deriveGoalId(slugify(path) ? `reached-${slugify(path)}` : 'page-visited', path);
+      payload = { event: 'url_reached', urlPattern: path };
+    } else {
+      const pct = Math.round((p.threshold ?? 0.75) * 100);
+      goalId = `read-${pct}pct`;
+      payload = { event: 'scroll_depth', threshold: p.threshold ?? 0.75 };
+    }
+    const r = await saveGoal(goalId, { ...payload, displayName: p.displayName }, p.displayName);
+    if (r.r !== 'ok') return status.textContent ?? '⚠ Couldn’t save the goal.';
+    flashGoal(node, p.event === 'scroll_depth' ? payload.threshold : undefined, p.displayName);
+    return `[Created draft goal "${p.displayName}"]`;
+  };
+
+  const sendChat = async (text: string): Promise<void> => {
+    const message = text.trim();
+    if (!message || chatBusy) return;
+    chatBusy = true;
+    if (chatInput) { chatInput.value = ''; chatInput.disabled = true; }
+    chatBubble('user', message);
+    chatHistory.push({ role: 'user', content: message.slice(0, 4000) });
+    emit('form_opened', { kind: 'chat' });
+    const reply = chatBubble('assistant', '…');
+    let replyText = '';
+    let afterTool = false;
+    const notes: string[] = [];
+    const pending: Array<Promise<void>> = [];
+    const handle = (data: string): void => {
+      if (data === '[DONE]') return;
+      let ev: { type?: string; text?: string; name?: string; state?: string; question?: string; options?: Array<{ id: string; label: string }>; artifact?: { type: string; payload: never }; error?: string };
+      try { ev = JSON.parse(data); } catch { return; }
+      if (ev.error) { notes.push('⚠ The assistant hit a problem — try again.'); return; }
+      if (ev.type === 'delta' && ev.text) {
+        // The server concatenates text across tool rounds with no separator
+        // ("…attention.Three versions…") — break the paragraph where a tool ran.
+        if (afterTool && replyText) replyText += '\n\n';
+        afterTool = false;
+        replyText += ev.text;
+        reply.textContent = replyText;
+        if (chatLog) chatLog.scrollTop = chatLog.scrollHeight;
+      } else if (ev.type === 'tool_status') {
+        afterTool = true;
+        if (ev.state === 'running' && !replyText) reply.textContent = ev.name?.startsWith('create_') ? 'Creating a draft…' : 'Thinking…';
+      } else if (ev.type === 'choice_prompt' && ev.question) {
+        replyText += (replyText ? '\n\n' : '') + ev.question;
+        reply.textContent = replyText;
+        const row = el('div', { display: 'flex', gap: '5px', flexWrap: 'wrap', marginTop: '6px' });
+        for (const o of ev.options ?? []) {
+          const chip = smallBtn('#374151', o.label);
+          chip.onclick = () => { void sendChat(o.label); };
+          row.append(chip);
+        }
+        reply.append(row);
+      } else if (ev.type === 'artifact' && ev.artifact) {
+        const run = ev.artifact.type === 'editor_component_draft' ? createComponentDraft(ev.artifact.payload)
+          : ev.artifact.type === 'editor_goal_draft' ? createGoalDraft(ev.artifact.payload)
+          : null;
+        if (run) pending.push(run.then((note) => { notes.push(note); if (note.startsWith('⚠')) chatBubble('note', note); }));
+      }
+    };
     try {
-      const res = await fetch(`${b.apiBase}/v1/editor/suggest`, {
+      // Bounded history (server caps at 24); never lead with an assistant turn.
+      let history = chatHistory.slice(-20);
+      while (history[0]?.role === 'assistant') history = history.slice(1);
+      const res = await fetch(`${b.apiBase}/v1/editor/chat`, {
         method: 'POST',
         headers: { authorization: `Bearer ${b.token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          element: {
-            tag: requestTarget.tagName.toLowerCase(),
-            text: (requestTarget.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 400),
-          },
-          pageUrl: window.location.pathname,
-          ...(instruction ? { instruction: instruction.slice(0, 300) } : {}),
-          ...(sitePalette ? { palette: sitePalette } : {}),
-        }),
+        body: JSON.stringify({ messages: history, context: buildChatContext() }),
       });
-      if (res.ok) body = (await res.json()) as typeof body;
-      else failed = res.status === 401 ? 'expired' : 'error';
-    } catch { failed = 'error'; }
-    suggestBtn.disabled = false;
-    suggestBtn.textContent = oldLabel;
-    if (selected !== requestTarget) return; // the operator moved on mid-request
-    if (failed) {
-      setStatus(failed === 'expired'
-        ? 'Editor session expired — reopen it from your dashboard to keep editing.'
-        : '⚠ Couldn’t get suggestions — check your connection and try again.', false);
-      return;
-    }
-    if (body.locked) { setStatus('AI suggestions aren’t included in this plan.', false); return; }
-    if (body.exhausted) { setStatus('You’ve used today’s AI allowance — more tomorrow, or upgrade for a bigger daily budget.', false); return; }
-    const suggestions = body.suggestions ?? [];
-    if (suggestions.length === 0) {
-      setStatus(instruction
-        ? 'Couldn’t do that safely on this element — try asking for a smaller change, or pick a headline or a button.'
-        : 'No safe suggestions for this element — try a headline, a button, or a section.', false);
-      return;
-    }
-    const fill = (key: string, value: string): void => {
-      const field = formHost.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-field="${key}"]`);
-      if (!field) return;
-      field.value = value;
-      field.dispatchEvent(new Event('input')); // live preview + touched flag ride this
-    };
-    for (const sug of suggestions) {
-      const card = el('div', {
-        margin: '0 0 8px', padding: '9px 11px', borderRadius: '10px', fontSize: '12px',
-        background: 'rgba(250,204,21,0.08)', border: '1px solid rgba(250,204,21,0.3)',
-      });
-      card.append(
-        el('div', { fontWeight: '600', marginBottom: '2px' }, sug.title),
-        el('div', { opacity: '0.75', marginBottom: '6px' }, sug.reason),
-      );
-      const apply = el('button', {
-        ...btnStyle('#6366f1'), display: 'inline-block', width: 'auto', margin: '0',
-        padding: '4px 10px', fontSize: '11px',
-      }, 'Try it') as HTMLButtonElement;
-      apply.onclick = () => {
-        if (selected !== requestTarget) { aiHost.textContent = ''; return; } // belt-and-braces vs. the clear in selectElement
-        aiHost.textContent = '';
-        if (sug.kind === 'text') {
-          if (!ensureFormFor('text')) return;
-          fill('alt', sug.variant);
-        } else if (sug.kind === 'style') {
-          if (!ensureFormFor('style')) return;
-          for (const [k, v] of Object.entries(sug.style)) {
-            if (k === 'color' || k === 'background') {
-              // Only a value the picker can actually hold: anything else is
-              // coerced to #000000 by <input type=color>, previewing and
-              // saving a black the model never proposed.
-              const hex = toHexColor(v);
-              if (isHex6(hex)) fill(k, hex);
-            } else if (k === 'textAlign') {
-              // The form's select has no start/end options — they'd fill as ''.
-              fill(k, v === 'start' ? 'left' : v === 'end' ? 'right' : v);
-            } else {
-              fill(k, v);
-            }
-          }
-        } else {
-          const useForm = sug.goalType === 'form_submit' && !formGoalBtn.disabled;
-          // goalBtn disables exactly when the locator is not unique; firing it
-          // anyway would save a click goal that can count the wrong element
-          // (goals have no confirmation form — one click saves).
-          if (!useForm && goalBtn.disabled) {
-            setStatus('This element can’t be tracked reliably — select a specific button or link instead.', false);
-            return;
-          }
-          setActiveTab('goals');
-          if (useForm) formGoalBtn.onclick?.(new MouseEvent('click') as never);
-          else goalBtn.onclick?.(new MouseEvent('click') as never);
+      if (!res.ok) {
+        const code = ((await res.json().catch(() => null)) as { error?: string } | null)?.error;
+        reply.textContent = res.status === 401 ? 'Editor session expired — reopen it from your dashboard. Your drafts are safe.'
+          : code === 'rate_limit' ? 'You’ve used today’s AI allowance — more tomorrow, or upgrade for a bigger daily budget.'
+          : code === 'plan_required' ? 'AI chat isn’t included in this plan.'
+          : code === 'ai_unavailable' ? 'The assistant is unavailable right now — try again later.'
+          : `⚠ Couldn’t reach the assistant — try again. (HTTP ${res.status})`;
+        chatHistory.pop(); // the turn never happened; don't replay it next time
+        return;
+      }
+      const reader = res.body?.getReader();
+      let buf = '';
+      const drain = (): void => {
+        let i: number;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          for (const line of buf.slice(0, i).split('\n')) if (line.startsWith('data: ')) handle(line.slice(6));
+          buf = buf.slice(i + 2);
         }
       };
-      card.append(apply);
-      aiHost.append(card);
+      if (reader) {
+        const dec = new TextDecoder();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          drain();
+        }
+      } else {
+        buf = await res.text();
+      }
+      buf += '\n\n';
+      drain();
+      await Promise.all(pending);
+      if (!replyText) reply.textContent = notes.some((n) => n.startsWith('[')) ? 'Done — have a look at the page.' : 'No reply — try rephrasing.';
+      for (const n of notes) if (n.startsWith('⚠ The assistant')) chatBubble('note', n);
+      // The assistant turn carries what was actually created, so a follow-up
+      // ("make it shorter") knows which draft it is talking about.
+      const content = [replyText, ...notes.filter((n) => n.startsWith('['))].filter(Boolean).join('\n');
+      chatHistory.push({ role: 'assistant', content: (content || '(no reply)').slice(0, 4000) });
+    } catch {
+      reply.textContent = '⚠ Couldn’t reach the assistant — check your connection and try again.';
+      chatHistory.pop();
+    } finally {
+      chatBusy = false;
+      if (chatInput) { chatInput.disabled = false; chatInput.focus(); }
     }
   };
+
+  const openChat = (): void => {
+    if (chatLog) { chatInput?.focus(); return; } // already open — keep the conversation
+    const box = el('div', {
+      margin: '0 0 8px', padding: '9px 11px', borderRadius: '10px',
+      background: 'rgba(250,204,21,0.06)', border: '1px solid rgba(250,204,21,0.3)',
+    });
+    box.setAttribute('data-sentient-chat', '');
+    const head = el('div', { display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' });
+    const closeChat = iconBtn('close', 'Close AI chat');
+    closeChat.onclick = () => { aiHost.textContent = ''; chatLog = null; chatInput = null; chatScope = null; };
+    head.append(el('div', { fontWeight: '600', flex: '1 1 auto' }, '✨ AI'), closeChat);
+    chatScope = el('div', { fontSize: '11px', opacity: '0.7', marginBottom: '4px' });
+    updateChatScope();
+    chatLog = el('div', { maxHeight: '260px', overflowY: 'auto', overscrollBehavior: 'contain' });
+    if (chatHistory.length === 0) {
+      chatBubble('note', 'Tell me what to try — e.g. “make this headline more urgent” or “track clicks on the signup button”. I’ll create a draft and show it on the page. Nothing goes live until you publish.');
+    } else {
+      for (const m of chatHistory) chatBubble(m.role, m.content);
+    }
+    const inputRow = el('div', { display: 'flex', gap: '6px', marginTop: '6px' });
+    chatInput = el('input', {
+      flex: '1 1 auto', minWidth: '0', boxSizing: 'border-box', padding: '6px 8px', borderRadius: '7px',
+      border: '1px solid rgba(255,255,255,0.18)', background: 'rgba(0,0,0,0.25)', color: '#fff', font: '12px system-ui, sans-serif',
+    }) as HTMLInputElement;
+    chatInput.type = 'text';
+    chatInput.maxLength = 1000;
+    chatInput.placeholder = 'What do you want to change or track?';
+    chatInput.setAttribute('data-field', 'ai-chat');
+    const send = smallBtn('#6366f1', 'Send');
+    send.setAttribute('data-action', 'ai-send');
+    send.onclick = () => { if (chatInput) void sendChat(chatInput.value); };
+    chatInput.onkeydown = (e) => { if ((e as KeyboardEvent).key === 'Enter') { e.preventDefault(); send.onclick?.(new MouseEvent('click') as never); } };
+    inputRow.append(chatInput, send);
+    box.append(head, chatScope, chatLog, inputRow);
+    aiHost.textContent = '';
+    aiHost.append(box);
+    chatInput.focus();
+  };
+
+  suggestBtn.onclick = () => openChat();
 
   const doMove = (dir: 'up' | 'down'): void => {
     if (!selected) return;
@@ -2445,7 +2597,7 @@ export function mount(b: Boot): void {
   closeBtn.onclick = () => {
     if ((formDirty || moved) && !closeArmed) {
       closeArmed = true;
-      setStatus('⚠ Unsaved changes — click “Close editor” again to discard them.', false);
+      setStatus('⚠ Unsaved changes — click × again to discard them.', false);
       return;
     }
     teardown();
@@ -2461,6 +2613,45 @@ export function mount(b: Boot): void {
 
   renderActiveTab();
   emit('editor_opened');
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svgNode(tag: string, attrs: Record<string, string>): SVGElement {
+  const n = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  return n;
+}
+
+/** The Sentient mark — same paths as SentientMark in the React dev tools. */
+function sentientMark(size: number): SVGElement {
+  const svg = svgNode('svg', { width: String(size), height: String(size), viewBox: '0 0 32 32', fill: 'none', 'aria-hidden': 'true' });
+  const stroke = { stroke: '#fff', 'stroke-width': '2.2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
+  svg.append(
+    svgNode('path', { d: 'M21 9H14C11.2 9 9.8 10.8 9.8 13C9.8 15.4 11.6 16.6 14.5 16.6H18.5C20.5 16.6 20.7 18.2 20.4 19.6', ...stroke }),
+    svgNode('path', { d: 'M10 22H17', ...stroke }),
+    svgNode('circle', { cx: '20.6', cy: '22', r: '2.1', fill: '#fff' }),
+  );
+  return svg;
+}
+
+/** Flat icon button for the panel header (– minimize, × close). The label
+ *  rides aria-label + title, since the button has no visible text. */
+function iconBtn(icon: 'minimize' | 'close', label: string): HTMLButtonElement {
+  const btn = el('button', {
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: '0 0 auto',
+    width: '24px', height: '24px', margin: '0', padding: '0', borderRadius: '6px',
+    background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer',
+  }) as HTMLButtonElement;
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
+  const svg = svgNode('svg', { width: '14', height: '14', viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': 'true' });
+  const line = { stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round' };
+  if (icon === 'minimize') svg.append(svgNode('path', { d: 'M3 7h8', ...line }));
+  else svg.append(svgNode('path', { d: 'M3.5 3.5l7 7M10.5 3.5l-7 7', ...line }));
+  btn.append(svg);
+  btn.onmouseenter = () => { btn.style.background = 'rgba(255,255,255,0.1)'; btn.style.color = '#fff'; };
+  btn.onmouseleave = () => { btn.style.background = 'transparent'; btn.style.color = '#9ca3af'; };
+  return btn;
 }
 
 function btnStyle(bg: string): Partial<CSSStyleDeclaration> {

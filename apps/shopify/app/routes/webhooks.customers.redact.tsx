@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateWebhookAllowingExpiredToken } from "../lib/webhook-auth.server";
 
 // GDPR compliance webhook — mandatory for every App Store listing.
 //
@@ -11,7 +11,9 @@ import { authenticate } from "../shopify.server";
 // If this app ever starts persisting customer-scoped rows, the deletion has to
 // happen HERE — an empty handler that silently keeps data is worse than none.
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, topic } = await authenticate.webhook(request);
+  // Fires after uninstall, when the shop's offline token is dead and
+  // authenticate.webhook would 500 on the refresh — see webhook-auth.server.ts.
+  const { shop, topic } = await authenticateWebhookAllowingExpiredToken(request);
   console.log(`[sentient] ${topic} for ${shop}: no customer records held, nothing to erase`);
   return new Response();
 };

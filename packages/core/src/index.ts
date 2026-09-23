@@ -430,6 +430,19 @@ export type SentientClient = {
    * KEEPS the visitor identity, decision snapshot, and retry bucket. Use for
    * component unmount / re-init (framework providers call this on cleanup).
    */
+  /**
+   * Drain the event queue now, without tearing anything down.
+   *
+   * The queue flushes on its own timer and on its own pagehide /
+   * visibilitychange listeners, both registered when this client is built. The
+   * engagement capture is imported later and banks dwell and the interaction
+   * snapshot INSIDE those same lifecycle events — i.e. after the queue has
+   * already drained — so on the leave path its events sat in the queue while
+   * the page went away. Delivery on that path measured ~5-8% (Bodyshop audit
+   * 2026-08-30); a visit shorter than the 5 s tick delivered nothing at all.
+   * Anything that banks late in a lifecycle handler must call this after.
+   */
+  flush(): void;
   dispose(): void;
   /**
    * Consent-revocation / forget-me teardown: everything `dispose()` does,
@@ -728,6 +741,7 @@ const SSR_CLIENT: SentientClient = {
   getPersona: () => null,
   fetchWeights: () => Promise.resolve([]),
   getGraph: () => ({ pageNodes: [], capturedAt: 0 }),
+  flush: () => undefined,
   dispose: () => undefined,
   destroy: () => undefined,
 };
@@ -881,6 +895,7 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
     reportSlots: () => undefined,
     getPersona: () => null,
     getGraph: () => ({ pageNodes: [], capturedAt: 0 }),
+    flush: () => undefined,
     dispose: () => undefined,
     destroy: () => undefined,
   };
@@ -923,6 +938,7 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
     getPersona: () => inner.getPersona(),
     fetchWeights: () => inner.fetchWeights(),
     getGraph: () => inner.getGraph(),
+    flush: () => inner.flush(),
     dispose: () => inner.dispose(),
     destroy: () => inner.destroy(),
   };
@@ -1953,6 +1969,13 @@ export function init(config: SentientConfig): SentientClient {
 
     getGraph() {
       return { pageNodes: [], capturedAt: 0 };
+    },
+
+    flush() {
+      // Both queues: a goal banked late in a lifecycle handler races the same
+      // unload pipeline the event queue does.
+      eventQueue.flush();
+      goalQueue.flush();
     },
 
     dispose() {

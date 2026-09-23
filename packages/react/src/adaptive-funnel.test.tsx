@@ -25,7 +25,7 @@ function makeClient() {
       variantId: 'variant-a', assignedAt: Date.now(), segment: 'desktop:direct', confidence: 1,
     }),
     assign: vi.fn().mockResolvedValue({ variantId: 'variant-a', assignmentTtlMs: 0 }),
-    destroy: vi.fn(), dispose: vi.fn(),
+    destroy: vi.fn(), flush: vi.fn(), dispose: vi.fn(),
     track: vi.fn(), goal: vi.fn(), componentGoal: vi.fn(), identify: vi.fn(),
     getGraph: vi.fn().mockReturnValue({ pageNodes: [], capturedAt: 0 }),
     fetchWeights: vi.fn().mockResolvedValue([]),

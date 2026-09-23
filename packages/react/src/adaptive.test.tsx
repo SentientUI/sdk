@@ -30,7 +30,7 @@ function makeClient(overrides: Record<string, unknown> = {}) {
     }),
     assign: vi.fn().mockResolvedValue({ variantId: 'variant-a', assignmentTtlMs: 0 }),
     destroy: vi.fn(),
-    dispose: vi.fn(),
+    flush: vi.fn(), dispose: vi.fn(),
     track: vi.fn(),
     goal: vi.fn(),
     componentGoal: vi.fn(),

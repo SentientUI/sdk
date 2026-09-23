@@ -144,7 +144,11 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // +512 (2026-09-14, data-pipeline audit): isSlotDecided / decide retry /
     // cancelSlots in the shared chunk, same reason as the lean budget above.
     // Measured 19545 against 19200.
-    limit: 17 * 1024 + 2304,
+    // +256 (2026-09-22, spec agent-axis §4.1): the interaction collector lands
+    // in the ENGAGEMENT entry, not here — but pulling it out of the shared
+    // chunk reshuffled what the chunk holds, which cost this entry 34 bytes
+    // (and gave the lean entry 76 back). Measured 19721 against 19712.
+    limit: 17 * 1024 + 2560,
   },
 ];
 

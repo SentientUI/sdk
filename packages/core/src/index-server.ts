@@ -17,3 +17,7 @@ export {
   referrerDomainFromReferer,
 } from './session-meta.js';
 export type { SessionUpsertPayload } from './session-meta.js';
+
+// Server-side AI-assistant capture for any framework (capture spec §4.1).
+export { captureAgentRequest, sentientAgentMiddleware, postAgentFetch } from './agent-capture.js';
+export type { AgentCaptureOptions, CapturableRequest } from './agent-capture.js';

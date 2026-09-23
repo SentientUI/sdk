@@ -69,9 +69,11 @@ describe('startEngagementCapture', () => {
 
       stop();
 
-      expect(client.track).toHaveBeenCalledTimes(1);
-      const evt = client.track.mock.calls[0]![0];
-      expect(evt.eventType).toBe('dwell');
+      // Filtered to dwell: cleanup also banks the session-level interaction
+      // snapshot now that EVERY visit reports one (no MIN_ACTIVE_MS floor).
+      const dwells = () => client.track.mock.calls.filter(([e]) => e.eventType === 'dwell');
+      expect(dwells()).toHaveLength(1);
+      const evt = dwells()[0]![0];
       // Per-element id (nc-* retirement 2026-09-05): type prefix + locator hash.
       expect(evt.componentId).toMatch(/^nc-pricing-[0-9a-z]+$/);
       expect(evt.payload.dwell_time).toBe(1200);
@@ -79,9 +81,10 @@ describe('startEngagementCapture', () => {
       expect(disconnect).toHaveBeenCalled();
 
       // Listeners are gone: a later visibility flip must not track again.
+      const callsAfterStop = client.track.mock.calls.length;
       Object.defineProperty(document, 'hidden', { configurable: true, value: true });
       document.dispatchEvent(new Event('visibilitychange'));
-      expect(client.track).toHaveBeenCalledTimes(1);
+      expect(client.track).toHaveBeenCalledTimes(callsAfterStop);
       Object.defineProperty(document, 'hidden', { configurable: true, value: false });
     } finally {
       vi.useRealTimers();
@@ -541,5 +544,121 @@ describe('section-map locator emission', () => {
     for (const s of sections) {
       if ('locator' in s) expect(s.locator).toBeTruthy();
     }
+  });
+});
+
+// Browser-agent axis, phase 1a (spec 2026-09-22 §4.1): the session-level
+// interaction snapshot rides the same bank points as dwell, under the same
+// DNT gate, and only once a visit has enough VISIBLE activity for an
+// aggregate to mean anything.
+describe('interaction_stats emission', () => {
+  function arm() {
+    document.body.innerHTML = '<section id="pricing"><h2>Pricing</h2></section>';
+    // A previous test in this file leaves document.hidden true/false; the
+    // collector's visible clock starts only when the page is visible.
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    vi.spyOn(core, 'isDoNotTrackEnabled').mockReturnValue(false);
+    vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue({ ok: true } as never);
+    (globalThis as Record<string, unknown>)['IntersectionObserver'] = class {
+      observe() { /* noop */ }
+      disconnect() { /* noop */ }
+    };
+    (HTMLCanvasElement.prototype as unknown as { getContext: unknown }).getContext = () => null;
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  }
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('records a visit far shorter than one heartbeat', () => {
+    // Every visit is reported, however short. The old 8 s floor meant the
+    // sessions we most need to account for — a 2 s read on a phone — left no
+    // trace at all, and the scorer could not tell them from a JS-less crawler.
+    // Sufficiency is the SCORER's call now (see bot-scoring: a snapshot that
+    // fires no positive reason keeps `client_js_present`), which also means
+    // the threshold can move without shipping an SDK.
+    arm();
+    const client = { track: vi.fn(), flush: vi.fn() };
+    const stop = startEngagementCapture(client, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+    vi.setSystemTime(2000);
+    stop();
+    const calls = client.track.mock.calls.filter(([e]) => e.eventType === 'interaction_stats');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![0].payload.active_ms).toBe(2000);
+  });
+
+  it('flushes after banking so a short visit does not lose the race with unload', () => {
+    // The queue registers its own pagehide flush when the CLIENT is created —
+    // before this module ever runs — so on the leave path it flushed first and
+    // the dwell and snapshot enqueued here were still sitting in the queue
+    // when the page went away. Measured at ~5-8% delivery on that path
+    // (Bodyshop audit 2026-08-30); the heartbeat capped the loss for long
+    // visits and did nothing at all for a visit shorter than one interval.
+    arm();
+    const client = { track: vi.fn(), flush: vi.fn() };
+    const stop = startEngagementCapture(client, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+    vi.setSystemTime(2000);
+    window.dispatchEvent(new Event('pagehide'));
+
+    expect(client.flush).toHaveBeenCalled();
+    const lastTrack = Math.max(...client.track.mock.invocationCallOrder);
+    expect(client.flush.mock.invocationCallOrder[0]!).toBeGreaterThan(lastTrack);
+    stop();
+  });
+
+  it('does not flush on the heartbeat — the queue timer already covers a live page', () => {
+    arm();
+    const client = { track: vi.fn(), flush: vi.fn() };
+    const stop = startEngagementCapture(client, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+    vi.advanceTimersByTime(20_000);
+    expect(client.flush).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it('emits one cumulative snapshot on the __session__ sentinel once eligible', () => {
+    arm();
+    const client = { track: vi.fn() };
+    const stop = startEngagementCapture(client, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+    document.dispatchEvent(new MouseEvent('mousemove'));
+    vi.setSystemTime(9000);
+    stop();
+    const calls = client.track.mock.calls.filter(([e]) => e.eventType === 'interaction_stats');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![0].componentId).toBe('__session__');
+    expect(calls[0]![0].payload.active_ms).toBe(9000);
+    expect(calls[0]![0].payload.mm).toBe(1);
+    // Aggregates only: every value is a number, boolean or small array —
+    // nothing shaped like a per-event record.
+    expect(
+      Object.values(calls[0]![0].payload).every(
+        (v) => typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string' || Array.isArray(v),
+      ),
+    ).toBe(true);
+  });
+
+  it('emits on the heartbeat and again on cleanup, cumulative not incremental', () => {
+    arm();
+    const client = { track: vi.fn() };
+    const stop = startEngagementCapture(client, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+    vi.advanceTimersByTime(20_000); // one HEARTBEAT_MS tick -> eligible (20 s > 8 s)
+    document.dispatchEvent(new MouseEvent('click'));
+    vi.advanceTimersByTime(1_000);
+    stop();
+    const payloads = client.track.mock.calls
+      .filter(([e]) => e.eventType === 'interaction_stats')
+      .map(([e]) => e.payload);
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0].clicks).toBe(0);
+    expect(payloads[1].clicks).toBe(1);
+    expect(payloads[1].active_ms).toBeGreaterThan(payloads[0].active_ms);
+  });
+
+  it('never emits under DNT even after a long session', () => {
+    arm();
+    vi.spyOn(core, 'isDoNotTrackEnabled').mockReturnValue(true);
+    const client = { track: vi.fn() };
+    const stop = startEngagementCapture(client, { apiKey: 'pk_test', apiBase: 'https://api.example.com' });
+    vi.advanceTimersByTime(60_000);
+    stop();
+    expect(client.track).not.toHaveBeenCalled();
   });
 });

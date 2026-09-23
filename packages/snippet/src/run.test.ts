@@ -607,6 +607,74 @@ describe('parsePersonaPreview', () => {
   });
 });
 
+describe('run — forced preview (?sentient_preview=) on registry slots', () => {
+  // Registry (no-code) slot definitions live server-side. Preview mode returns
+  // before the snapshot/decide paths that populate slotConfig, so without an
+  // explain fetch applyRegistrySlots is skipped entirely and the whole mode is
+  // a silent no-op for dashboard-defined slots — the exact case the dashboard
+  // preview iframe depends on.
+  it('fetches the published slot config and applies the FORCED arm, event-free', async () => {
+    window.history.pushState({}, '', '/?sentient_preview=hero:urgent');
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        // Explain resolves the FORCED arm's content (see `force` in the
+        // request) — the server, not the client, owns arm→content.
+        slots: { hero: 'urgent' },
+        slotConfig: {
+          hero: { kind: 'arms', target: '#hero', content: 'Urgent copy' },
+        },
+      }),
+    });
+    const origFetch = global.fetch;
+    global.fetch = fetchMock as never;
+    try {
+      // Registry mode = no declared slots.
+      (window as Window).sentient = { apiKey: 'pk_test', context: 'landing', slots: {} };
+      mockInit.mockReturnValue({ decide: vi.fn(), getPersona: vi.fn() } as never);
+
+      await run();
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/v1/explain'),
+        expect.objectContaining({ method: 'POST' }),
+      );
+      // The forced arm is sent so the server resolves THAT arm's content.
+      const sent = JSON.parse(String((fetchMock.mock.calls[0]![1] as { body: string }).body));
+      expect(sent.force).toEqual({ hero: 'urgent' });
+      // Event-free, exactly like persona preview.
+      expect(mockInit).not.toHaveBeenCalled();
+      expect(readSnapshot('pk_test')).toBeNull();
+      // The forced arm is on the page, not the server's suggestion.
+      expect(document.getElementById('hero')!.textContent).toBe('Urgent copy');
+    } finally {
+      global.fetch = origFetch;
+      window.history.pushState({}, '', '/');
+    }
+  });
+
+  it('leaves the page alone when explain is unavailable rather than half-applying', async () => {
+    window.history.pushState({}, '', '/?sentient_preview=hero:urgent');
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) });
+    const origFetch = global.fetch;
+    global.fetch = fetchMock as never;
+    try {
+      (window as Window).sentient = { apiKey: 'pk_test', context: 'landing', slots: {} };
+      mockInit.mockReturnValue({ decide: vi.fn(), getPersona: vi.fn() } as never);
+      document.getElementById('hero')!.textContent = 'Original copy';
+
+      await run();
+
+      expect(document.getElementById('hero')!.textContent).toBe('Original copy');
+      // The page API must still exist (same rule as the other preview modes).
+      expect((window as unknown as { SentientSnippet?: unknown }).SentientSnippet).toBeDefined();
+    } finally {
+      global.fetch = origFetch;
+      window.history.pushState({}, '', '/');
+    }
+  });
+});
+
 describe('run — persona preview', () => {
   it('simulates a persona via /v1/explain, event-free (no init, no tracking, no snapshot)', async () => {
     window.history.pushState({}, '', '/?sentient_persona=admin');

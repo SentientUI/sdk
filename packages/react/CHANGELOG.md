@@ -1,5 +1,41 @@
 # @sentientui/react
 
+## 0.34.4
+
+### Patch Changes
+
+- Updated dependencies [4f8726d]
+  - @sentientui/core@0.33.0
+
+## 0.34.3
+
+### Patch Changes
+
+- 79372a8: Fix: an `<Adaptive>` in generated mode recorded no conversions until a version was published.
+
+  The container `goal` shared the exposure gate, so a slot resolving to `source: 'none'` (registered but nothing published yet), a seeded arm, or an arm whose tree never reached the page recorded neither the arm credit nor the session conversion. A component switched from `variants` to generated mode therefore went completely dark — no exposures (correct: there is no arm, so there is no trial) and no goals (wrong: the visitor converted) — while the funnel simply read 0%.
+
+  The two writes now have their own gates, matching the split `fireFormGoal` already made: `componentGoal` is still suppressed when no arm earned the conversion, and the session goal always records, stamped with an empty arm so the suppressed attribution cannot return through the metadata. A forced (devtools/test) arm still records nothing.
+
+- Updated dependencies [79372a8]
+  - @sentientui/core@0.32.0
+
+## 0.34.2
+
+### Patch Changes
+
+- 636a573: Document that a string `goal` is the goal's NAME and an object config has none. `goal="signup_click"` reports under that name and can be promoted to a primary goal; `goal={{ type: 'click', selector: 'a' }}` records under its bare type, so every inline click goal on a project collapses into one row named `click` with no goal definition behind it. The README presented the two forms as an equal menu — the string annotated only as "the analytics label", the object form with no mention of what it costs — and demonstrated `goal="click"` twice as if the event type were a reasonable name. Agents integrating the SDK reproduced exactly that: an unnamed selector goal, and a dashboard with nothing in its Goals list.
+
+  Also names which `<Adaptive>` form generates. With children (no `variants`) it registers a region SentientUI writes versions for per visitor type, and it appears in the dashboard's "Who sees what"; with `variants` it runs an A/B test between versions you wrote, and it never appears there. The two are not interchangeable, and the reference sections did not say so.
+
+  No runtime change.
+
+## 0.34.1
+
+### Patch Changes
+
+- 5d46be1: `<AdaptiveRoot>`'s `components` prop docs now warn that every listed id is assigned, and logs an impression, on every request the root wraps whether or not the page renders it — so list only ids the wrapped pages actually render.
+
 ## 0.34.0
 
 ### Minor Changes

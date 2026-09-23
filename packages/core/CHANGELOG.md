@@ -1,5 +1,24 @@
 # @sentientui/core
 
+## 0.33.0
+
+### Minor Changes
+
+- 4f8726d: Server-side AI-assistant capture for any framework, from `@sentientui/core/server`:
+
+  - `captureAgentRequest(request, { apiKey, source?, waitUntil? })` logs a fetch whose user agent is a known AI assistant or crawler (ChatGPT-User, Claude-User, Perplexity-User, GPTBot, ClaudeBot, …). It works with a Fetch API `Request`, so it covers edge functions (Vercel Routing Middleware, Cloudflare Workers, Netlify Edge) in front of any site, plus Hono, Remix / React Router, Astro and SvelteKit. On edge runtimes pass the platform's `waitUntil`, or the request is dropped when the response returns.
+  - `sentientAgentMiddleware({ apiKey })` does the same for Express, Nuxt/Nitro on Node and any `(req, res, next)` stack.
+
+  Only the path (never the query string) and the user agent are sent. Requests from people make no network call. Capture only observes: nothing about the response changes. The integration guide (`get_integration_guide`) gains a "Capture AI assistants" section.
+
+## 0.32.0
+
+### Minor Changes
+
+- 79372a8: Engagement capture now reports session-scoped interaction aggregates (counts, means and variances of pointer, scroll, keystroke and action-timing behaviour) as one `interaction_stats` event per bank point, under the existing DNT/consent gate. Every visit reports, however short. Read by the hosted bot scorer to separate browser-driving agents from people; never used to change what is served. No raw events, coordinates or text leave the page.
+
+  Adds `SentientClient.flush()`, and the engagement capture calls it after banking on every leave path. The event queue installs its own `pagehide`/`visibilitychange` flush when the client is created — before the capture module is imported — so dwell and interaction events banked inside those same handlers were enqueued after the queue had already drained, and a visit shorter than the 5 s queue tick delivered nothing at all. Call `flush()` yourself if you track anything from your own unload handler.
+
 ## 0.31.1
 
 ### Patch Changes

@@ -273,11 +273,19 @@ never both. `AdaptiveProps` is the union of the two exported prop types below.
 
 #### Goal types
 
+**A string is the goal's NAME; an object config has none.** `goal="signup_click"` reports under
+`signup_click` and can be promoted to a primary goal in the dashboard. An object config records
+under its bare `type` — `click`, `form_submit`, `scroll_depth` — so every inline click goal on the
+project collapses into one row named `click`, and no goal definition is ever created for it.
+Prefer a named string; reach for an object only when you need a selector, a threshold or a
+composite, and expect the generic name.
+
 ```ts
-// Any click inside the variant (button, a, role=button). The string is the analytics label.
+// Any click inside the variant (button, a, role=button). The string is the goal's name.
 goal="signup_click"
 
 // Click only on elements matching a CSS selector inside the variant.
+// NOTE: unnamed — this reports as "click", not as a goal of your own.
 goal={{ type: 'click', selector: 'button.cta' }}
 
 // 80% of the component visible in the viewport (IntersectionObserver, 0–1 scale).
@@ -332,7 +340,7 @@ Add `funnel="<funnelId>"` to `<Adaptive>`, `useAdaptive`, `useAdaptiveTokens`, o
 />
 
 // Membership-only: joins a funnel built in the dashboard or chat.
-<Adaptive id="pricing-cta" funnel="checkout" goal="click" variants={...} />
+<Adaptive id="pricing-cta" funnel="checkout" goal="plan_selected" variants={...} />
 ```
 
 The funnel id is stable — a funnel created in the dashboard or chat is referenced from code with the exact id it shows. Code declarations never overwrite a funnel edited by a human; the dashboard version wins and the component still serves it.

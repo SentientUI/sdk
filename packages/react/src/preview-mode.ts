@@ -56,6 +56,7 @@ export function createPreviewClient(inner: SentientClient): SentientClient {
     reportSlots: (ids) => inner.reportSlots(ids),
     getPersona: () => inner.getPersona(),
     getGraph: () => inner.getGraph(),
+    flush: () => inner.flush(),
     dispose: () => inner.dispose(),
     destroy: () => inner.destroy(),
   };

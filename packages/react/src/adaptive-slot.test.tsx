@@ -60,7 +60,7 @@ function makeClient(overrides: Record<string, unknown> = {}) {
     reportSlots: vi.fn(),
     getPersona: vi.fn().mockReturnValue(null),
     destroy: vi.fn(),
-    dispose: vi.fn(),
+    flush: vi.fn(), dispose: vi.fn(),
     track: vi.fn(),
     goal: vi.fn(),
     componentGoal: vi.fn(),
@@ -304,8 +304,10 @@ describe('AdaptiveSlot rendering', () => {
     // The visitor converted on baseline children. A goal stamped with the
     // served arm would let close-out's first-pass reconciliation (goal_achieved
     // implies an exposure, CONTRACTS §2) re-mint the suppressed phantom AND
-    // credit the blocked arm for baseline's conversion — so the container goal
-    // takes the same path as source 'none': it does not fire at all.
+    // credit the blocked arm for baseline's conversion — so `componentGoal` is
+    // suppressed. The SESSION goal still records: the visitor did convert, and
+    // dropping it loses the conversion from the funnel entirely. Same split
+    // `fireFormGoal` already makes for a seeded arm.
     const client = makeClient();
     mockedInit.mockReturnValue(client as never);
     const Wrapper = wrapperWith({
@@ -321,7 +323,64 @@ describe('AdaptiveSlot rendering', () => {
     rerender(createElement(Wrapper, null, el));
     fireEvent.click(container.querySelector('button')!);
     expect(client.componentGoal).not.toHaveBeenCalled();
-    expect(client.goal).not.toHaveBeenCalled();
+    expect(client.goal).toHaveBeenCalledWith('signup_click', expect.objectContaining({
+      metadata: { componentId: 'hero', arm: '' },
+    }));
+  });
+
+  // Regression, prod 2026-09-22 (Bodyshop Manchester). An <Adaptive> switched
+  // from `variants` to generated mode registers as a DRAFT slot; until a
+  // version is published it resolves to source 'none'. The exposure gate is
+  // right to stay shut — there is no arm, so there is no trial — but the goal
+  // effect shared that gate, so the CTA's conversion stopped recording too.
+  // The component went completely dark for five days and the only signal was
+  // an empty funnel.
+  it('an UNPUBLISHED slot still records the session conversion', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({});
+    const el = (
+      <AdaptiveSlot id="landing_contact_cta" goal="contact_cta_click">
+        <a href="/contact">Get in touch</a>
+      </AdaptiveSlot>
+    );
+    const { container, rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    fireEvent.click(container.querySelector('a')!);
+    // No arm exists, so nothing may be credited to one.
+    expect(client.componentGoal).not.toHaveBeenCalled();
+    // But the visitor converted, and the funnel must say so.
+    expect(client.goal).toHaveBeenCalledWith('contact_cta_click', expect.objectContaining({
+      metadata: { componentId: 'landing_contact_cta', arm: '' },
+      weight: 1.0,
+      stepIndex: 0,
+    }));
+  });
+
+  it('a forced (devtools/test) arm still records nothing at all', () => {
+    // The one case that must stay fully silent: a forced arm is a preview, not
+    // traffic, and recording it would credit a conversion nobody made.
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    // Empty block map: the forced arm has no tree, so the developer's children
+    // (with the clickable) stay on screen and the goal listener is the only
+    // thing under test.
+    applyScenario({ slotConfig: { hero: { kind: 'arms', blocks: {} } }, slots: { hero: 'forced' } });
+    try {
+      const Wrapper = wrapperWith();
+      const el = (
+        <AdaptiveSlot id="hero" goal="signup_click">
+          <button>Start free</button>
+        </AdaptiveSlot>
+      );
+      const { container, rerender } = render(createElement(Wrapper, null, el));
+      rerender(createElement(Wrapper, null, el));
+      fireEvent.click(container.querySelector('button')!);
+      expect(client.componentGoal).not.toHaveBeenCalled();
+      expect(client.goal).not.toHaveBeenCalled();
+    } finally {
+      resetScenario();
+    }
   });
 });
 

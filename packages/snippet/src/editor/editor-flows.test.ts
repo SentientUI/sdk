@@ -9,7 +9,7 @@ function selectByClick(el: Element) {
 }
 function panelButton(label: string): HTMLButtonElement {
   const btns = Array.from(document.querySelectorAll('#sentient-editor-panel button')) as HTMLButtonElement[];
-  const b = btns.find((x) => x.textContent === label);
+  const b = btns.find((x) => x.textContent === label || x.getAttribute('aria-label') === label);
   if (!b) throw new Error(`no button "${label}"`);
   return b;
 }
@@ -275,7 +275,7 @@ describe('telemetry (batched, fire-and-forget)', () => {
   });
 });
 
-describe('collapse, drafts, and AI suggestions', () => {
+describe('collapse, drafts, and AI chat', () => {
   const panelEl = () => document.getElementById('sentient-editor-panel')!;
   const btnIncluding = (label: string): HTMLButtonElement => {
     const b = (Array.from(document.querySelectorAll('button')) as HTMLButtonElement[])
@@ -286,22 +286,16 @@ describe('collapse, drafts, and AI suggestions', () => {
   const invoke = (b: HTMLButtonElement) =>
     (b.onclick as ((ev: Event) => unknown) | null)?.call(b, new MouseEvent('click'));
 
-  // ✨ opens an instruction box first (say what you want), then Go runs it.
-  // `instruction` empty = the old "just give me ideas" path.
-  const askAi = (instruction = ''): void => {
-    invoke(btnIncluding('Ask AI'));
-    const input = document.querySelector('#sentient-editor-panel input[data-field="ai-instruction"]') as HTMLInputElement;
-    expect(input, 'the ✨ button should open an instruction box').toBeTruthy();
-    input.value = instruction;
-    invoke(document.querySelector('#sentient-editor-panel button[data-action="ai-go"]') as HTMLButtonElement);
-  };
-
   it('Minimize collapses to a bubble, pauses picking, and the bubble restores both', () => {
     document.body.innerHTML = '<h1 id="hero">Welcome</h1>';
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
     mount({ token: 'tok', apiBase: 'https://api.example.com' });
 
-    invoke(btnIncluding('Minimize'));
+    // Header controls are flat icons, named for assistive tech — no text labels.
+    const minimize = document.querySelector('#sentient-editor-panel button[aria-label="Minimize"]') as HTMLButtonElement;
+    expect(minimize.textContent).toBe('');
+    expect(document.querySelector('#sentient-editor-panel button[aria-label="Close editor"]')).toBeTruthy();
+    invoke(minimize);
     expect(panelEl().style.display).toBe('none');
     // Collapsed = paused: an invisible editor must not silently select things.
     selectByClick(document.getElementById('hero')!);
@@ -309,6 +303,9 @@ describe('collapse, drafts, and AI suggestions', () => {
 
     const bubble = document.querySelector('button[title="Open the SentientUI editor"]') as HTMLButtonElement;
     expect(bubble).toBeTruthy();
+    // The dev tools' Sentient mark, not a letter.
+    expect(bubble.querySelector('svg path')).toBeTruthy();
+    expect(bubble.textContent).toBe('');
     invoke(bubble);
     expect(panelEl().style.display).toBe('block');
     selectByClick(document.getElementById('hero')!);
@@ -339,74 +336,133 @@ describe('collapse, drafts, and AI suggestions', () => {
     expect(btnIncluding('Preview')).toBeTruthy();
   });
 
-  it('💡 renders validated suggestions and "Try it" prefills the text form with live preview', async () => {
-    document.body.innerHTML = '<h1 id="hero">Welcome</h1>';
-    vi.stubGlobal('fetch', vi.fn(async (...a: unknown[]) => {
-      if (String(a[0]).includes('/v1/editor/suggest')) {
-        return new Response(JSON.stringify({ suggestions: [
-          { kind: 'text', title: 'Warmer welcome', reason: 'Generic greeting converts poorly.', variant: 'Welcome home' },
-        ] }), { status: 200 });
-      }
-      return new Response('{}', { status: 200 });
-    }));
-    mount({ token: 'tok', apiBase: 'https://api.example.com' });
-    selectByClick(document.getElementById('hero')!);
+  const sse = (...frames: unknown[]): Response =>
+    new Response(frames.map((f) => `data: ${typeof f === 'string' ? f : JSON.stringify(f)}\n\n`).join(''), {
+      status: 200, headers: { 'content-type': 'text/event-stream' },
+    });
+  const chatSend = (text: string): void => {
+    invoke(btnIncluding('Ask AI'));
+    const input = document.querySelector('#sentient-editor-panel input[data-field="ai-chat"]') as HTMLInputElement;
+    expect(input, 'Ask AI should open the chat').toBeTruthy();
+    input.value = text;
+    invoke(document.querySelector('#sentient-editor-panel button[data-action="ai-send"]') as HTMLButtonElement);
+  };
 
-    askAi();
-    await vi.waitFor(() => expect(panelEl().textContent).toContain('Warmer welcome'));
-    expect(panelEl().textContent).toContain('Generic greeting converts poorly.');
-
-    invoke(btnIncluding('Try it'));
-    const alt = document.querySelector('#sentient-editor-panel input[data-field="alt"]') as HTMLInputElement;
-    expect(alt.value).toBe('Welcome home');
-    // Conservative contract: prefilled + previewed live, NOT saved — no slot
-    // write may have happened.
-    expect(document.getElementById('hero')!.textContent).toBe('Welcome home');
-    const fetchMock = vi.mocked(fetch);
-    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/v1/editor/slots/'))).toBe(false);
-  });
-
-  // The dashboard's "Test copy with AI" was the only place you could say what
-  // you WANTED; the editor could only hand back unprompted ideas. Saying it
-  // here — on the element — is what let that button go.
-  it('sends what the operator typed as the instruction', async () => {
+  it('chat sends the selected element as context, then saves + previews the component draft it creates', async () => {
     document.body.innerHTML = '<h1 id="hero">Welcome</h1>';
     const fetchMock = vi.fn(async (...a: unknown[]) => {
-      if (String(a[0]).includes('/v1/editor/suggest')) {
-        return new Response(JSON.stringify({ suggestions: [
-          { kind: 'text', title: 'Shorter', reason: 'r', variant: 'Welcome' },
-        ] }), { status: 200 });
+      if (String(a[0]).includes('/v1/editor/chat')) {
+        return sse(
+          { type: 'tool_status', name: 'create_component_draft', state: 'running' },
+          { type: 'artifact', artifact: { id: 'x', type: 'editor_component_draft', payload: {
+            ref: 'selected', label: 'Hero wording',
+            versions: [
+              { id: 'b', displayName: 'Urgent', ops: { text: 'Start today' } },
+              { id: 'c', displayName: 'Bold', ops: { style: { fontWeight: '700' } } },
+            ],
+          } } },
+          { type: 'delta', text: 'Created two versions.' },
+          '[DONE]',
+        );
       }
       return new Response('{}', { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
     mount({ token: 'tok', apiBase: 'https://api.example.com' });
     selectByClick(document.getElementById('hero')!);
+    chatSend('make it more urgent');
 
-    askAi('shorter and more urgent');
-    await vi.waitFor(() => expect(panelEl().textContent).toContain('Shorter'));
-    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/v1/editor/suggest'));
-    expect(JSON.parse((call![1] as RequestInit).body as string).instruction).toBe('shorter and more urgent');
+    await vi.waitFor(() => expect(panelEl().textContent).toContain('nothing is live for visitors yet'));
+    const chatCall = fetchMock.mock.calls.find((c) => String(c[0]).includes('/v1/editor/chat'))!;
+    const sent = JSON.parse((chatCall[1] as RequestInit).body as string);
+    expect(sent.messages).toEqual([{ role: 'user', content: 'make it more urgent' }]);
+    expect(sent.context.elements[0]).toMatchObject({ ref: 'selected', tag: 'h1', text: 'Welcome', isLeaf: true, selected: true });
+
+    // Saved through the ordinary draft route, original kept as the control.
+    const saveCall = fetchMock.mock.calls.find((c) => /\/v1\/editor\/slots\/text-/.test(String(c[0])))!;
+    const body = JSON.parse((saveCall[1] as RequestInit).body as string);
+    expect(body.draftConfig.arms.map((x: { id: string }) => x.id)).toEqual(['a', 'b', 'c']);
+    expect(body.draftConfig.arms[0].ops).toEqual({ text: 'Welcome' });
+    // Previewed in place, nothing published.
+    expect(document.getElementById('hero')!.textContent).toBe('Start today');
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/publish'))).toBe(false);
+    await vi.waitFor(() => expect(panelEl().textContent).toContain('Created two versions.'));
+
+    // Version chips switch the preview; Original restores the page.
+    invoke(btnIncluding('Bold'));
+    expect(document.getElementById('hero')!.textContent).toBe('Welcome');
+    expect(document.getElementById('hero')!.style.getPropertyValue('font-weight')).toBe('700');
+    invoke(btnIncluding('Original'));
+    expect(document.getElementById('hero')!.style.getPropertyValue('font-weight')).toBe('');
+
+    // Discarding the draft puts the page back.
+    invoke(btnIncluding('Urgent'));
+    invoke(btnIncluding('Discard'));
+    await vi.waitFor(() => expect(panelEl().textContent).toContain('Draft discarded'));
+    expect(document.getElementById('hero')!.textContent).toBe('Welcome');
   });
 
-  it('omits the instruction entirely when the box is left blank', async () => {
-    document.body.innerHTML = '<h1 id="hero">Welcome</h1>';
+  it('chat goal drafts save with the business name and remember what was created for the next turn', async () => {
+    document.body.innerHTML = '<button id="cta">Get started</button>';
+    let turn = 0;
     const fetchMock = vi.fn(async (...a: unknown[]) => {
-      if (String(a[0]).includes('/v1/editor/suggest')) {
-        return new Response(JSON.stringify({ suggestions: [] }), { status: 200 });
+      if (String(a[0]).includes('/v1/editor/chat')) {
+        turn += 1;
+        return turn === 1
+          ? sse({ type: 'artifact', artifact: { id: 'g', type: 'editor_goal_draft', payload: { event: 'click', ref: 'selected', displayName: 'Clicks on Get started' } } },
+              { type: 'delta', text: 'Tracking it once you start.' }, '[DONE]')
+          : sse({ type: 'delta', text: 'ok' }, '[DONE]');
       }
       return new Response('{}', { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
     mount({ token: 'tok', apiBase: 'https://api.example.com' });
-    selectByClick(document.getElementById('hero')!);
+    selectByClick(document.getElementById('cta')!);
+    chatSend('track clicks on this');
+    await vi.waitFor(() => expect(panelEl().textContent).toContain('isn’t counting anything until you start it'));
+    const goalCall = fetchMock.mock.calls.find((c) => /\/v1\/editor\/goals\/get-started-/.test(String(c[0])))!;
+    expect(JSON.parse((goalCall[1] as RequestInit).body as string)).toMatchObject({ event: 'click', displayName: 'Clicks on Get started' });
 
-    askAi();
-    await vi.waitFor(() => {
-      const c = fetchMock.mock.calls.find((x) => String(x[0]).includes('/v1/editor/suggest'));
-      expect(c).toBeTruthy();
-      expect('instruction' in JSON.parse((c![1] as RequestInit).body as string)).toBe(false);
-    });
+    await vi.waitFor(() => expect((document.querySelector('#sentient-editor-panel input[data-field="ai-chat"]') as HTMLInputElement).disabled).toBe(false));
+    const input = document.querySelector('#sentient-editor-panel input[data-field="ai-chat"]') as HTMLInputElement;
+    input.value = 'thanks';
+    invoke(document.querySelector('#sentient-editor-panel button[data-action="ai-send"]') as HTMLButtonElement);
+    await vi.waitFor(() => expect(turn).toBe(2));
+    const second = JSON.parse((fetchMock.mock.calls.filter((c) => String(c[0]).includes('/v1/editor/chat'))[1]![1] as RequestInit).body as string);
+    expect(second.messages[1].role).toBe('assistant');
+    expect(second.messages[1].content).toContain('Created draft goal "Clicks on Get started"');
+  });
+
+  it('a non-unique selection is kept out of the chat context — a draft on it would target the wrong element', async () => {
+    document.body.innerHTML = '<button class="x">Buy</button><button class="x">Buy</button>';
+    const fetchMock = vi.fn(async (...a: unknown[]) =>
+      String(a[0]).includes('/v1/editor/chat') ? sse({ type: 'delta', text: 'Click a specific one.' }, '[DONE]') : new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    mount({ token: 'tok', apiBase: 'https://api.example.com' });
+    selectByClick(document.querySelector('.x')!);
+    chatSend('track this');
+    await vi.waitFor(() => expect(panelEl().textContent).toContain('Click a specific one.'));
+    const sent = JSON.parse((fetchMock.mock.calls.find((c) => String(c[0]).includes('/v1/editor/chat'))![1] as RequestInit).body as string);
+    expect(sent.context.elements).toEqual([]);
+  });
+
+  it('a spent AI budget says so in the chat and the failed turn is not replayed', async () => {
+    document.body.innerHTML = '<h1 id="hero">Welcome</h1>';
+    const fetchMock = vi.fn(async (...a: unknown[]) =>
+      String(a[0]).includes('/v1/editor/chat')
+        ? new Response(JSON.stringify({ error: 'rate_limit', limit: 3, used: 3 }), { status: 429 })
+        : new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    mount({ token: 'tok', apiBase: 'https://api.example.com' });
+    chatSend('ideas please');
+    await vi.waitFor(() => expect(panelEl().textContent).toContain('today’s AI allowance'));
+    await vi.waitFor(() => expect((document.querySelector('#sentient-editor-panel input[data-field="ai-chat"]') as HTMLInputElement).disabled).toBe(false));
+    const input = document.querySelector('#sentient-editor-panel input[data-field="ai-chat"]') as HTMLInputElement;
+    input.value = 'again';
+    invoke(document.querySelector('#sentient-editor-panel button[data-action="ai-send"]') as HTMLButtonElement);
+    await vi.waitFor(() => expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes('/v1/editor/chat')).length).toBe(2));
+    const second = JSON.parse((fetchMock.mock.calls.filter((c) => String(c[0]).includes('/v1/editor/chat'))[1]![1] as RequestInit).body as string);
+    expect(second.messages).toEqual([{ role: 'user', content: 'again' }]);
   });
 });
 
@@ -809,88 +865,6 @@ describe('audit 2026-09-07 regressions (work-loss + suggestion hygiene)', () => 
   const invoke = (b: HTMLButtonElement) =>
     (b.onclick as ((ev: Event) => unknown) | null)?.call(b, new MouseEvent('click'));
 
-  // ✨ opens an instruction box first (say what you want), then Go runs it.
-  // `instruction` empty = the old "just give me ideas" path.
-  const askAi = (instruction = ''): void => {
-    invoke(btnIncluding('Ask AI'));
-    const input = document.querySelector('#sentient-editor-panel input[data-field="ai-instruction"]') as HTMLInputElement;
-    expect(input, 'the ✨ button should open an instruction box').toBeTruthy();
-    input.value = instruction;
-    invoke(document.querySelector('#sentient-editor-panel button[data-action="ai-go"]') as HTMLButtonElement);
-  };
-
-  it('a suggest response that lands after selecting another element never renders (race guard)', async () => {
-    document.body.innerHTML = '<h1 id="a">Alpha</h1><h2 id="b">Beta</h2>';
-    let release!: (r: Response) => void;
-    const pending = new Promise<Response>((res) => { release = res; });
-    vi.stubGlobal('fetch', vi.fn(async (...args: unknown[]) => {
-      if (String(args[0]).includes('/v1/editor/suggest')) return pending;
-      return new Response('{}', { status: 200 });
-    }));
-    mount({ token: 'tok', apiBase: 'https://api.example.com' });
-    selectByClick(document.getElementById('a')!);
-    askAi();
-    // The operator moves on before the model answers.
-    selectByClick(document.getElementById('b')!);
-    release(new Response(JSON.stringify({ suggestions: [
-      { kind: 'text', title: 'Rewrite Alpha', reason: 'r', variant: 'Alpha rewritten' },
-    ] }), { status: 200 }));
-    await Promise.resolve(); await Promise.resolve(); await new Promise((r) => setTimeout(r, 0));
-    // Alpha's card must not appear against Beta.
-    expect(panelEl().textContent).not.toContain('Rewrite Alpha');
-    expect(document.getElementById('b')!.textContent).toBe('Beta');
-  });
-
-  it('a goal suggestion on a non-unique element does NOT save; it explains instead', async () => {
-    // Two identical buttons → the locator cannot resolve uniquely.
-    document.body.innerHTML = '<button class="x">Buy</button><button class="x">Buy</button>';
-    vi.stubGlobal('fetch', vi.fn(async (...a: unknown[]) => {
-      if (String(a[0]).includes('/v1/editor/suggest')) {
-        return new Response(JSON.stringify({ suggestions: [
-          { kind: 'goal', title: 'Track buys', reason: 'r', goalType: 'click' },
-        ] }), { status: 200 });
-      }
-      return new Response('{}', { status: 200 });
-    }));
-    mount({ token: 'tok', apiBase: 'https://api.example.com' });
-    selectByClick(document.querySelector('.x')!);
-    askAi();
-    await vi.waitFor(() => expect(panelEl().textContent).toContain('Track buys'));
-    invoke(btnIncluding('Try it'));
-    await new Promise((r) => setTimeout(r, 0));
-    const fetchMock = vi.mocked(fetch);
-    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/v1/editor/goals/'))).toBe(false);
-    expect(panelEl().textContent).toContain('can’t be tracked reliably');
-  });
-
-  it('style suggestions: space-form rgb converts to hex; a named color is skipped, never coerced to black', async () => {
-    document.body.innerHTML = '<h1 id="hero">Welcome</h1>';
-    vi.stubGlobal('fetch', vi.fn(async (...a: unknown[]) => {
-      if (String(a[0]).includes('/v1/editor/suggest')) {
-        return new Response(JSON.stringify({ suggestions: [
-          { kind: 'style', title: 'Contrast', reason: 'r', style: { background: 'rgb(11 61 145)', color: 'white' } },
-        ] }), { status: 200 });
-      }
-      return new Response('{}', { status: 200 });
-    }));
-    mount({ token: 'tok', apiBase: 'https://api.example.com' });
-    selectByClick(document.getElementById('hero')!);
-    askAi();
-    await vi.waitFor(() => expect(panelEl().textContent).toContain('Contrast'));
-    invoke(btnIncluding('Try it'));
-    const bg = document.querySelector('#sentient-editor-panel input[data-field="background"]') as HTMLInputElement;
-    expect(bg.value).toBe('#0b3d91');
-    // 'white' can't ride an <input type=color> (it would coerce to #000000):
-    // the field must stay untouched so the getter still reports "no change".
-    const color = document.querySelector('#sentient-editor-panel input[data-field="color"]') as HTMLInputElement;
-    expect(color.value).toBe('#000000'); // the input's untouched default, not a filled value
-    invoke(btnIncluding('Save draft'));
-    await new Promise((r) => setTimeout(r, 0));
-    const call = vi.mocked(fetch).mock.calls.find((c) => String(c[0]).includes('/v1/editor/slots/'));
-    const body = JSON.parse((call![1] as RequestInit).body as string);
-    expect(body.draftConfig.arms[1].ops.style).toEqual({ background: '#0b3d91' });
-  });
-
   it('re-clicking the ACTIVE tab keeps an in-progress form (no wipe)', () => {
     document.body.innerHTML = '<h1 id="hero">Welcome</h1>';
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
@@ -979,7 +953,7 @@ describe('review card, drafts discard, goals in drafts, keyboard (spec §2.2 + p
   const invoke = (b: HTMLButtonElement) =>
     (b.onclick as ((ev: Event) => unknown) | null)?.call(b, new MouseEvent('click'));
 
-  it('a slot save renders the review card; Discard is two-step, DELETEs bodylessly, and retires the publish button', async () => {
+  it('a slot save renders the review card; Discard deletes in one press, bodylessly, and retires the publish button', async () => {
     document.body.innerHTML = '<h1 id="hero">Welcome</h1>';
     const fetchMock = vi.fn(async (..._a: unknown[]) => new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -992,11 +966,7 @@ describe('review card, drafts discard, goals in drafts, keyboard (spec §2.2 + p
     await vi.waitFor(() => expect(panelText()).toContain('nothing is live for visitors yet'));
     expect(btnIncluding('Preview')).toBeTruthy(); // preview reachable from the card, not only the Drafts tab
 
-    const disc = btnIncluding('Discard');
-    invoke(disc);
-    expect(disc.textContent).toBe('Sure?'); // first press arms, never deletes
-    expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === 'DELETE')).toBe(false);
-    invoke(disc);
+    invoke(btnIncluding('Discard')); // one press deletes — no "Sure?" arming step
     await vi.waitFor(() =>
       expect(fetchMock.mock.calls.some((c) =>
         (c[1] as RequestInit | undefined)?.method === 'DELETE' && /\/v1\/editor\/slots\/text-hero-/.test(String(c[0])))).toBe(true));

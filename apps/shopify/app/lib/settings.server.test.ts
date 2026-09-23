@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import prisma from '../db.server';
 import { decryptSecret, encryptSecret } from './secret-box';
 import {
+  checkStorefrontOrigin,
   getSettings,
   provisionSentient,
   recordForwardSuccess,
@@ -189,5 +190,60 @@ describe('provisionSentient', () => {
     // by saving again.
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('down'); }));
     expect(await provisionSentient('sk_test')).toBe(false);
+  });
+});
+
+// The check behind the settings screen's "Check storefront connection"
+// button. Every storefront request the App Store reviewer made returned 403
+// (review round 3, 2026-09-21, 5.1.2) and NOTHING in the app said so — the
+// merchant's only signal was an empty dashboard. This turns that silence into
+// a sentence, so the next reviewer sees the problem instead of the symptom.
+describe('checkStorefrontOrigin', () => {
+  beforeEach(() => {
+    process.env.SENTIENT_API_URL = 'https://api.test';
+  });
+
+  it('asks the API the same question the storefront asks: this pk_, from this origin', async () => {
+    const f = vi.fn(async () => ({ ok: true, status: 200 })) as unknown as typeof fetch;
+    expect(await checkStorefrontOrigin('pk_live', 'https://shop.myshopify.com', f)).toEqual({ ok: true });
+    const [url, init] = (f as ReturnType<typeof vi.fn>).mock.calls[0]! as [string, RequestInit];
+    expect(url).toBe('https://api.test/v1/origin-check');
+    const headers = init.headers as Record<string, string>;
+    expect(headers.authorization).toBe('Bearer pk_live');
+    // Forging Origin server-side is the POINT: it reproduces the browser's
+    // request without needing a browser.
+    expect(headers.origin).toBe('https://shop.myshopify.com');
+  });
+
+  it('a 403 is reported as the allowlist problem it is, not as a generic failure', async () => {
+    const f = vi.fn(async () => ({ ok: false, status: 403 })) as unknown as typeof fetch;
+    expect(await checkStorefrontOrigin('pk_live', 'https://shop.myshopify.com', f)).toEqual({
+      ok: false,
+      reason: 'origin_not_allowed',
+    });
+  });
+
+  it('a 401 means the pasted key is wrong — a different fix from a 403, so a different answer', async () => {
+    const f = vi.fn(async () => ({ ok: false, status: 401 })) as unknown as typeof fetch;
+    expect(await checkStorefrontOrigin('pk_live', 'https://shop.myshopify.com', f)).toEqual({
+      ok: false,
+      reason: 'invalid_key',
+    });
+  });
+
+  it('an unreachable API is never reported as a misconfigured store', async () => {
+    const f = vi.fn(async () => { throw new Error('down'); }) as unknown as typeof fetch;
+    expect(await checkStorefrontOrigin('pk_live', 'https://shop.myshopify.com', f)).toEqual({
+      ok: false,
+      reason: 'unreachable',
+    });
+  });
+
+  it('never throws, whatever the API answers', async () => {
+    const f = vi.fn(async () => ({ ok: false, status: 500 })) as unknown as typeof fetch;
+    await expect(checkStorefrontOrigin('pk_live', 'https://shop.myshopify.com', f)).resolves.toEqual({
+      ok: false,
+      reason: 'unreachable',
+    });
   });
 });

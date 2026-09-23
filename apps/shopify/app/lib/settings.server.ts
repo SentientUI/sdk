@@ -80,6 +80,43 @@ export async function deleteSettings(shop: string): Promise<void> {
   await prisma.sentientSettings.deleteMany({ where: { shop } });
 }
 
+export type StorefrontCheck =
+  | { ok: true }
+  | { ok: false; reason: 'origin_not_allowed' | 'invalid_key' | 'unreachable' };
+
+/** Asks the SentientUI API whether this publishable key is accepted from this
+ *  storefront origin — the exact check the snippet's session/decision/event
+ *  calls fail on, minus the side effects.
+ *
+ *  It exists because that failure had no voice. An unallowed origin 403s every
+ *  storefront request, and the merchant's only evidence was a dashboard that
+ *  stayed empty; the Shopify App Store rejected the app over it (round 3,
+ *  2026-09-21, 5.1.2) after a reviewer enabled the theme embed and saw nothing
+ *  work. Forging the Origin header from the server is deliberate: it
+ *  reproduces the browser's request faithfully without a browser.
+ *
+ *  Never throws — the settings screen renders whatever comes back. The reasons
+ *  are kept apart because their fixes are different: a 403 means save again to
+ *  allowlist the domain, a 401 means the pasted key is wrong. */
+export async function checkStorefrontOrigin(
+  publishableKey: string,
+  origin: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<StorefrontCheck> {
+  try {
+    const res = await fetchImpl(`${sentientApiUrl()}/v1/origin-check`, {
+      headers: { authorization: `Bearer ${publishableKey}`, origin },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (res.ok) return { ok: true };
+    if (res.status === 403) return { ok: false, reason: 'origin_not_allowed' };
+    if (res.status === 401) return { ok: false, reason: 'invalid_key' };
+    return { ok: false, reason: 'unreachable' };
+  } catch {
+    return { ok: false, reason: 'unreachable' };
+  }
+}
+
 /** Idempotent server-side bootstrap: creates the 'purchase' goal and the
  *  template 'checkout' funnel for the project the sk_ belongs to, and
  *  allowlists the storefront origins so the snippet's ingest passes the Origin

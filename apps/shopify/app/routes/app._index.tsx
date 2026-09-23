@@ -16,7 +16,13 @@ import {
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
-import { getSettings, provisionSentient, saveSettings } from "../lib/settings.server";
+import {
+  checkStorefrontOrigin,
+  getSettings,
+  provisionSentient,
+  saveSettings,
+  type StorefrontCheck,
+} from "../lib/settings.server";
 import { isDropBannerVisible } from "../lib/drop-visibility";
 import { settingsEncryptionEnabled } from "../lib/secret-box";
 import { ensureWebPixel, healWebPixelApiBase } from "../lib/pixel.server";
@@ -27,6 +33,24 @@ import {
   parseTagMapping,
   savePersonaTagMapping,
 } from "../lib/persona-mapping.server";
+
+/** The shop's primary (custom) domain, when it differs from the myshopify one.
+ *  Best-effort: a failed read just means only the myshopify origin gets
+ *  allowlisted, which is still enough for the storefront to work. */
+async function readPrimaryDomain(
+  graphql: Parameters<typeof healWebPixelApiBase>[0],
+  shop: string,
+): Promise<string | undefined> {
+  try {
+    const res = (await (
+      await graphql(`#graphql query sentientPrimaryDomain { shop { primaryDomain { host } } }`)
+    ).json()) as { data?: { shop?: { primaryDomain?: { host?: string } | null } } };
+    const host = res.data?.shop?.primaryDomain?.host;
+    return host && host !== shop ? host : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // The settings screen (README step 2): the merchant creates the project in the
 // SentientUI dashboard first, then pastes its two keys here. Saving stores
@@ -42,6 +66,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // the pixel, rewrites only when the stored apiBase differs. Fail-soft.
   if (settings) {
     await healWebPixelApiBase(admin.graphql, settings.publishableKey);
+  }
+
+  // Re-affirm the storefront origins on every admin visit, not only on save.
+  // Allowlisting used to happen ONLY when the merchant pressed "Save and
+  // connect", which made it possible to have a working-looking install whose
+  // every storefront request 403s: enable the theme embed without ever
+  // saving here, reinstall against an empty production database, or move the
+  // store to a custom domain, and the allowlist silently no longer covers the
+  // domain visitors actually use. That is what the App Store rejected on
+  // 5.1.2 (round 3, 2026-09-21). The call is idempotent and fail-soft, so the
+  // cost of doing it here is one cheap request per admin page view.
+  let storefrontCheck: StorefrontCheck | null = null;
+  if (settings?.secretKey && settings.publishableKey) {
+    const primaryDomain = await readPrimaryDomain(admin.graphql, session.shop);
+    await provisionSentient(settings.secretKey, { shopDomain: session.shop, primaryDomain });
+    // ...then verify it actually took, and say so on the screen. A storefront
+    // being turned away is otherwise invisible here — the merchant sees an
+    // empty dashboard and no error anywhere.
+    storefrontCheck = await checkStorefrontOrigin(
+      settings.publishableKey,
+      `https://${session.shop}`,
+    );
   }
   // Current tag → persona mapping, from the app-owned shop metafield the
   // theme embed reads. Best-effort: a read failure just shows an empty box.
@@ -81,6 +127,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     lastDropAtDisplay: settings?.lastDropAt?.toISOString().replace('T', ' ').slice(0, 16).concat(' UTC') ?? null,
     lastDropReason: settings?.lastDropReason ?? null,
     mappingText,
+    storefrontCheck,
   });
 };
 
@@ -111,16 +158,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // primary domain; the snippet's ingest Origin check needs whichever the
   // visitor uses, so provision allowlists both. Primary-domain read is
   // best-effort — worst case only the myshopify origin is registered.
-  let primaryDomain: string | undefined;
-  try {
-    const res = (await (
-      await admin.graphql(`#graphql query sentientPrimaryDomain { shop { primaryDomain { host } } }`)
-    ).json()) as { data?: { shop?: { primaryDomain?: { host?: string } | null } } };
-    const host = res.data?.shop?.primaryDomain?.host;
-    if (host && host !== session.shop) primaryDomain = host;
-  } catch {
-    /* myshopify origin only */
-  }
+  const primaryDomain = await readPrimaryDomain(admin.graphql, session.shop);
   const provisioned = await provisionSentient(effectiveSecret, { shopDomain: session.shop, primaryDomain });
   // Activate/refresh the app's web pixel with the current key (fast browser
   // path + upstream funnel steps), and persist the tag → persona mapping to
@@ -191,6 +229,31 @@ export default function Index() {
                         </Text>
                       )}
                     </BlockStack>
+                  </Banner>
+                )}
+                {/* Storefront reachability, stated out loud. Every
+                    session/decision/event call from an unallowed origin 403s,
+                    and the merchant's only symptom was a dashboard that never
+                    filled up — the App Store rejected the app over exactly
+                    that (5.1.2, round 3). A pass is worth showing too: it is
+                    what tells a reviewer the integration works. */}
+                {data.storefrontCheck?.ok === false && (
+                  <Banner tone="critical" title="Your storefront can't reach SentientUI">
+                    <Text as="p" variant="bodyMd">
+                      {data.storefrontCheck.reason === "origin_not_allowed"
+                        ? `${data.shop} isn't on your project's allowed domains yet, so every request from your storefront is refused. Press "Save and connect" below to add it.`
+                        : data.storefrontCheck.reason === "invalid_key"
+                          ? "The saved publishable key was not recognised. Copy it again from the SentientUI dashboard (Settings → API keys) and save."
+                          : "SentientUI could not be reached just now. This is usually temporary — reload this page in a minute."}
+                    </Text>
+                  </Banner>
+                )}
+                {data.storefrontCheck?.ok === true && (
+                  <Banner tone="success" title="Your storefront is connected">
+                    <Text as="p" variant="bodyMd">
+                      Requests from {data.shop} are being accepted. Make sure the theme embed
+                      carries this same publishable key.
+                    </Text>
                   </Banner>
                 )}
                 {result && "error" in result && result.error && (
@@ -284,14 +347,21 @@ export default function Index() {
               </BlockStack>
             </Card>
 
-            {/* Billing went through two review rejections before landing here:
-                round 1 (2026-09-06) killed wording that framed the service as
-                paid-and-required with an external billing link; round 2
-                (2026-09-09, ref 133916) ruled that even the optional
-                subscription must go through Shopify. So: plans are Shopify
-                Managed Pricing, bought on Shopify's hosted plan page, and the
-                only billing link in the app points THERE — never to an
-                external payment page. */}
+            {/* Billing went through three review rejections before landing
+                here: round 1 (2026-09-06) killed wording that framed the
+                service as paid-and-required with an external billing link;
+                round 2 (2026-09-09, ref 133916) ruled that even the optional
+                subscription must go through Shopify; round 3 (2026-09-21)
+                found this very link 404ing. So: plans are Shopify App
+                Pricing, bought on Shopify's hosted plan page, and the only
+                billing link in the app points THERE — never to an external
+                payment page.
+
+                The link 404s unless App Pricing is ENABLED in the Partner
+                dashboard — drafting the plans is not enough, and that is
+                exactly how round 3 happened. The `sentientui-app` segment is
+                the app handle and is correct; it was wrongly suspected once,
+                so do not "fix" it. Verified live 2026-09-22. */}
             <Card>
               <BlockStack gap="200">
                 <Text as="h2" variant="headingMd">

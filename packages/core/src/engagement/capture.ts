@@ -9,6 +9,7 @@ import { fnv1a } from '@sentientui/policy';
 import { isDoNotTrackEnabled } from '../index.js';
 import { attachMicroSignalDetectors } from '../micro-signals.js';
 import { locatorFromElement } from '../locator-from-dom.js';
+import { startInteractionCollector, type InteractionStats } from './interaction-stats.js';
 
 // Shared engagement capture (spec 2026-07-22-persona-signal-capture). Detects
 // semantic sections, registers them via /v1/section-map, and records per-section
@@ -19,6 +20,10 @@ import { locatorFromElement } from '../locator-from-dom.js';
 
 type CaptureClient = {
   track(event: { projectId: string; componentId: string; eventType: string; payload: Record<string, unknown> }): void;
+  /** Drain the event queue now. Optional so an embedder can pass a bare
+   *  tracker, but every first-party client has it — see the leave-path flush
+   *  in `emit`, which is what makes a short visit deliverable at all. */
+  flush?(): void;
 };
 
 export type EngagementCaptureOptions = {
@@ -56,6 +61,13 @@ const SECTION_SELECTOR = 'section, header, footer, nav, main > div, [data-sentie
  *  tab races the unload pipeline, and mobile browsers can kill a page with no
  *  lifecycle event at all. The heartbeat caps the loss at one interval. */
 const HEARTBEAT_MS = 20_000;
+
+/** Sentinel component for the session-level interaction snapshot — same
+ *  pattern as pageview's `__page__`: not a component, never attributed to one.
+ *  Every report producer filters `raw_events` by event_type, so the sentinel
+ *  cannot leak into a component table. */
+export const INTERACTION_STATS_COMPONENT = '__session__';
+export type { InteractionStats };
 
 /**
  * Pick the elements to observe. Two rules, in order:
@@ -207,6 +219,34 @@ export function startEngagementCapture(
   const pageUrl = (doc.defaultView ?? (typeof window !== 'undefined' ? window : undefined))?.location?.pathname ?? '/';
   registerSections(opts.apiKey, apiBase, pageUrl, entries);
 
+  // Browser-agent axis (spec 2026-09-22 §4.1): passive interaction aggregates,
+  // emitted at the same bank points as dwell. Same DNT/key gate — we are past
+  // both checks here — and the collector itself never touches the network.
+  const interaction = startInteractionCollector(doc);
+  // EVERY visit reports, however short. There used to be an 8 s floor here, on
+  // the reasoning that a bounce has too few events for an aggregate to mean
+  // anything. True of the aggregate, wrong as a place to act on it: a 2 s read
+  // on a phone is a real visit, and suppressing it left the scorer unable to
+  // tell that visitor from a JS-less crawler — the population that already
+  // makes up 83% of the "human" sessions on the busiest prod project. Whether
+  // a snapshot is thin enough to ignore is a SCORING question, and it now
+  // lives with the scorer (a snapshot that fires no positive reason keeps
+  // `client_js_present`), where the threshold can move without an SDK release.
+  const emitInteraction = (): void => {
+    let snap: InteractionStats;
+    try { snap = interaction.snapshot(); } catch { return; }
+    try {
+      client.track({
+        projectId: opts.apiKey,
+        componentId: INTERACTION_STATS_COMPONENT,
+        eventType: 'interaction_stats',
+        payload: snap as unknown as Record<string, unknown>,
+      });
+    } catch {
+      /* fail-safe */
+    }
+  };
+
   // Accumulate visible dwell (ms) + max scroll ratio per component. `intersecting`
   // tracks in-viewport state independently of `enterAt` (the running clock) so a
   // tab-hide can pause the clock and a tab-show can resume it for still-visible
@@ -239,7 +279,16 @@ export function startEngagementCapture(
   // double-count) WITHOUT disconnecting — a visitor who hides/re-shows the tab
   // or tab-switches keeps being measured. Pauses the running clock; the tab-show
   // handler restarts it for still-visible sections so hidden time isn't counted.
-  const emit = (): void => {
+  // `leaving` marks the paths where the page may not exist a tick from now.
+  // The queue installed its OWN pagehide/visibilitychange flush when the
+  // client was constructed — before this module was imported — so on those
+  // events it drains first and everything banked below is enqueued after the
+  // drain has already happened. With a 5 s queue timer and a 20 s heartbeat,
+  // a visit shorter than either delivered nothing: measured at ~5-8% on the
+  // leave path (Bodyshop audit 2026-08-30). Flushing here, after the bank,
+  // is what closes that. Not on the heartbeat: the page is alive, the queue's
+  // own timer covers it, and flushing every 20 s would double the requests.
+  const emit = (leaving = false): void => {
     const now = Date.now();
     for (const [id, s] of state) {
       if (s.enterAt != null) { s.ms += now - s.enterAt; s.enterAt = null; }
@@ -256,11 +305,15 @@ export function startEngagementCapture(
       }
       s.ms = 0;
     }
+    emitInteraction();
+    if (leaving) {
+      try { client.flush?.(); } catch { /* fail-safe */ }
+    }
   };
 
   const onVisibility = (): void => {
     if (doc.hidden) {
-      emit(); // bank + pause
+      emit(true); // bank + pause + drain: on mobile this IS the leave path
     } else {
       const now = Date.now(); // resume the clock for sections still on screen
       for (const s of state.values()) if (s.intersecting) s.enterAt = now;
@@ -274,7 +327,7 @@ export function startEngagementCapture(
   // tear down for real when the page is genuinely going away.
   let frozen = false;
   const onPageHide = (event?: { persisted?: boolean }): void => {
-    emit(); // bank whatever is measured either way
+    emit(true); // bank whatever is measured either way, then drain
     if (event?.persisted) {
       frozen = true; // bfcache: keep the observer, stop counting
       return;
@@ -339,8 +392,9 @@ export function startEngagementCapture(
   // Cleanup: bank any remaining dwell, then detach everything (provider unmount
   // / consent re-init must not leak observers or listeners).
   return () => {
-    emit();
+    emit(true);
     clearInterval(heartbeat);
+    interaction.stop();
     doc.removeEventListener('visibilitychange', onVisibility);
     win?.removeEventListener('pagehide', onPageHide);
     win?.removeEventListener('pageshow', onPageShow);

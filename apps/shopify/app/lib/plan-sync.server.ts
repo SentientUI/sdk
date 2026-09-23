@@ -46,6 +46,14 @@ export async function syncPlan(
   plan: string,
   shopDomain: string,
   fetchImpl: typeof fetch = fetch,
+  // `disconnect` means the app was UNINSTALLED, not that a subscription
+  // merely ended. Only an uninstall hands the billing rail back to card
+  // billing: the store is gone, so there is no Shopify plan page left to buy
+  // on, and an account left on the Shopify rail could never pay at all. A
+  // cancellation while the app is still installed must keep the rail — that
+  // merchant re-subscribes through Shopify, and showing them a card upgrade
+  // instead is exactly the off-platform billing App Store 1.2.1 forbids.
+  opts: { disconnect?: boolean } = {},
 ): Promise<boolean> {
   const connectorSecret = process.env.SHOPIFY_CONNECTOR_SECRET;
   if (!connectorSecret) {
@@ -62,7 +70,7 @@ export async function syncPlan(
         authorization: `Bearer ${secretKey}`,
         'x-connector-secret': connectorSecret,
       },
-      body: JSON.stringify({ plan, shopDomain }),
+      body: JSON.stringify(opts.disconnect ? { plan, shopDomain, disconnect: true } : { plan, shopDomain }),
       signal: AbortSignal.timeout(5_000),
     });
     return res.ok;

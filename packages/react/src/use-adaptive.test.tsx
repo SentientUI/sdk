@@ -29,7 +29,7 @@ function makeClient(overrides: Record<string, unknown> = {}) {
     reportSlots: vi.fn(),
     getPersona: vi.fn().mockReturnValue(null),
     destroy: vi.fn(),
-    dispose: vi.fn(),
+    flush: vi.fn(), dispose: vi.fn(),
     track: vi.fn(),
     goal: vi.fn(),
     componentGoal: vi.fn(),

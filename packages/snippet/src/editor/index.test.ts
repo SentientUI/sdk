@@ -218,7 +218,7 @@ describe('editor panel: Move up / Move down', () => {
 
   function getButton(text: string): HTMLButtonElement {
     const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('#sentient-editor-panel button'));
-    const btn = buttons.find((b) => b.textContent === text);
+    const btn = buttons.find((b) => b.textContent === text || b.getAttribute('aria-label') === text);
     if (!btn) throw new Error(`button not found: ${text}`);
     return btn;
   }
@@ -490,7 +490,7 @@ describe('buildStyleOps / styleFieldError', () => {
 function makeEditorHelpers() {
   const getButton = (text: string): HTMLButtonElement => {
     const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('#sentient-editor-panel button'));
-    const btn = buttons.find((b) => b.textContent === text);
+    const btn = buttons.find((b) => b.textContent === text || b.getAttribute('aria-label') === text);
     if (!btn) throw new Error(`button not found: ${text}`);
     return btn;
   };

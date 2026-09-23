@@ -17,7 +17,11 @@ export type EventType =
   | 'funnel_declared'
   // One per page load and per SPA route change, so a visit's journey through the
   // site is reconstructable. Carries `path` and nothing else.
-  | 'pageview';
+  | 'pageview'
+  // Session-level interaction aggregates for the browser-agent axis (one
+  // cumulative snapshot per bank point on the `__session__` sentinel). Read by
+  // the bot scorer only; never attributed to a component, never a reward.
+  | 'interaction_stats';
 
 export type SentientEvent = {
   id: string;
