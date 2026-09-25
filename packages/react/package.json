@@ -1,8 +1,11 @@
 {
   "name": "@sentientui/react",
-  "version": "0.34.4",
+  "version": "0.37.0",
   "private": false,
   "license": "MIT",
+  "engines": {
+    "node": ">=18.18"
+  },
   "sideEffects": false,
   "description": "SentientUI React SDK — adaptive UI personalization with <Adaptive> components that learn what converts per visitor. SSR-safe.",
   "homepage": "https://sentient-ui.com",
@@ -87,10 +90,10 @@
     "@sentientui/policy": "workspace:*"
   },
   "peerDependencies": {
-    "@testing-library/react": ">=14.0.0",
-    "msw": ">=2.0.0",
-    "next": ">=14.0.0",
-    "react": ">=18.0.0"
+    "@testing-library/react": ">=14.0.0 <17.0.0",
+    "msw": ">=2.0.0 <3.0.0",
+    "next": ">=14.0.0 <17.0.0",
+    "react": ">=18.0.0 <20.0.0"
   },
   "peerDependenciesMeta": {
     "next": {

@@ -61,7 +61,12 @@ export function usePageGoal(goalName: string, opts: PageGoalOptions = {}): void 
   optsRef.current = goalOpts;
 
   useEffect(() => {
-    if (!client || fired.current) return;
+    // Not into a consent-gated client (preConsentBehavior): React replaces it
+    // with a new tracking client on grant, so a goal fired now would go
+    // nowhere while spending the latch — the arrival was lost for every
+    // visitor who accepted after landing (grader NEW-1). The effect re-runs
+    // when the tracking client arrives.
+    if (!client || fired.current || client.gated) return;
     fired.current = true;
     const { metadata, reward, value, currency, externalId } = optsRef.current;
     if (componentId) {

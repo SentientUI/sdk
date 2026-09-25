@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@sentientui/core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@sentientui/core')>();
-  return { ...actual, init: vi.fn() };
+  return { ...actual, init: vi.fn(), grantConsent: vi.fn() };
 });
 vi.mock('@sentientui/core/engagement', () => ({ startEngagementCapture: vi.fn(() => () => undefined) }));
 vi.mock('./slot-signals', () => ({ attachSlotSignals: vi.fn(() => vi.fn()) }));
@@ -83,4 +83,43 @@ describe('SentientSnippet.goal revenue options (spec §5)', () => {
 
     expect(client.goal).toHaveBeenCalledWith('purchase', { value: 50 });
   });
+
+  it('replays consent calls queued on the stub, in order (review R8 #7)', async () => {
+    // A CMP that answered before the snippet loaded called a method that did
+    // not exist yet: the accept was lost for the page view.
+    (window as unknown as { SentientSnippet?: unknown }).SentientSnippet = {
+      q: [['goal', 'early'], ['grantConsent']],
+      goal() { /* stub */ },
+    };
+    (window as Window).sentient = { ...CONFIG, consent: false };
+    const client = { ...makeClient(), gated: true };
+    const mod = await import('./index');
+    const core = await import('@sentientui/core');
+    vi.mocked(core.init).mockReturnValue(client as never);
+
+    await mod.run();
+
+    expect(core.grantConsent).toHaveBeenCalledWith('pk_test');
+    // The goal was recorded on the gated client BEFORE the grant (held, then replayed by core).
+    expect(client.goal.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(core.grantConsent).mock.invocationCallOrder[0]!);
+  });
+
+  it('a second embed of the bundle puts the live API back over its build-time exports (review R11 #3)', async () => {
+    const live = { goal: vi.fn() };
+    const w = window as unknown as Record<string, unknown>;
+    w.__sentientInitialized = true;
+    w.__sentientApi = live;
+    // What the second bundle's IIFE footer leaves behind.
+    w.SentientSnippet = { run: () => undefined };
+    try {
+      await import('./index');
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(w.SentientSnippet).toBe(live);
+    } finally {
+      delete w.__sentientInitialized;
+      delete w.__sentientApi;
+    }
+  });
 });
+

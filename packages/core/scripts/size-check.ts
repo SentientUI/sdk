@@ -6,10 +6,25 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const distDir = join(__dirname, '../dist');
 
-// tsup may emit shared chunks; include all of them so the measurement is a
-// conservative upper bound on what an application actually downloads.
-const chunkFiles = readdirSync(distDir).filter((f) => f.startsWith('chunk-') && f.endsWith('.mjs'));
-const chunkBytes = Buffer.concat(chunkFiles.map((f) => readFileSync(join(distDir, f))));
+// Each entry is measured with the shared chunks it IMPORTS (transitively,
+// static imports only) — what an application actually downloads for it.
+// Until 2026-09-24 every chunk was added to every entry "as a conservative
+// upper bound"; that charged the lean core for code only the opt-in
+// `/region` and `/style-sample` entries share (the colour normalizer), and
+// the lean core failed its budget for bytes it never loads. Budgets were NOT
+// changed with the method: they only stop counting other entries' code.
+const chunkFiles = new Set(readdirSync(distDir).filter((f) => f.startsWith('chunk-') && f.endsWith('.mjs')));
+
+function importedChunks(file: string, seen = new Set<string>()): Set<string> {
+  const src = readFileSync(join(distDir, file), 'utf8');
+  for (const m of src.matchAll(/(?:from|import)\s*["']\.\/(chunk-[A-Za-z0-9_-]+\.mjs)["']/g)) {
+    const chunk = m[1]!;
+    if (!chunkFiles.has(chunk) || seen.has(chunk)) continue;
+    seen.add(chunk);
+    importedChunks(chunk, seen);
+  }
+  return seen;
+}
 
 function gzipSize(buffers: Buffer[]): number {
   return gzipSync(Buffer.concat(buffers)).length;
@@ -113,12 +128,30 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // the slot unexposed and untrained for the client lifetime), and
     // `cancelSlots` (an unmount before the 0 ms batch fires withdraws the ask,
     // so a redirecting route is not a trial). Measured 16697 against 16384.
-    limit: 16 * 1024 + 512,
+    //
+    // +512 (2026-09-23, native generation phase 1, spec 2026-09-23 §4.6): the
+    // client half of CONTRACTS §2's "a slot decision may only draw an arm the
+    // page can render" — `render` caps on the registry decide, skeleton
+    // reports (first registration + needsSkeleton fill) and drift reports.
+    // Without them the server draws Rewrite arms the page refuses, and every
+    // refusal is a booked trial that buries the arm. The ~2 KB of DOM capture
+    // itself was moved OUT of this entry into `@sentientui/core/region`, and
+    // drift reporting lost its batch timer, before moving the budget; what's
+    // left is ~490 bytes. Measured 17276 against 16896.
+    //
+    // +256 (2026-09-23, native generation phase 3; operator: "i dont mind
+    // pushing the size"): the pre-consent client now forwards every argument
+    // of requestSlots/reportSlots plus reportSkeleton/reportDrift — it had
+    // been dropping the render caps, so a consent-gated page read as a legacy
+    // SDK and was never drawn a Rewrite arm — and reportSlots carries a hybrid
+    // <Adaptive>'s authored arms. Redundant client-side text normalization was
+    // cut first (the server normalizes). Measured 17433 against 17408.
+    limit: 16 * 1024 + 1280,
   },
   {
-    name: '@sentientui/core/graph (additions only)',
+    name: '@sentientui/core/graph (with shared chunks)',
     entry: 'index-graph.mjs',
-    // scanner + graph on top of the shared chunk.
+    // scanner + graph, measured WITH the chunks it shares with the lean entry.
     // Re-baselined 16→17 KB for locatorFromElement (+452 bytes gzip, measured
     // 15913→16365). That generator is the live-DOM twin of the server's
     // locatorFromNode, and it is what lets the crawler and the SDK derive the
@@ -148,7 +181,34 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // in the ENGAGEMENT entry, not here — but pulling it out of the shared
     // chunk reshuffled what the chunk holds, which cost this entry 34 bytes
     // (and gave the lean entry 76 back). Measured 19721 against 19712.
-    limit: 17 * 1024 + 2560,
+    // +512 (2026-09-23): render caps / skeleton / drift reports in the shared
+    // chunk, same reason as the lean budget above. Measured 20128 against 19968.
+    // +512 (2026-09-24): measurement method only — this entry is now measured
+    // with the chunks it imports rather than every chunk in dist (see the top
+    // of this file). No graph code changed; the same HEAD build measured 20498
+    // under the new method vs 20472 under the old (gzip compresses the larger
+    // all-chunk blob slightly better), 18 bytes over the old limit.
+    // +512 (2026-09-25, SDK audit S11): the scanner batches a burst of DOM
+    // mutations into one pass 200 ms later instead of a querySelectorAll per
+    // added element inside every MutationObserver callback. Lazy entry,
+    // loaded after hydration — never on the critical path. Measured 21326.
+    // +512 (same day, SDK regrade 3): forgetVisitor joined the shared client
+    // chunk — a Reject on a manual gate, or a refusal after a pause, has no
+    // tracking client to destroy and must still delete the visitor's data
+    // (grader F2) — plus the window-level forgotten marker the queues check
+    // (F8). Same reason as the lean entry's growth. Measured 21763.
+    // +256 (SDK regrade 6): forget generations instead of a clearable marker
+    // (NEW-1), the post-session-wait teardown check (NEW-2), per-task replay
+    // of held conversions (NEW-3). Measured 22026.
+    // +256 (SDK regrades 8–12): a released gated client leaves the grant
+    // registry (a global grantConsent() revived clients their owner had let
+    // go), componentGoal's teardown gate, held goals replayed IN ORDER ahead
+    // of goals fired after the grant, a goal reaching a paused queue banked
+    // instead of dropped (CONTRACTS §7), and a TCF loading callback that no
+    // longer un-decides. Two new messages were shortened first. Measured
+    // 22280 — the old ceiling left 27 B, so the next change would have
+    // failed on arrival.
+    limit: 17 * 1024 + 3584 + 1280 + 256,
   },
 ];
 
@@ -156,7 +216,8 @@ let failed = false;
 
 for (const bundle of BUNDLES) {
   const entryBytes = readFileSync(join(distDir, bundle.entry));
-  const size = gzipSize([chunkBytes, entryBytes]);
+  const chunkBytes = [...importedChunks(bundle.entry)].map((f) => readFileSync(join(distDir, f)));
+  const size = gzipSize([...chunkBytes, entryBytes]);
   const ok = size <= bundle.limit;
   const status = ok ? 'ok  ' : 'FAIL';
   const msg = `${status}  ${bundle.name}: ${size} bytes gzip (limit: ${bundle.limit})`;

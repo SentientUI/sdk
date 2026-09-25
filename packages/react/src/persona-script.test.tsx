@@ -33,11 +33,36 @@ describe('personaScriptBody', () => {
   it('falls back to the snapshot-reading pre-paint script when no SSR persona', () => {
     localStorage.setItem(
       '_snt_snap:pk_x',
-      JSON.stringify({ v: 1, persona: 'trial_user', band: 'medium', slots: {}, layoutOrder: null, savedAt: 1 }),
+      JSON.stringify({ v: 1, persona: 'trial_user', band: 'medium', slots: {}, layoutOrder: null, savedAt: Date.now() - 1000 }),
     );
     (0, eval)(personaScriptBody({ apiKey: 'pk_x' }));
     expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('trial_user');
     expect(document.documentElement.getAttribute('data-sentient-confidence')).toBe('medium');
+  });
+
+  it('the fallback ignores a snapshot older than 30 days, and any snapshot under DNT/GPC (grader F3)', () => {
+    const html = document.documentElement;
+    const run = (savedAt: number) => {
+      html.removeAttribute('data-sentient-persona');
+      localStorage.setItem('_snt_snap:pk_x', JSON.stringify({ v: 1, persona: 'p', band: 'high', slots: {}, layoutOrder: null, savedAt }));
+      (0, eval)(personaScriptBody({ apiKey: 'pk_x' }));
+      return html.getAttribute('data-sentient-persona');
+    };
+    expect(run(Date.now() - 31 * 24 * 3600 * 1000)).toBeNull();
+    Object.defineProperty(navigator, 'globalPrivacyControl', { configurable: true, get: () => true });
+    try {
+      expect(run(Date.now())).toBeNull();
+    } finally {
+      delete (navigator as unknown as { globalPrivacyControl?: unknown }).globalPrivacyControl;
+    }
+  });
+
+  it('renders nothing while consent is gated — the fallback would read device storage (grader F3)', () => {
+    expect(SentientPersonaScript({ apiKey: 'pk_x', consent: false })).toBeNull();
+    expect(SentientPersonaScript({ apiKey: 'pk_x', consentFrom: 'cookiebot' })).toBeNull();
+    expect(SentientPersonaScript({ apiKey: 'pk_x', consentFrom: 'cookiebot', consent: true })).not.toBeNull();
+    // A server-decided persona reads no storage, so it always renders.
+    expect(SentientPersonaScript({ apiKey: 'pk_x', consent: false, persona: { persona: 'a', confidence: 1 } })).not.toBeNull();
   });
 
   it('is XSS- and serialization-safe for hostile persona strings', () => {

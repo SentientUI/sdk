@@ -503,3 +503,20 @@ describe('useAssignment â€” unmount cancellation', () => {
     errSpy.mockRestore();
   });
 });
+
+describe('useAssignment — a late answer is applied (review N3)', () => {
+  it('swaps in and reports an assignment that arrives seconds later — the server already booked it', async () => {
+    let resolve!: (v: unknown) => void;
+    const assign = vi.fn(() => new Promise((r) => (resolve = r)));
+    mockedInit.mockReturnValue(makeClient({ assign }) as never);
+    const onAssignment = vi.fn();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const { result } = renderHook(() => useAssignment('hero', ['a', 'b']), { wrapper: staticWrapper({ consent: true, onAssignment }) });
+    await waitFor(() => expect(assign).toHaveBeenCalled());
+    now.mockReturnValue(1_010_000);
+    await act(async () => resolve({ variantId: 'b', assignmentTtlMs: 0 }));
+    expect(result.current).toMatchObject({ variantId: 'b', settled: true });
+    expect(onAssignment).toHaveBeenCalledWith('hero', 'b');
+    now.mockRestore();
+  });
+});

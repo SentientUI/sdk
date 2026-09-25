@@ -291,6 +291,23 @@ describe('grantConsent()', () => {
     client.destroy();
   });
 
+  // The wrapper forwarded only (ids, texts): the render caps riding the third
+  // argument were dropped, so a consent-gated page read as a legacy SDK and
+  // was never drawn a Rewrite arm (native generation, 2026-09-23).
+  it('carries render caps requested while gated through to the upgraded decide', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve({ ok: true, json: async () => (String(input).endsWith('/decide') ? { slots: {}, slotConfig: {} } : {}) } as Response),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_test_slot_gate_caps', consent: false });
+    client.requestSlots!(['hero'], undefined, { render: { hero: { forms: false, compose: false, authored: ['a', 'b'] } } });
+    grantConsent('pk_test_slot_gate_caps');
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/decide'))).toBe(true));
+    const body = JSON.parse(String(fetchMock.mock.calls.find((c) => String(c[0]).endsWith('/decide'))![1]!.body));
+    expect(body).toMatchObject({ registrySlotIds: ['hero'], render: { hero: { authored: ['a', 'b'] } } });
+    client.destroy();
+  });
+
   it('is a no-op when called before init()', () => {
     expect(() => grantConsent()).not.toThrow();
   });

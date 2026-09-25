@@ -6,6 +6,7 @@ import {
   slotBaselineArm,
   validateSlotDecl,
   slotResultFor,
+  trainingArmKeys,
   type SlotDecl,
 } from './arm-encoding';
 
@@ -180,5 +181,44 @@ describe('slotResultFor', () => {
   it('falls back to the baseline record when a dims arm fails to parse', () => {
     const decl: SlotDecl = { id: 's', dims: { tone: ['calm', 'urgent'], motion: ['none', 'pulse'] } };
     expect(slotResultFor(decl, 'garbage')).toEqual({ motion: 'none', tone: 'calm' });
+  });
+});
+
+describe('trainingArmKeys', () => {
+  it('an enumerated arm trains only itself', () => {
+    expect(trainingArmKeys('bold')).toEqual(['bold']);
+  });
+
+  it('a multi-dim arm trains the bundle and each marginal once', () => {
+    expect(trainingArmKeys('motion=pulse|tone=urgent')).toEqual(['motion=pulse|tone=urgent', 'motion=pulse', 'tone=urgent']);
+  });
+
+  it('a ONE-dim arm trains one row — its bundle key is its marginal key', () => {
+    // Every writer used to bump bundle + marginal here: the same row twice.
+    expect(canonicalArm({ tone: 'calm' })).toBe(marginalArmKey('tone', 'calm'));
+    expect(trainingArmKeys('tone=calm')).toEqual(['tone=calm']);
+  });
+
+  it('keys are always distinct', () => {
+    for (const arm of ['a=1', 'a=1|b=2', 'x', 'a=1|b=2|c=3|d=4']) {
+      const keys = trainingArmKeys(arm);
+      expect(new Set(keys).size).toBe(keys.length);
+    }
+  });
+});
+
+describe('validateSlotDecl — dims delimiters are reserved', () => {
+  it("rejects '=' or '|' in a dim value (the slot would never learn, or learn under the wrong key)", () => {
+    expect(validateSlotDecl({ id: 's', dims: { tone: ['calm', 'a=b'] } })).toMatchObject({ ok: false });
+    expect(validateSlotDecl({ id: 's', dims: { tone: ['calm', 'x|y'] } })).toMatchObject({ ok: false });
+  });
+
+  it("rejects '=' or '|' in a dim name (two dims could collide on one marginal key)", () => {
+    expect(validateSlotDecl({ id: 's', dims: { 'a=b': ['x', 'y'] } })).toMatchObject({ ok: false });
+    expect(validateSlotDecl({ id: 's', dims: { 'a|b': ['x', 'y'] } })).toMatchObject({ ok: false });
+  });
+
+  it('still accepts ordinary single-dim slots', () => {
+    expect(validateSlotDecl({ id: 's', dims: { tone: ['calm', 'urgent'] } })).toEqual({ ok: true });
   });
 });

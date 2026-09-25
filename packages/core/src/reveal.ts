@@ -30,6 +30,8 @@
  * and the editor instead.
  */
 
+import { applyNonce } from './csp-nonce.js';
+
 const STYLE_ID = 'sentient-reveal';
 const CLASS = 'sentient-revealed';
 
@@ -51,7 +53,7 @@ function ensureStyles(doc: Document): void {
     injected = true;
     return;
   }
-  const style = doc.createElement('style');
+  const style = applyNonce(doc.createElement('style'), doc);
   style.id = STYLE_ID;
   // The animation is defined ONLY inside the no-preference branch. Defining it
   // globally and disabling it under reduce would still leave the class applying

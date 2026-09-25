@@ -6,8 +6,18 @@
 // 'x' — add it?" nudge in the dashboard, so a typo self-diagnoses.
 type GraphqlFn = (query: string, options?: { variables?: Record<string, unknown> }) => Promise<{ json(): Promise<unknown> }>;
 
-export const PERSONA_TAGS_NAMESPACE = '$app:config';
+// App-DATA metafields (owner = the app installation): that is what Liquid's
+// `app.metafields.config.*` reads in the theme embed. These were written to
+// the SHOP under `$app:config`, which the `app` object does not expose, so the
+// storefront never saw the tag mapping. LEGACY_* is read once by the settings
+// screen so a mapping saved the old way is carried over on the next save.
+export const PERSONA_TAGS_NAMESPACE = 'config';
+export const LEGACY_PERSONA_TAGS_NAMESPACE = '$app:config';
 export const PERSONA_TAGS_KEY = 'persona_tags';
+/** The project's pk_, read by the theme embed when its own field is blank —
+ *  merchants pasted the same key twice, once here and once in the theme
+ *  editor, and a mismatch between the two was silent (audit H10). */
+export const PUBLIC_KEY_KEY = 'publishable_key';
 
 const TAG_RE = /^[^=]{1,64}$/;
 const PERSONA_KEY_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
@@ -39,8 +49,8 @@ export function mappingToText(mapping: Record<string, string>): string {
   return Object.entries(mapping).map(([tag, persona]) => `${tag} = ${persona}`).join('\n');
 }
 
-const SHOP_ID = `#graphql
-  query sentientShopId { shop { id } }`;
+const INSTALLATION_ID = `#graphql
+  query sentientInstallationId { currentAppInstallation { id } }`;
 
 const SET_METAFIELD = `#graphql
   mutation sentientPersonaTags($metafields: [MetafieldsSetInput!]!) {
@@ -50,21 +60,30 @@ const SET_METAFIELD = `#graphql
     }
   }`;
 
-export async function savePersonaTagMapping(graphql: GraphqlFn, mapping: Record<string, string>): Promise<boolean> {
+export async function savePersonaTagMapping(
+  graphql: GraphqlFn,
+  mapping: Record<string, string>,
+  publishableKey?: string,
+): Promise<boolean> {
   try {
-    const shop = (await (await graphql(SHOP_ID)).json()) as { data?: { shop?: { id: string } } };
-    const ownerId = shop.data?.shop?.id;
+    const inst = (await (await graphql(INSTALLATION_ID)).json()) as { data?: { currentAppInstallation?: { id: string } } };
+    const ownerId = inst.data?.currentAppInstallation?.id;
     if (!ownerId) return false;
     const res = (await (
       await graphql(SET_METAFIELD, {
         variables: {
-          metafields: [{
-            ownerId,
-            namespace: PERSONA_TAGS_NAMESPACE,
-            key: PERSONA_TAGS_KEY,
-            type: 'json',
-            value: JSON.stringify(mapping),
-          }],
+          metafields: [
+            {
+              ownerId,
+              namespace: PERSONA_TAGS_NAMESPACE,
+              key: PERSONA_TAGS_KEY,
+              type: 'json',
+              value: JSON.stringify(mapping),
+            },
+            ...(publishableKey
+              ? [{ ownerId, namespace: PERSONA_TAGS_NAMESPACE, key: PUBLIC_KEY_KEY, type: 'single_line_text_field', value: publishableKey }]
+              : []),
+          ],
         },
       })
     ).json()) as { data?: { metafieldsSet?: { metafields?: Array<{ id: string }>; userErrors?: Array<{ message?: string }> } } };

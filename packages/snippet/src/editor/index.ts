@@ -1,7 +1,10 @@
 import { resolveLocatorOne } from '../locator';
-import { applySlotBlocks } from '../blocks';
+import { applySlotBlocks, setBlockVocabulary } from '../blocks';
+import { applyEdits } from '../edits';
+import { captureRegionSkeleton } from '@sentientui/core/region';
+import { sampleStyleVocabulary } from '@sentientui/core/style-sample';
 import { generateLocator, resolvesUniquely } from './locator-gen';
-import { clearCachedEditorToken } from '../editor-token';
+import { cacheEditorToken, clearCachedEditorToken } from '../editor-token';
 import { deriveSitePalette } from './palette';
 import { CSS_PROP, cssValueSafe } from '../css-guard';
 import { applyOps } from '../ops';
@@ -10,17 +13,18 @@ import {
   buildDraftPayload, funnelSummaryLine, stepOptions, toggleStepSelection,
   type EditorFunnel, type EditorGoal,
 } from './funnel-panel';
-import type { CompoundLocator, SlotOps } from '@sentientui/core';
+import { applyNonce, type ArmEdits, type CompoundLocator, type SlotOps, type StyleVocabulary } from '@sentientui/core';
 
 // On-site visual editor overlay. Loaded as a SEPARATE bundle only when the
-// snippet detects ?sentient_editor=<token>. It reads its token + API base from
-// window.__sentientEditor (set by the snippet), verifies the token, then lets a
+// snippet finds #sentient_editor_code=<one-time code> or a cached token. It
+// reads the code/token + API base from window.__sentientEditor (set by the
+// snippet), exchanges the code for a token, verifies it, then lets a
 // non-technical user click an element, save a DRAFT (text test, style, or move),
 // and — the on-site golden path — Publish it live without leaving the page.
 // Publishing is slot-only and server-validated/versioned (reversible from the
 // dashboard); goals still save as drafts, and pins/analytics stay dashboard-only.
 
-type Boot = { token: string; apiBase: string };
+type Boot = { token: string; apiBase: string; code?: string | null };
 
 // Deterministic 32-bit hash (djb2 → base36) for slot-id uniqueness. Not crypto —
 // just a stable short suffix so distinct elements never collide.
@@ -77,7 +81,8 @@ const LOAD_ERROR_MESSAGE = 'Couldn’t load the editor — check your connection
 // a few seconds so it never nags. All of it is disabled under reduced-motion.
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement('style');
+  // The page's nonce, like every other SDK-injected <style> (audit S20).
+  const style = applyNonce(document.createElement('style'));
   style.id = STYLE_ID;
   style.textContent = `
 @keyframes sntedi-in {
@@ -131,7 +136,29 @@ function showToast(message: string): void {
 
 function boot(): Boot | null {
   const b = (window as unknown as { __sentientEditor?: Boot }).__sentientEditor;
-  return b && typeof b.token === 'string' && typeof b.apiBase === 'string' ? b : null;
+  return b && typeof b.apiBase === 'string' && (typeof b.token === 'string' || typeof b.code === 'string') ? b : null;
+}
+
+/** One-time fragment code → editor token (grade E1). The code is spent by
+ *  this call whatever happens next, so the token is cached at once: a reload
+ *  must come back through sessionStorage, never the (dead) code. Returns the
+ *  HTTP status on failure so 401 (expired/used) reads as "reopen", not "retry". */
+export async function exchangeCode(b: Boot): Promise<number> {
+  try {
+    const res = await fetch(`${b.apiBase}/v1/editor/exchange`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: b.code }),
+    });
+    const token = res.ok ? ((await res.json()) as { token?: string }).token : null;
+    b.code = null;
+    if (!token) return res.ok ? 500 : res.status;
+    b.token = token;
+    cacheEditorToken(token);
+    return 200;
+  } catch {
+    return 0;
+  }
 }
 
 // `unauthorized` (a 401) means the token is expired or invalid — distinct from a
@@ -757,7 +784,6 @@ export function mount(b: Boot): void {
    *  review card. */
   const gotoPreview = (slotId: string, arm?: string): void => {
     const url = new URL(window.location.href);
-    url.searchParams.delete('sentient_editor');
     url.searchParams.set('sentient_preview', slotId);
     if (arm) url.searchParams.set('sentient_arm', arm);
     window.location.assign(url.toString());
@@ -2717,7 +2743,7 @@ async function mountPreview(b: Boot, slotId: string): Promise<void> {
   exit.onclick = () => {
     clearCachedEditorToken();
     const url = new URL(location.href);
-    for (const p of ['sentient_editor', 'sentient_preview', 'sentient_arm']) url.searchParams.delete(p);
+    for (const p of ['sentient_preview', 'sentient_arm']) url.searchParams.delete(p);
     location.assign(url.toString());
   };
   // Previews launched from the editor's Drafts tab return to the editor: the
@@ -2796,7 +2822,7 @@ async function mountCellPreview(b: Boot, cellParam: string): Promise<void> {
   exit.onclick = () => {
     clearCachedEditorToken();
     const url = new URL(location.href);
-    for (const p of ['sentient_editor', 'sentient_preview_cell']) url.searchParams.delete(p);
+    for (const p of ['sentient_preview_cell', 'sentient_refresh_region']) url.searchParams.delete(p);
     location.assign(url.toString());
   };
   const fail = (msg: string): void => {
@@ -2807,6 +2833,8 @@ async function mountCellPreview(b: Boot, cellParam: string): Promise<void> {
   type CellPreviewData = {
     status?: string; slotName?: string; personaDisplay?: string;
     content?: string | null; blocks?: unknown; target?: unknown;
+    edits?: ArmEdits; skeletonFp?: string; leafToNode?: number[];
+    compose?: unknown; vocabulary?: StyleVocabulary;
   };
   let data: CellPreviewData | null = null;
   try {
@@ -2824,8 +2852,18 @@ async function mountCellPreview(b: Boot, cellParam: string): Promise<void> {
   if (!target) {
     return fail('— we couldn’t find this part of the page here. It may live on another page.');
   }
-  if (data.blocks != null) {
-    applySlotBlocks(target, { preview: data.blocks } as never, 'preview', document);
+  if (data.edits != null && typeof data.skeletonFp === 'string' && Array.isArray(data.leafToNode)) {
+    // A Rewrite version: new words on the site's own elements. If the region
+    // no longer matches the skeleton it was written for, say so rather than
+    // put the words on the wrong element.
+    if (applyEdits(target, data.edits, { fp: data.skeletonFp, leafToNode: data.leafToNode }) === 'mismatch') {
+      return fail('This part of the page changed since this version was written — regenerate it from your dashboard.');
+    }
+  } else if (data.compose != null || data.blocks != null) {
+    // The editor bundle has its own renderer instance: hand it the styles
+    // this version borrows, or a redesigned section previews unstyled.
+    if (data.vocabulary && Array.isArray(data.vocabulary.entries)) setBlockVocabulary(data.vocabulary);
+    applySlotBlocks(target, { preview: data.compose ?? data.blocks } as never, 'preview', document);
   } else if (typeof data.content === 'string') {
     target.textContent = data.content;
   } else {
@@ -2841,10 +2879,53 @@ async function mountCellPreview(b: Boot, cellParam: string): Promise<void> {
   (document.body ?? document.documentElement).append(bar);
 }
 
+type EditorSlotRow = { slot_id: string; target?: unknown; region_skeleton_status?: string | null };
+
+/** The trusted skeleton capture for snippet regions (spec 2026-09-23 §4.2).
+ *  The always-on bundle carries only the addressing half of a capture, so the
+ *  full description — roles, classes, colours, background — is taken here, in
+ *  the operator's editor session. `force` = "Refresh from page" (overwrite);
+ *  otherwise only regions the server has never had a skeleton for. */
+async function captureRegions(b: Boot, force?: string): Promise<'ok' | 'missing' | 'failed' | 'none'> {
+  const r = await fetchEditorJson<{ slots?: EditorSlotRow[] }>(b, '/v1/editor/slots');
+  const rows = (r?.slots ?? []).filter((s) => (force ? s.slot_id === force : s.region_skeleton_status == null));
+  let result: 'ok' | 'missing' | 'failed' | 'none' = rows.length === 0 && force ? 'missing' : 'none';
+  for (const row of rows) {
+    const el = row.target && typeof row.target === 'object' ? resolveLocatorOne(row.target as CompoundLocator, document) : null;
+    if (!el) {
+      if (force) result = 'missing';
+      continue;
+    }
+    const cap = captureRegionSkeleton(el);
+    const body = cap.skeleton ? { slotId: row.slot_id, skeleton: cap.skeleton } : { slotId: row.slot_id, status: cap.reason };
+    const saved = await save(b, '/v1/editor/region-skeleton', body);
+    result = saved.r === 'ok' ? 'ok' : 'failed';
+  }
+  return result;
+}
+
+async function captureStyles(b: Boot): Promise<void> {
+  try {
+    await save(b, '/v1/editor/style-vocabulary', sampleStyleVocabulary(document));
+  } catch {
+    // best-effort: generation falls back to the palette
+  }
+}
+
 async function start(): Promise<void> {
   if (typeof document === 'undefined') return;
   const b = boot();
   if (!b) return;
+  if (b.code) {
+    const st = await exchangeCode(b);
+    if (st !== 200) {
+      // 401: the code expired (>60 s) or was already used — reopening from the
+      // dashboard is the only fix. A 403 (origin not allowed) or network blip
+      // is not an expiry; say "couldn't load" instead.
+      showToast(st === 401 ? EXPIRED_MESSAGE : LOAD_ERROR_MESSAGE);
+      return;
+    }
+  }
   const v = await verify(b);
   if (!v.ok) {
     if (v.unauthorized) {
@@ -2875,6 +2956,22 @@ async function start(): Promise<void> {
   const previewCell = new URLSearchParams(location.search).get('sentient_preview_cell');
   if (previewCell) {
     if (!document.getElementById(PREVIEW_BAR_ID)) await mountCellPreview(b, previewCell);
+    // The operator is looking at the live site right now: a good moment to
+    // refresh what generation may borrow.
+    void captureStyles(b);
+    return;
+  }
+  // "Refresh from page": the operator says this region changed.
+  const refresh = new URLSearchParams(location.search).get('sentient_refresh_region');
+  if (refresh) {
+    const out = await captureRegions(b, refresh);
+    showToast(
+      out === 'ok'
+        ? 'Region refreshed — you can regenerate its versions now.'
+        : out === 'missing'
+          ? 'We couldn’t find that part of the page here. It may live on another page.'
+          : 'Couldn’t refresh this region — reopen the link from your dashboard.',
+    );
     return;
   }
   if (document.getElementById(PANEL_ID)) return; // already mounted
@@ -2885,6 +2982,14 @@ async function start(): Promise<void> {
   const sampled = deriveSitePalette(document);
   sitePalette = sampled;
   if (sampled) void save(b, '/v1/editor/palette', sampled);
+  // Style vocabulary (native generation phase 2): same trust level and cadence
+  // as the palette sample — re-derived on every editor open so it tracks theme
+  // changes; fire-and-forget, never blocks the editor. The sampler lives in
+  // this lazy editor bundle, so the always-on snippet pays nothing.
+  void captureStyles(b);
+  // Regions on this page the server has no skeleton for get one now —
+  // fire-and-forget, never blocks the editor.
+  void captureRegions(b).catch(() => undefined);
   const targets = await fetchTargets(b); // best-effort: fetch/resolve failures never block the editor
   registerAuditTargets(targets); // Tab-cycling reads these (keyboard element picking)
   drawTargetHighlights(targets, document);

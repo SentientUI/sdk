@@ -1,4 +1,5 @@
-import type { BlockNode, SitePalette, StackBlock, GridBlock } from '@sentientui/core';
+import type { BlockNode, ComposeArm, SitePalette, StackBlock, GridBlock, StyleVocabulary } from '@sentientui/core';
+import { safeBlockUrl } from './ops';
 
 // Composition Block renderer (spec 2026-08-20 §4, §6 Option B). Renders the
 // bounded typed tree via document.createElement + property assignment ONLY —
@@ -20,6 +21,20 @@ let palette: SitePalette | null = null;
 export function setBlockPalette(p: SitePalette | null | undefined): void {
   palette = p ?? null;
 }
+// The site's own class lists that Redesign trees borrow (native generation
+// phase 2), served with decisions and cached in the snapshot like the palette.
+let vocab: StyleVocabulary | null = null;
+export function setBlockVocabulary(v: StyleVocabulary | null | undefined): void {
+  vocab = v ?? null;
+}
+const likeClass = (like: unknown): string | undefined =>
+  typeof like === 'string' ? vocab?.entries.find((e) => e.id === like)?.classes : undefined;
+/** Measured colour of a borrowed style whose class list doesn't set one
+ *  (StyleEntry.computed.inheritsColor) — same rule as React. */
+const inheritedColor = (like: unknown): string | undefined => {
+  const e = typeof like === 'string' ? vocab?.entries.find((x) => x.id === like) : undefined;
+  return e?.computed.inheritsColor ? e.computed.color : undefined;
+};
 /** Marks an original child hidden by a revealed arm; value = its prior inline
  *  display, so exiting composition restores the DOM exactly. */
 const ORIG_HIDDEN_ATTR = 'data-sentient-blocks-hid';
@@ -60,7 +75,22 @@ function toneStyles(tone?: string): Record<string, string | undefined> {
 
 /** Render one node (recursively). Null for anything unrenderable — fail-safe. */
 export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null {
+  const el = renderOwn(node, doc);
+  const color = inheritedColor((node as { like?: unknown }).like);
+  if (el && color) el.style.color = color;
+  return el;
+}
+
+function renderOwn(node: BlockNode, doc: Document): HTMLElement | null {
   try {
+    // A borrowed site class list (same rule as React): the node keeps only
+    // layout styles; colors, borders, radius and type come from the site CSS.
+    const cls = likeClass((node as { like?: unknown }).like);
+    const measure = (node as { maxWidth?: string }).maxWidth === 'measure' ? '65ch' : undefined;
+    const own = (el: HTMLElement): HTMLElement => {
+      el.className = cls!;
+      return styled(el, { 'max-width': measure });
+    };
     switch (node.type) {
       case 'stack':
       case 'grid': {
@@ -101,7 +131,8 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
         // design bug, not a choice. Surface bg/text apply only when the palette
         // carries them (inherit-first otherwise); the hairline + radius follow
         // the badge/button precedent so an unsampled site still looks plausible.
-        const raised = node.type === 'stack' && (node as StackBlock).surface === 'raised';
+        if (cls) el.className = cls;
+        const raised = !cls && node.type === 'stack' && (node as StackBlock).surface === 'raised';
         const pad = (node as StackBlock | GridBlock).pad ?? (raised ? 'md' : undefined);
         if (pad) styled(el, { padding: GAP[pad] ?? GAP['md'] });
         if (raised) {
@@ -121,6 +152,7 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
       case 'text': {
         const el = doc.createElement('p');
         el.textContent = node.value;
+        if (cls) return own(el);
         return styled(el, {
           margin: '0', 'font-size': node.size ? FONT_SIZE[node.size] : undefined,
           'font-weight': node.weight ? WEIGHT[node.weight] : undefined,
@@ -131,6 +163,7 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
       case 'heading': {
         const el = doc.createElement(`h${node.level}`);
         el.textContent = node.value;
+        if (cls) return own(el);
         return styled(el, {
           margin: '0', 'font-size': HEADING_SIZE[node.size ?? 'md'], 'text-align': node.align,
           'max-width': node.maxWidth === 'measure' ? '65ch' : undefined,
@@ -139,8 +172,10 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
       case 'button': {
         const el = doc.createElement('a');
         el.textContent = node.label;
-        el.href = node.href;
+        const href = safeBlockUrl(node.href);
+        if (href) el.href = href;
         if (node.tag) el.setAttribute('data-sentient-tag', node.tag);
+        if (cls) return own(el);
         const emphasis = node.emphasis ?? 'primary';
         return styled(el, {
           display: 'inline-block', padding: BTN_PAD[node.size ?? 'md'],
@@ -157,14 +192,18 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
       case 'link': {
         const el = doc.createElement('a');
         el.textContent = node.label;
-        el.href = node.href;
+        const href = safeBlockUrl(node.href);
+        if (href) el.href = href;
         if (node.tag) el.setAttribute('data-sentient-tag', node.tag);
+        if (cls) return own(el);
         return styled(el, { color: 'inherit', 'text-decoration': 'underline' });
       }
       case 'image': {
         const el = doc.createElement('img');
-        el.src = node.src;
+        const src = safeBlockUrl(node.src);
+        if (src) el.src = src;
         el.alt = node.alt;
+        if (cls) el.className = cls;
         return styled(el, {
           display: 'block', 'max-width': '100%',
           'aspect-ratio': node.ratio && node.ratio !== 'auto' ? RATIO[node.ratio] : undefined,
@@ -174,6 +213,7 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
       case 'badge': {
         const el = doc.createElement('span');
         el.textContent = node.value;
+        if (cls) return own(el);
         return styled(el, {
           display: 'inline-block', padding: '2px 10px', 'border-radius': '999px',
           'font-size': '0.75em', border: `1px solid ${palette?.border ?? 'currentColor'}`, ...toneStyles(node.tone),
@@ -208,7 +248,9 @@ export function renderBlock(node: BlockNode, doc: Document): HTMLElement | null 
  */
 export function applySlotBlocks(
   container: Element,
-  blocks: Record<string, BlockNode>,
+  /** Per arm: a blocks tree, or a Redesign (compose) arm — its tree rendered
+   *  on the site's surface class. One Option-B pipeline for both. */
+  blocks: Record<string, BlockNode | ComposeArm>,
   servedArm: string | undefined,
   doc: Document,
 ): void {
@@ -226,12 +268,24 @@ export function applySlotBlocks(
     }
     for (const [armId, tree] of Object.entries(blocks)) {
       if (existing.has(armId)) continue;
-      const rendered = renderBlock(tree, doc);
+      const compose = 'tree' in tree ? tree : null;
+      const rendered = renderBlock(compose ? compose.tree : (tree as BlockNode), doc);
       if (!rendered) continue;
       const wrapper = doc.createElement('div');
       wrapper.setAttribute(BLOCK_ARM_ATTR, armId);
       wrapper.style.display = 'none';
-      wrapper.appendChild(rendered);
+      // A Redesign arm is painted on the site's own section/card surface.
+      const surface = compose ? likeClass(compose.surface?.like) : undefined;
+      if (surface) {
+        const s = doc.createElement('div');
+        s.className = surface;
+        const c = inheritedColor(compose!.surface?.like);
+        if (c) s.style.color = c;
+        s.appendChild(rendered);
+        wrapper.appendChild(s);
+      } else {
+        wrapper.appendChild(rendered);
+      }
       container.appendChild(wrapper);
     }
 

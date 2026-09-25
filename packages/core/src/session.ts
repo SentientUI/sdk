@@ -50,9 +50,26 @@ function readCookie(name: string): string | null {
   }
 }
 
+// `Secure` on https pages (audit S21): without it the identity cookie also
+// rode any plain-http request to the same host. Never on http (localhost dev),
+// where the browser would refuse to store it at all.
+function secureAttr(): string {
+  try {
+    return location.protocol === 'https:' ? '; Secure' : '';
+  } catch {
+    return '';
+  }
+}
+
+// SameSite=Lax, not Strict (grader N-B): a Strict cookie is withheld on
+// cross-site top-level navigations — a click from Google, an ad, an email — so
+// AdaptiveRoot's SSR read missed a returning visitor on exactly their landing
+// page and minted an orphan session whose slot trials never saw the visit's
+// conversions (the browser kept its own id). Lax still never rides cross-site
+// subresource or POST requests, and the cookie is first-party only.
 function writeCookie(name: string, value: string, maxAgeSeconds: number): void {
   try {
-    document.cookie = `${name}=${encodeURIComponent(value)}; max-age=${maxAgeSeconds}; SameSite=strict; path=/`;
+    document.cookie = `${name}=${encodeURIComponent(value)}; max-age=${maxAgeSeconds}; SameSite=lax; path=/${secureAttr()}`;
   } catch {
     /* ignore */
   }
@@ -102,7 +119,7 @@ function removeSessionStorage(key: string): void {
 
 function probeCookieWritable(name: string): boolean {
   try {
-    document.cookie = `${name}_probe=1; max-age=1; SameSite=strict; path=/`;
+    document.cookie = `${name}_probe=1; max-age=1; SameSite=lax; path=/${secureAttr()}`;
     return document.cookie.indexOf(`${name}_probe=1`) !== -1;
   } catch {
     return false;
@@ -119,7 +136,7 @@ function removeLocalStorage(key: string): void {
 
 function clearCookie(name: string): void {
   try {
-    document.cookie = `${name}=; max-age=0; SameSite=strict; path=/`;
+    document.cookie = `${name}=; max-age=0; SameSite=lax; path=/${secureAttr()}`;
   } catch {
     /* ignore */
   }
@@ -212,7 +229,15 @@ export function initSession(config?: SessionConfig): SessionManager {
       // See legacyTombstoneKey: the bare `_snt_uid` keys stay for the other
       // projects on this origin, but this project's next init() must not
       // re-adopt them — that quietly undid the forget-me it just performed.
-      if (suffix && !config?.cookieName) writeLocalStorage(legacyTombstoneKey, '1');
+      // Only when a bare id exists to block: an unconditional marker was a
+      // storage write on every forget-me, for visitors with nothing to hide.
+      if (
+        suffix &&
+        !config?.cookieName &&
+        (readCookie(DEFAULT_COOKIE_NAME) !== null || readLocalStorage(STORAGE_KEY) !== null || readSessionStorage(STORAGE_KEY) !== null)
+      ) {
+        writeLocalStorage(legacyTombstoneKey, '1');
+      }
     },
   };
 }

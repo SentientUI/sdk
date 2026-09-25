@@ -2,7 +2,7 @@
 
 React SDK for [SentientUI](https://sentient-ui.com) — the adaptive ladder. Declare bounded
 variations (styles, content, arrangement order); a persona-keyed optimizer on the hosted API
-learns which one converts best for each visitor type. Visit 1 learns; Visit 2 converts.
+learns which one converts best for each visitor type, and measures the lift against a held-out control group.
 
 ## Installation
 
@@ -66,6 +66,11 @@ attributes: only that inline script (which `AdaptiveRoot` includes for you) writ
 `AdaptiveProvider` app gets everything except the persona CSS hooks. (Keyless local mode writes
 the attributes itself, so the demo works either way — don't let that mask a missing script when
 you add a real key.)
+
+Give `<SentientPersonaScript>` the same consent gate as the provider
+(`<SentientPersonaScript apiKey="pk_…" consentFrom="cookiebot" />`). With `consent={false}`, or a
+`consentFrom` and no `consent={true}`, it renders nothing, because its fallback reads the decision
+stored on the visitor's device, which has to wait for consent. `AdaptiveRoot` does this for you.
 
 ## The adaptive ladder
 
@@ -228,8 +233,26 @@ Imported from `@sentientui/react/next`.
 | `persona` | `string` *(optional)* | Declared persona — the role your app already knows for this visitor (e.g. from your auth context). Must be a key in the project's persona vocabulary (dashboard → Settings → Personas); unrecognized values are ignored server-side. Served at full confidence, overriding the inferred persona; forwarded through both SSR paths. Stable for the session — remount to apply a new value. Never a user id or email. |
 | `consent` | `boolean` *(default `true`)* | Set `false` to skip SDK init (no cookies, no events). Flip to `true` after the visitor accepts. |
 | `respectDoNotTrack` | `boolean` *(default `true`)* | Honor the browser's Do Not Track signal. When on and DNT is enabled, the SDK sets no cookies and sends no tracking data (overriding `consent: true`), and `grantConsent()` won't re-enable it. Set `false` to make your own consent gate authoritative. |
+| `consentFrom` | preset or `{ cookie, value, event }` *(optional)* | Your consent platform — see [Consent management](#consent-management-gdpr). Cookie-based sources are also read on the server, so a consented visitor gets personalized HTML and a non-consented one gets none. |
 | `timeoutMs` | `number` *(default `1000`)* | Server-side fetch timeout before falling back to the first variant. Typical decide is well under 150 ms; the full budget is only reached on a cold start or an API distant from your SSR host. |
+| `nonce` | `string` *(optional)* | CSP nonce for the inline pre-paint script and the `<style>` the client injects. |
 | `debug` | `boolean` | Log assignment and event activity to the console. |
+
+#### What `<AdaptiveRoot>` costs your rendering
+
+- **Every route under it renders dynamically.** It reads `headers()` and `cookies()` to decide per visitor, so
+  Next.js can't statically generate or ISR-cache those routes.
+- **It adds one API round trip to time-to-first-byte**, usually well under 150 ms and capped by `timeoutMs`
+  (default 1000 ms). On timeout the page renders the originals and decides in the browser instead.
+- **It skips the round trip entirely** for visitors it must not track (DNT/GPC, consent refused or not yet given).
+
+Want static pages? Put `<AdaptiveProvider>` in a client component instead, only around the routes that adapt.
+Decisions then happen in the browser after hydration: the server HTML shows the originals, a returning
+visitor's last decision is restored from the SDK's local snapshot as soon as the client starts (no network
+wait), and a first-time visitor's arrives after one round trip.
+
+`@sentientui/react/next` is ESM-only (the App Router always loads it as ESM). The package root and
+`/server` ship both ESM and CommonJS.
 
 ### `<AdaptiveProvider>` (any React app)
 
@@ -255,7 +278,8 @@ never both. `AdaptiveProps` is the union of the two exported prop types below.
 | `children` | `ReactNode` | The original. Renders for holdout/control traffic, unknown visitor types, visitor types with no version, and every error path. |
 | `goal` | `string \| GoalConfig` *(optional)* | Conversion goal credited to this region. |
 | `onFormSubmit` | `(values: Record<string, string>) => void` *(optional)* | Receives the values when a generated form version submits. Form versions are only offered when this is present; values never reach SentientUI. |
-| `className` | `string` *(optional)* | Class for the wrapper `<div>`. |
+| `as` | `'div' \| 'section' \| 'li' \| 'span' \| …` *(optional, default `'div'`)* | Wrapper element — e.g. `'li'` inside a list. Always a real element, never `display: contents`: it is what exposure and goals observe. |
+| `className` | `string` *(optional)* | Class for the wrapper element. |
 | `reportBaselineText` | `boolean` *(default `true`)* | At first registration, send this region's rendered text (capped at 400 chars) so generated versions are grounded in what they replace. Set `false` for a region wrapping personalized or account content. |
 
 **Code variants** — `AdaptiveVariantsProps`:
@@ -269,7 +293,23 @@ never both. `AdaptiveProps` is the union of the two exported prop types below.
 | `microSignalGoals` | `MicroSignalGoals` *(optional)* | When a passive micro-signal fires on this component, also record a named goal: micro-signal type → goal name (or `{ name, weight?, stepIndex? }`), e.g. `{ rage_click: 'confused_by_hero' }`. |
 | `agentDataByVariant` | `Record<string, unknown>` *(optional)* | Structured data keyed by variant ID that AI agents can consume via `GET /v1/agent/layout`. Only the assigned variant's entry is sent to the server. Preferred over `agentData`. |
 | `agentData` | `unknown` *(optional, deprecated)* | Deprecated in favour of `agentDataByVariant`. Single value stored once regardless of which variant is shown; kept for backward compatibility. |
+| `as`, `className` | *(optional)* | Wrapper element and its class, as for generated versions. |
 | `clientOnly` | `boolean` | Render nothing on the server; resolve on the client only. Use for cookie-dependent components. Without it, a component with no preloaded assignment server-renders its first variant. (This replaces the deprecated provider-level `ssrFallback="none"`, which is still accepted.) |
+
+#### Which goal API?
+
+One canonical path per situation — the others are for the cases these can't reach:
+
+| You want to record… | Use | Credits |
+|---|---|---|
+| a click, submit or scroll inside an adaptive region | the `goal` prop on `<Adaptive>` | the version that region showed |
+| a visitor reaching a page or route (pricing, checkout) | `usePageGoal(name, { componentId? })` | that component's version, or the session |
+| an event you fire yourself, tied to a region (a phone call, a custom widget) | `useAdaptiveGoal(componentId)` | the version that region showed |
+| a conversion outside React (server, another framework) | `client.goal(name, { value, externalId })` from `@sentientui/core` | the session |
+
+`useAssignment` records nothing (use `useAdaptive`), and the positional
+`client.goal(name, metadata, weight, stepIndex)` form is deprecated in favour of
+`client.goal(name, options)`; both leave in 1.0.
 
 #### Goal types
 
@@ -556,6 +596,8 @@ DOM graph scanning and behavioral engagement capture are **on by default** — n
 
 Both modules are loaded on demand after init, so the base bundle stays lean, and neither ever runs for a Do-Not-Track, Global Privacy Control, or consent-gated visitor (see Consent below).
 
+What they cost, so you can decide: about 21 KB gzip on top of the ~16 KB core client, fetched after hydration (never on the critical path). One `MutationObserver` watches the page for sections added later, and it batches a burst of DOM changes into a single scan 200 ms after the burst starts, so a chat or a live list doesn't make it do work on every frame. Turn graph scanning off and the dashboard's page-structure view goes empty. Turn engagement off and audiences stop learning from on-page behaviour.
+
 Opt out per feature:
 
 ```tsx
@@ -568,85 +610,90 @@ Direct `@sentientui/core` users enable graph scanning by importing `init` from `
 
 ## Consent management (GDPR)
 
-By default the SDK initialises with `consent: true`, so tracking starts on first paint — opt-in consent is something you wire up, not the default. For GDPR-style opt-in, pass `consent={false}` until the visitor accepts your banner; no events are sent and no cookie is written while consent is false. To serve the best-performing variant while the cookie banner is pending (rather than freezing the UI), add `preConsentBehavior: 'statistical_winner'`:
+Tracking starts on first paint unless you gate it — opt-in consent is something you wire up,
+not the default (in development the provider warns once when neither `consent` nor
+`consentFrom` is set). While the SDK is gated no cookie is written and nothing about the
+visitor is sent. The one exception is `preConsentBehavior="statistical_winner"`, which asks
+`GET /v1/winner` for the best version, a read-only request that carries no identifier.
+
+A refusal forgets the visitor: the cookie, the assignment cache and the decision snapshot.
+That means `consent` flipping to `false`, or the platform recording a "no". A platform that is
+still loading, or reopened by a visitor who already said yes, only pauses tracking. Once the
+platform has answered in the page load, a return to "no answer" (a banner reset that deletes its
+cookie) also pauses: `AdaptiveRoot`'s server-side read applies only until the browser answers.
+
+Conversions fired before consent is known: with `preConsentBehavior` they are held in memory
+and sent, in order and ahead of later goals, if the visitor accepts on the same page (dropped on a refusal). Without it there is no
+client yet, so `useSentient()` returns `null` and a conversion fired then is not recorded. Use
+`usePageGoal`, which waits, or fire once `useSentient()` returns a client.
+
+Every key the SDK stores is listed in
+[SDK_COOKIE_DISCLOSURE.md](https://github.com/SentientUI/sdk/blob/main/SDK_COOKIE_DISCLOSURE.md).
+
+### Follow your consent platform (recommended)
+
+Point `consentFrom` at your CMP. The provider reads the platform's own API, events and cookie,
+starts the moment it grants, and gates and forgets again on withdrawal — no reload, no callback
+wiring:
 
 ```tsx
-<AdaptiveProvider
-  apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!}
-  consent={hasConsent}
-  preConsentBehavior="statistical_winner"
->
+<AdaptiveProvider apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!} consentFrom="onetrust">
   {children}
 </AdaptiveProvider>
 ```
 
-Set `hasConsent` to `false` until the user accepts your cookie banner, then flip it to `true`. The provider re-initialises automatically and begins full tracking.
+| Preset | Reads | Default category |
+|---|---|---|
+| `'cookiebot'` | `Cookiebot.consent`, `CookieConsent` cookie | `statistics` — `{ cmp: 'cookiebot', category: 'marketing' }` to change |
+| `'onetrust'` | `OnetrustActiveGroups` (exact group match), `OptanonConsent` cookie | `C0002` — `{ cmp: 'onetrust', group: 'C0004' }` |
+| `'cookieyes'` | `getCkyConsent()`, `cookieyes-consent` cookie | `analytics` |
+| `'tcf'` | IAB TCF v2.2 `__tcfapi`, `euconsent-v2` cookie | purposes 1, 5, 6, 8 (8 may rest on legitimate interest); `{ cmp: 'tcf', vendorId }` also requires vendor consent |
+| `'google-consent-mode'` | the latest `consent default/update` in `dataLayer` | `analytics_storage`; pass `region: 'ES'` (e.g. from your CDN's country header) to resolve region-scoped defaults — without it a region-scoped denial reads as denied |
+| `'shopify'` | Shopify Customer Privacy API | `analytics` |
+
+Your own banner works too: `consentFrom={{ cookie: 'analytics_consent', value: 'granted', event: 'consent-decided' }}`,
+or any JS API: `consentFrom={{ check: () => window.myCmp?.analytics === true, event: 'mycmp:changed' }}`.
+A `check` returning false only pauses tracking; add `refused: () => window.myCmp?.answered === true`
+so a refusal also deletes the visitor's data.
+Hand-rolled checks are where CMP bugs live (`OnetrustActiveGroups.includes('C0002')` is also
+true for `C00021`), so prefer a preset.
+
+To show the best-performing version while the banner is pending, instead of the first one, add
+`preConsentBehavior="statistical_winner"` — it calls only `GET /v1/winner`, a read-only endpoint
+that stores nothing about the visitor.
+
+### `<AdaptiveRoot>` (Next.js)
+
+`<AdaptiveRoot>` is a Server Component: it takes every preset and the cookie form (a `check`
+function cannot cross the server→client boundary). For the cookie-based presets
+(`cookiebot`, `onetrust`, `cookieyes`, `tcf`) and the cookie form it also reads the decision on
+the server, so an already-consented visitor gets personalized server HTML:
+
+```tsx
+<AdaptiveRoot apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!} consentFrom="cookiebot">
+  {children}
+</AdaptiveRoot>
+```
+
+### Your own flag
+
+```tsx
+<AdaptiveProvider apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!} consent={hasConsent}>
+```
+
+Flip `hasConsent` to `true` on accept and back to `false` on withdrawal. Don't wire a CMP
+callback to `grantConsent()` in React: with `consent={false}` and no `preConsentBehavior` the
+provider has no client to upgrade.
 
 ### Without React
 
 ```ts
 import { init, grantConsent } from '@sentientui/core';
 
-const client = init({
-  apiKey: 'pk_...',
-  consent: false,
-  preConsentBehavior: 'statistical_winner',
-});
-
-// After the user accepts the cookie banner:
-grantConsent(); // upgrades client in place — no need to reassign
+const client = init({ apiKey: 'pk_...', consent: false });
+grantConsent();     // on accept: upgrades the client in place
+client.destroy();   // on withdrawal: forgets the visitor
 ```
-
-### OneTrust and Cookiebot
-
-In React, don't wire a CMP callback to `grantConsent()`: with `consent={false}` and no
-`preConsentBehavior`, `<AdaptiveProvider>` never creates a client, so there is nothing to
-upgrade — `grantConsent()` just warns "called before init()" and tracking never starts. Point
-`consentFrom` at the CMP instead. The source is re-read every time the event fires, so a later
-withdrawal gates the SDK again too:
-
-```tsx
-// OneTrust — C0002 = Analytics/Performance category
-<AdaptiveProvider
-  apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!}
-  consentFrom={{
-    check: () => window.OnetrustActiveGroups?.includes('C0002') === true,
-    event: 'OneTrustGroupsUpdated',
-  }}
->
-  {children}
-</AdaptiveProvider>
-
-// Cookiebot — re-read on accept AND decline, so withdrawal is honoured
-<AdaptiveProvider
-  apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!}
-  consentFrom={{
-    check: () => window.Cookiebot?.consent?.statistics === true,
-    event: 'CookiebotOnConsentReady',
-  }}
->
-  {children}
-</AdaptiveProvider>
-```
-
-`<AdaptiveRoot>` is a Server Component and accepts only the cookie form — a `check` function
-cannot cross the server→client boundary. Point it at a cookie your CMP (or a one-line listener)
-writes, and it also resolves the cookie on the server for already-consented visitors:
-
-```tsx
-<AdaptiveRoot
-  apiKey={process.env.NEXT_PUBLIC_SENTIENT_API_KEY!}
-  consentFrom={{ cookie: 'analytics_consent', value: 'granted', event: 'consent-decided' }}
->
-  {children}
-</AdaptiveRoot>
-```
-
-For a `check()` predicate in the App Router, render `<AdaptiveProvider>` from a client component
-instead. `grantConsent()` remains correct for direct `@sentientui/core` users (above), whose
-`init({ consent: false })` does create an upgradeable client.
-
-When `consent: false` without `preConsentBehavior`, the SDK is a complete no-op — no API calls, no cookies, nothing. The `preConsentBehavior: 'statistical_winner'` mode calls only `GET /v1/winner`, a read-only endpoint that returns the best variant without storing any visitor data.
 
 ## Docs
 

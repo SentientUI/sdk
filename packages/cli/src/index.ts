@@ -1,6 +1,7 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { runInit } from './init.js';
+import { CONSENT_PRESETS, type ConsentPreset } from './snippets.js';
 
 /** Kept in sync with package.json by the build; see tsup.config.ts `define`. */
 declare const __CLI_VERSION__: string;
@@ -22,6 +23,10 @@ Options
   --key <pk_...>       Publishable API key to write into .env.local. Omit it to
                        use keyless local mode, which returns deterministic
                        simulated decisions and needs no account.
+  --consent <preset>   Wait for this consent platform before tracking:
+                       cookiebot | onetrust | cookieyes | tcf |
+                       google-consent-mode | shopify. Omit it and tracking
+                       starts on first paint for every visitor.
   --yes, -y            Accept defaults without prompting (the default today).
   --help, -h           Show this help.
   --version, -v        Print the CLI version.
@@ -39,6 +44,7 @@ API    https://api.sentient-ui.com/openapi.json`;
 export function parseArgs(argv: string[]): {
   command: string | undefined;
   key?: string;
+  consent?: ConsentPreset;
   help?: boolean;
   version?: boolean;
   /** Fatal usage problem; main() prints it to stderr and exits 1. */
@@ -47,6 +53,7 @@ export function parseArgs(argv: string[]): {
   const args = [...argv];
   const command = args.shift();
   let key: string | undefined;
+  let consent: ConsentPreset | undefined;
   // `--help` in the command slot is a flag, not an unknown command — otherwise
   // the one thing every user and every agent tries first exits non-zero.
   let help = command === '--help' || command === '-h';
@@ -68,6 +75,13 @@ export function parseArgs(argv: string[]): {
       i++;
     } else if (arg.startsWith('--key=')) {
       key = arg.slice('--key='.length);
+    } else if (arg === '--consent' || arg.startsWith('--consent=')) {
+      const value = arg === '--consent' ? args[++i] : arg.slice('--consent='.length);
+      if (!value || !(CONSENT_PRESETS as readonly string[]).includes(value)) {
+        error = `--consent must be one of: ${CONSENT_PRESETS.join(', ')}`;
+        break;
+      }
+      consent = value as ConsentPreset;
     } else if (arg === '--help' || arg === '-h') {
       help = true;
     } else if (arg === '--version' || arg === '-v') {
@@ -82,11 +96,11 @@ export function parseArgs(argv: string[]): {
       break;
     }
   }
-  return { command, key, help, version, error };
+  return { command, key, consent, help, version, error };
 }
 
 export function main(argv: string[]): void {
-  const { command, key, help, version, error } = parseArgs(argv);
+  const { command, key, consent, help, version, error } = parseArgs(argv);
 
   // A bad flag must fail loudly BEFORE anything runs: acting on half-parsed
   // options is how `init --kye pk_x` ended up doing a silent keyless init.
@@ -109,7 +123,7 @@ export function main(argv: string[]): void {
 
   if (command === 'init') {
     try {
-      runInit({ cwd: process.cwd(), key });
+      runInit({ cwd: process.cwd(), key, consent });
     } catch (err) {
       console.error(`[sentientui] init failed: ${String(err)}`);
       process.exit(1);

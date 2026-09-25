@@ -28,7 +28,10 @@ export const BLOCK_TEXT_ALIGNS = ['left', 'center', 'right'] as const;
 export const BLOCK_RATIOS = ['auto', 'square', 'landscape', 'wide'] as const;
 export const BLOCK_FITS = ['cover', 'contain'] as const;
 export const BLOCK_GRID_COLUMNS = [2, 3, 4] as const;
-export const BLOCK_HEADING_LEVELS = [2, 3, 4] as const;
+// 1 only for Redesign (compose) arms that REPLACE a region holding the page's
+// h1 — the compose validator enforces that; everywhere else the page owns its
+// h1 and generated blocks use 2–4.
+export const BLOCK_HEADING_LEVELS = [1, 2, 3, 4] as const;
 // Rung 1 of the fully-design ladder (spec 2026-09-10 §4): containers can be
 // cards ("raised" surface), containers get inner padding, and long copy can
 // cap its measure. All token-resolved — no color/px props, same as ever.
@@ -64,6 +67,10 @@ export type StackBlock = {
   wrap?: boolean;
   surface?: BlockSurface;
   pad?: BlockPad;
+  /** Borrow a site style (style-vocabulary.ts): when it resolves, the node
+   *  renders with exactly that class list and none of the palette styling
+   *  below; when it doesn't (entry dropped), the palette styling stands. */
+  like?: string;
 };
 
 /** 2–4 equal-column grid container. */
@@ -74,6 +81,10 @@ export type GridBlock = {
   gap?: BlockGap;
   align?: BlockAlign;
   pad?: BlockPad;
+  /** Borrow a site style (style-vocabulary.ts): when it resolves, the node
+   *  renders with exactly that class list and none of the palette styling
+   *  below; when it doesn't (entry dropped), the palette styling stands. */
+  like?: string;
 };
 
 /** Paragraph / label. `maxWidth: 'measure'` caps long copy at a readable 65ch. */
@@ -85,9 +96,13 @@ export type TextBlock = {
   tone?: BlockTone;
   align?: BlockTextAlign;
   maxWidth?: BlockMaxWidth;
+  /** Borrow a site style (style-vocabulary.ts): when it resolves, the node
+   *  renders with exactly that class list and none of the palette styling
+   *  below; when it doesn't (entry dropped), the palette styling stands. */
+  like?: string;
 };
 
-/** h2–h4 — never h1 (the page owns its h1). */
+/** h2–h4; h1 only in a compose arm replacing the region that holds the page's h1. */
 export type HeadingBlock = {
   type: 'heading';
   value: string;
@@ -95,6 +110,10 @@ export type HeadingBlock = {
   size?: BlockSize;
   align?: BlockTextAlign;
   maxWidth?: BlockMaxWidth;
+  /** Borrow a site style (style-vocabulary.ts): when it resolves, the node
+   *  renders with exactly that class list and none of the palette styling
+   *  below; when it doesn't (entry dropped), the palette styling stands. */
+  like?: string;
 };
 
 /** Link styled as a button. `tag` feeds agent legibility (agentDataByVariant). */
@@ -105,6 +124,10 @@ export type ButtonBlock = {
   emphasis?: BlockEmphasis;
   size?: BlockSize;
   tag?: string;
+  /** Borrow a site style (style-vocabulary.ts): when it resolves, the node
+   *  renders with exactly that class list and none of the palette styling
+   *  below; when it doesn't (entry dropped), the palette styling stands. */
+  like?: string;
 };
 
 /** Inline text link. */
@@ -113,6 +136,10 @@ export type LinkBlock = {
   label: string;
   href: string;
   tag?: string;
+  /** Borrow a site style (style-vocabulary.ts): when it resolves, the node
+   *  renders with exactly that class list and none of the palette styling
+   *  below; when it doesn't (entry dropped), the palette styling stands. */
+  like?: string;
 };
 
 /** Image. `alt` is required; empty only with an explicit `decorative: true`. */
@@ -123,6 +150,10 @@ export type ImageBlock = {
   decorative?: boolean;
   ratio?: BlockRatio;
   fit?: BlockFit;
+  /** Borrow a site style (style-vocabulary.ts): when it resolves, the node
+   *  renders with exactly that class list and none of the palette styling
+   *  below; when it doesn't (entry dropped), the palette styling stands. */
+  like?: string;
 };
 
 /** Eyebrow / pill. */
@@ -130,6 +161,10 @@ export type BadgeBlock = {
   type: 'badge';
   value: string;
   tone?: BlockTone;
+  /** Borrow a site style (style-vocabulary.ts): when it resolves, the node
+   *  renders with exactly that class list and none of the palette styling
+   *  below; when it doesn't (entry dropped), the palette styling stands. */
+  like?: string;
 };
 
 /** Vertical rhythm. */

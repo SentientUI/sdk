@@ -29,6 +29,7 @@ npx @sentientui/cli --version # the installed version, on stdout
 | Flag | Description |
 |------|-------------|
 | `--key pk_...` | Your public API key, written into `.env.local`. Omit it to leave the value empty — the SDK then runs in keyless local mode (decisions simulated on-device, nothing sent), so you can build and style before creating an account. |
+| `--consent <preset>` | Your cookie banner: `cookiebot`, `onetrust`, `cookieyes`, `tcf`, `google-consent-mode` or `shopify`. The printed snippet waits for it (`consentFrom`) before storing or measuring anything. Omit it and tracking starts on first paint for every visitor — EU/UK visitors need consent first. |
 | `--yes` / `-y` | Accepted for npx muscle memory; `init` has no prompts, so this is already the default behavior. |
 | `--help` / `-h` | Print usage and exit 0. |
 | `--version` / `-v` | Print the version and exit 0. |

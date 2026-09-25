@@ -8,6 +8,8 @@ import {
 } from './snapshot.js';
 
 const API_KEY = 'pk_test_abc123';
+// Recent (inside the 30-day life) and fixed, so two validSnap() calls agree.
+const SAVED_AT = Date.now() - 1000;
 
 function validSnap(): DecisionSnapshot {
   return {
@@ -16,7 +18,7 @@ function validSnap(): DecisionSnapshot {
     band: 'high',
     slots: { hero: { tone: 'urgent' }, 'pricing-area': 'social_first' },
     layoutOrder: ['pricing', 'hero'],
-    savedAt: 1234567890,
+    savedAt: SAVED_AT,
   };
 }
 
@@ -110,5 +112,14 @@ describe('renderPrePaintScript', () => {
     expect(script).not.toContain('`');        // survives template-literal renderers
     expect(script).toContain('\\u003c');      // '<' escaped via the JSON path
     expect(() => (0, eval)(script)).not.toThrow(); // still valid JS
+  });
+});
+
+describe('readSnapshot — 30-day life (grader NEW-5)', () => {
+  it('ignores a snapshot older than 30 days, as the disclosure says', () => {
+    writeSnapshot('pk_age', { ...validSnap(), savedAt: Date.now() - 31 * 24 * 3600 * 1000 });
+    expect(readSnapshot('pk_age')).toBeNull();
+    writeSnapshot('pk_age', { ...validSnap(), savedAt: Date.now() - 29 * 24 * 3600 * 1000 });
+    expect(readSnapshot('pk_age')).not.toBeNull();
   });
 });

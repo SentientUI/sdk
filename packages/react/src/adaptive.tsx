@@ -2,7 +2,7 @@
 
 // `type JSX` from react, not the global namespace removed in @types/react@19
 // (peers allow react >=18) — see adaptive-text.tsx.
-import { memo, useEffect, useState, type JSX, type ReactNode } from 'react';
+import { memo, useEffect, useState, type JSX, type ReactNode, type Ref } from 'react';
 import { useVariantComponent, type MicroSignalGoals } from './use-variant-component.js';
 import { AdaptiveSlot, type AdaptiveSlotProps } from './adaptive-slot.js';
 
@@ -15,15 +15,20 @@ export type {
   WeightedCompositeGoal,
   GoalConfig,
 } from './adaptive-shared.js';
-import { isDevBuild, type GoalConfig } from './adaptive-shared.js';
+import { isDevBuild, type AdaptiveElement, type GoalConfig } from './adaptive-shared.js';
 
 export type { MicroSignalGoalConfig, MicroSignalGoals } from './use-variant-component.js';
+export type { AdaptiveElement } from './adaptive-shared.js';
 
 /** `<Adaptive>` with variants written in code — each key an arm, first key the control. */
 export type AdaptiveVariantsProps = {
   id: string;
   variants: Record<string, ReactNode>;
-  children?: never;
+  /** Your original. With `variants` AND children the component is a hybrid:
+   *  your hand-written versions, your original and dashboard-generated
+   *  versions compete in one experiment (spec 2026-09-23 §7). Without
+   *  children, `variants` keeps the variants-only experiment it always had. */
+  children?: ReactNode;
   goal: string | GoalConfig;
   /**
    * Funnel this component serves (stable funnel id, e.g. "checkout" —
@@ -39,6 +44,10 @@ export type AdaptiveVariantsProps = {
    * Use for inferred goals surfaced in the dashboard (e.g. rage_click → 'confused_by_hero').
    */
   microSignalGoals?: MicroSignalGoals;
+  /** Wrapper element. @default 'div' */
+  as?: AdaptiveElement;
+  /** Class for the wrapper element. */
+  className?: string;
   /**
    * When true, renders nothing during SSR and before client hydration.
    * Use when you cannot pass `initialAssignments` and prefer a blank slot over
@@ -93,6 +102,7 @@ function AdaptiveImpl(props: AdaptiveVariantsProps): JSX.Element | null {
   useEffect(() => { setMounted(true); }, []);
 
   // Decorative slots: empty in SSR HTML and until the client has mounted.
+  const Tag = props.as ?? 'div';
   if (props.clientOnly && (!mounted || !client)) return null;
   if (!variantId) return null;
 
@@ -107,9 +117,9 @@ function AdaptiveImpl(props: AdaptiveVariantsProps): JSX.Element | null {
   }
 
   return (
-    <div ref={ref} data-sentient-id={props.id} data-sentient-variant={variantId}>
+    <Tag ref={ref as Ref<never>} className={props.className} data-sentient-id={props.id} data-sentient-variant={variantId}>
       {jsxContent ?? managedContent}
-    </div>
+    </Tag>
   );
 }
 
@@ -133,6 +143,7 @@ const AdaptiveVariants = memo(AdaptiveImpl, (prev, next) => {
   // that would have re-run the declaration).
   if (prev.funnel !== next.funnel) return false;
   if (prev.clientOnly !== next.clientOnly) return false;
+  if (prev.as !== next.as || prev.className !== next.className) return false;
   if (prev.agentData !== next.agentData) return false;
   if (prev.agentDataByVariant !== next.agentDataByVariant) return false;
   if (prev.variants === next.variants) return true;
@@ -153,10 +164,27 @@ const AdaptiveVariants = memo(AdaptiveImpl, (prev, next) => {
  */
 export function Adaptive(props: AdaptiveProps): JSX.Element | null {
   if (props.variants === undefined) return <AdaptiveSlot {...props} />;
-  if (isDevBuild() && (props as { children?: ReactNode }).children != null) {
-    // JS callers bypass the `children?: never` type: say which one wins rather
-    // than silently dropping the markup they wrapped.
-    console.warn(`[sentient] <Adaptive id="${props.id}"> got both variants and children — rendering variants; children are ignored.`);
+  const v = props as AdaptiveVariantsProps;
+  if (v.children != null) {
+    // Hybrid: authored arms + your original + generated versions on ONE slot
+    // ledger — never the variant bandit too, which would book two trials per
+    // impression (CONTRACTS §2). Variants-only props have no slot equivalent.
+    if (isDevBuild()) warnIgnoredVariantProps(v);
+    const { funnel: _f, microSignalGoals: _m, agentData: _a, agentDataByVariant: _ab, clientOnly: _c, variants, ...slotProps } = v;
+    return <AdaptiveSlot {...(slotProps as Omit<AdaptiveSlotProps, 'variants'>)} children={v.children} variants={variants} />;
   }
-  return <AdaptiveVariants {...props} />;
+  // Variants only: the variant ledger, unchanged. Moving it onto the slot
+  // ledger is the operator's Migrate action, never an SDK upgrade (§7.5).
+  return <AdaptiveVariants {...v} />;
+}
+
+const warnedIgnoredProps = new Set<string>();
+function warnIgnoredVariantProps(p: AdaptiveVariantsProps): void {
+  const ignored = (['funnel', 'microSignalGoals', 'agentData', 'agentDataByVariant', 'clientOnly'] as const).filter((k) => p[k] !== undefined);
+  if (ignored.length === 0 || warnedIgnoredProps.has(p.id)) return;
+  warnedIgnoredProps.add(p.id);
+  console.warn(
+    `[sentient] <Adaptive id="${p.id}"> has both variants and children, so it runs as one experiment with your ` +
+      `original and generated versions. These props only apply to a variants-only component and are ignored here: ${ignored.join(', ')}.`,
+  );
 }

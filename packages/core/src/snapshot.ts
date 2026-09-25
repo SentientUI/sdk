@@ -3,10 +3,13 @@
  * every successful decide; read by the inline pre-paint script (before any
  * framework code runs) and by init() to seed slot/persona state.
  */
+import type { ServedEdits } from './region-skeleton.js';
 import type { SlotResult } from './slots.js';
 import type { BlockNode, SitePalette } from './blocks.js';
 
 export const SNAPSHOT_STORAGE_KEY_PREFIX = '_snt_snap:';
+/** A snapshot older than this is ignored (the inline pre-paint's 2592e6). */
+export const SNAPSHOT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Versioned compound locator: resolve id → dataAttr → selector, then verify
  *  against fingerprint. Lets a slot survive DOM/markup drift. */
@@ -52,6 +55,17 @@ export type SlotConfigEntry = {
    *  (spec §6). Holdout sessions receive the baseline arm's tree only, so the
    *  control group's DOM stays meaningful. Absent for non-composition slots. */
   blocks?: Record<string, BlockNode>;
+  /** The served Rewrite arm (spec 2026-09-23 §4.3): per-node edits plus the
+   *  skeleton fingerprint and leaf map they were written against. */
+  edits?: ServedEdits;
+  /** The server has no skeleton for this region — capture and report one. */
+  needsSkeleton?: true;
+  /** Redesign arms per arm id — ALL arms, same Option-B reason as `blocks`.
+   *  Served only to pages that declared RenderCaps.compose. */
+  compose?: Record<string, import('./style-vocabulary.js').ComposeArm>;
+  /** A hybrid <Adaptive> held back: its id still has un-migrated variant
+   *  history, so the page renders its original until the operator migrates. */
+  blocked?: 'variant_history';
 };
 
 export type DecisionSnapshot = {
@@ -69,6 +83,9 @@ export type DecisionSnapshot = {
    *  pre-paint render already looks native (a palette that pops in post-decide
    *  would be its own flash). */
   palette?: SitePalette;
+  /** The site-style entries the served compose arms reference — cached so the
+   *  pre-paint render already borrows the site's classes. Additive (v stays 1). */
+  vocabulary?: import('./style-vocabulary.js').StyleVocabulary;
 };
 
 const BANDS = ['low', 'medium', 'high'];
@@ -91,10 +108,18 @@ export function readSnapshot(apiKey: string): DecisionSnapshot | null {
       Array.isArray(p.slots) ||
       !(p.layoutOrder === null || Array.isArray(p.layoutOrder)) ||
       typeof p.savedAt !== 'number' ||
+      // The documented 30-day life, the same bound the inline pre-paint script
+      // applies: an older decision is ignored everywhere (grader NEW-5).
+      !(Date.now() - p.savedAt < SNAPSHOT_MAX_AGE_MS) ||
       // slotConfig is optional; when present it must be a plain object.
       !(p.slotConfig === undefined || (typeof p.slotConfig === 'object' && p.slotConfig !== null && !Array.isArray(p.slotConfig)))
     ) {
       return null;
+    }
+    // A malformed cached vocabulary degrades to palette styling, never throws.
+    const v = p.vocabulary as { entries?: unknown; images?: unknown } | undefined;
+    if (v !== undefined && (typeof v !== 'object' || v === null || !Array.isArray(v.entries) || !Array.isArray(v.images))) {
+      delete p.vocabulary;
     }
     return p as DecisionSnapshot;
   } catch {
@@ -126,9 +151,15 @@ export function renderPrePaintScript(apiKey: string): string {
   const key = JSON.stringify(SNAPSHOT_STORAGE_KEY_PREFIX + apiKey).replace(/</g, '\\u003c');
   return (
     '(function(){try{' +
+    // DNT/GPC: the SDK never reads what it stored for an opted-out browser
+    // (grader F3 — this fallback had no gate at all).
+    // Every signal isDoNotTrackEnabled reads, not just the standard one.
+    'var N=navigator,W=window;if(N.doNotTrack=="1"||N.doNotTrack=="yes"||W.doNotTrack=="1"||N.msDoNotTrack=="1"||N.globalPrivacyControl)return;' +
     'var r=localStorage.getItem(' + key + ');if(!r)return;' +
     'var s=JSON.parse(r);' +
     'if(!s||s.v!==1||typeof s.persona!=="string"||typeof s.band!=="string")return;' +
+    // The same 30-day life readSnapshot enforces.
+    'if(!(' + SNAPSHOT_MAX_AGE_MS + '>Date.now()-s.savedAt))return;' +
     'var d=document.documentElement;' +
     'if(d.hasAttribute("data-sentient-persona"))return;' +
     'd.setAttribute("data-sentient-persona",s.persona);' +

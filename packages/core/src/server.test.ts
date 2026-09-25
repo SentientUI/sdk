@@ -423,6 +423,16 @@ describe('preloadDecisions — registry mode (slotConfig/palette)', () => {
     errSpy.mockRestore();
   });
 
+  it('declares render capabilities per slot with no fingerprint (SSR has no DOM)', async () => {
+    // Without a `render` field the server treats the caller as a legacy SDK
+    // and never draws a Rewrite arm; SSR can't fingerprint, so it assumes a
+    // match and the browser reports real drift.
+    await callRegistry({ layoutOrder: [], assignments: {}, slots: {}, persona: 'unknown', confidence: 0 }, ['hero']);
+    const decideCall = vi.mocked(fetch).mock.calls.find(([u]) => String(u).endsWith('/decide'));
+    const body = JSON.parse((decideCall![1] as RequestInit).body as string) as Record<string, unknown>;
+    expect(body.render).toEqual({ hero: { forms: true, compose: true } });
+  });
+
   it('an empty id list is a valid scope ("nothing published is on this page")', async () => {
     await callRegistry({ layoutOrder: [], assignments: {}, slots: {}, persona: 'unknown', confidence: 0 }, []);
     const decideCall = vi.mocked(fetch).mock.calls.find(([u]) => String(u).endsWith('/decide'));
@@ -455,5 +465,32 @@ describe('preloadDecisions — registry mode (slotConfig/palette)', () => {
     const result = await callRegistry({ layoutOrder: [], assignments: {}, persona: 'unknown', confidence: 0 });
     expect(result.slotConfig).toBeUndefined();
     expect(result.palette).toBeUndefined();
+  });
+});
+
+// B23: SSR calls from one server address all shared the API's 100/min per-IP
+// cap; a project's own sk_ in X-Sentient-Server-Key lifts it to the plan limit.
+describe('serverKey (X-Sentient-Server-Key)', () => {
+  it('sends the server key on every SSR call when configured, server-side only', async () => {
+    vi.stubGlobal('window', undefined);
+    mockFetch([{ ok: true }, { ok: true, json: { variantId: 'hero-a', assignmentTtlMs: 1000 } }]);
+    await preloadAssignments([{ id: 'hero', variantIds: ['hero-a'] }], SESSION_ID, { ...CONFIG, serverKey: 'sk_live_x' });
+    const calls = vi.mocked(fetch).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    for (const [, init] of calls) {
+      expect((init?.headers as Record<string, string>)['X-Sentient-Server-Key']).toBe('sk_live_x');
+    }
+  });
+
+  it('never sends it when a window exists (bundled into the browser by mistake), nor when unset', async () => {
+    vi.stubGlobal('window', {});
+    mockFetch([{ ok: true }, { ok: true, json: { variantId: 'hero-a', assignmentTtlMs: 1000 } }]);
+    await preloadAssignments([{ id: 'hero', variantIds: ['hero-a'] }], SESSION_ID, { ...CONFIG, serverKey: 'sk_live_x' });
+    vi.stubGlobal('window', undefined);
+    mockFetch([{ ok: true }, { ok: true, json: { variantId: 'hero-a', assignmentTtlMs: 1000 } }]);
+    await preloadAssignments([{ id: 'hero', variantIds: ['hero-a'] }], SESSION_ID, CONFIG);
+    for (const [, init] of vi.mocked(fetch).mock.calls) {
+      expect((init?.headers as Record<string, string>)['X-Sentient-Server-Key']).toBeUndefined();
+    }
   });
 });

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { authenticate } from '../shopify.server';
 import db from '../db.server';
-import { syncPlan } from '../lib/plan-sync.server';
+import { planSyncConfigured, syncPlan } from '../lib/plan-sync.server';
 import { decryptSecret } from '../lib/secret-box';
 import { action } from './webhooks.app.uninstalled';
 
@@ -12,13 +12,15 @@ import { action } from './webhooks.app.uninstalled';
 vi.mock('../shopify.server', () => ({
   authenticate: { webhook: vi.fn() },
 }));
+vi.mock('../lib/settings.server', () => ({ revokeConnectPair: vi.fn() }));
 vi.mock('../db.server', () => ({
   default: {
     session: { findFirst: vi.fn(), deleteMany: vi.fn() },
     sentientSettings: { findUnique: vi.fn(), deleteMany: vi.fn() },
+    pendingConnect: { deleteMany: vi.fn(), findUnique: vi.fn(async () => null) },
   },
 }));
-vi.mock('../lib/plan-sync.server', () => ({ syncPlan: vi.fn() }));
+vi.mock('../lib/plan-sync.server', () => ({ syncPlan: vi.fn(), planSyncConfigured: vi.fn(() => true) }));
 vi.mock('../lib/secret-box', () => ({ decryptSecret: vi.fn((s: string) => `plain:${s}`) }));
 
 const mockDb = db as unknown as {
@@ -125,7 +127,7 @@ describe('webhooks.app.uninstalled — billing rail release', () => {
       'free',
       'x.myshopify.com',
       fetch,
-      { disconnect: true },
+      { disconnect: true, forbiddenIsTerminal: true, releasedAt: TRIGGERED_AT },
     );
     expect(mockDb.sentientSettings.deleteMany).toHaveBeenCalled();
   });
@@ -145,6 +147,16 @@ describe('webhooks.app.uninstalled — billing rail release', () => {
     const res = await action({ request: makeRequest(), params: {}, context: {} } as never);
     expect(res.status).toBe(200);
     expect(mockSyncPlan).not.toHaveBeenCalled();
+    expect(mockDb.sentientSettings.deleteMany).toHaveBeenCalled();
+  });
+  // Grader R1 N2: syncPlan now FAILS without the connector secret (so a
+  // subscription webhook retries); here that must not block the erasure.
+  it('erases anyway when the connector secret is unset — a permanent condition, not a retryable one', async () => {
+    (planSyncConfigured as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
+    const res = await action({ request: makeRequest(), params: {}, context: {} } as never);
+    expect(res.status).toBe(200);
+    expect(mockSyncPlan).not.toHaveBeenCalled();
+    expect(mockDb.session.deleteMany).toHaveBeenCalled();
     expect(mockDb.sentientSettings.deleteMany).toHaveBeenCalled();
   });
 });

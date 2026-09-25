@@ -11,6 +11,17 @@ export function isDevBuild(): boolean {
   return typeof process === 'undefined' || process.env?.NODE_ENV !== 'production';
 }
 
+/**
+ * The element `<Adaptive>` renders around its content (audit S17: it was
+ * always a `<div>`, which is invalid inside a `<ul>`, a `<p>` or a table row
+ * and broke `display: grid` children). Intrinsic tags only: the wrapper is
+ * what exposure, goals and micro-signals observe, so it must be a real box —
+ * `display: contents` would give IntersectionObserver nothing to measure.
+ */
+export type AdaptiveElement =
+  | 'div' | 'section' | 'article' | 'aside' | 'header' | 'footer' | 'main' | 'nav'
+  | 'span' | 'li' | 'figure' | 'form' | 'label' | 'td' | 'th';
+
 export type ScrollDepthGoal = { type: 'scroll_depth'; threshold: number; value?: number };
 export type ClickGoal = { type: 'click'; selector?: string; value?: number };
 export type FormSubmitGoal = { type: 'form_submit'; value?: number };

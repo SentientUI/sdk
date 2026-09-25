@@ -1,8 +1,11 @@
 {
   "name": "@sentientui/cli",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "SentientUI CLI — `npx @sentientui/cli init` sets up adaptive UI in an existing React app (installs the SDK, writes env config, scaffolds an example, and prints the wrap instructions)",
   "license": "MIT",
+  "engines": {
+    "node": ">=18.18"
+  },
   "homepage": "https://sentient-ui.com",
   "repository": {
     "type": "git",

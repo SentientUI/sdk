@@ -51,6 +51,8 @@ export type DOMScanner = {
 // main, aside`) — this set omitted it, so a server-rendered aside was captured
 // while an identical dynamically-inserted one was silently ignored.
 const OBSERVE_TAGS = new Set(['SECTION', 'ARTICLE', 'MAIN', 'DIV', 'ASIDE']);
+/** Mutation bursts are scanned once, this long after they start. */
+export const OBSERVE_BATCH_MS = 200;
 const HEADING_SELECTOR = 'h1, h2, h3';
 // Selector mirror of the initial scan's criteria (collectNodesAndEdges): any
 // element carrying a declared id, plus structural tags with an aria-label.
@@ -372,58 +374,80 @@ export function createDOMScanner(options: DOMScannerOptions = {}): DOMScanner {
       }
     });
 
+  // Added roots waiting for the batched pass below, and its pending timer.
+  const pendingRoots = new Set<Element>();
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const processPending = (): void => {
+    flushTimer = null;
+    const roots = [...pendingRoots];
+    pendingRoots.clear();
+    const added: ScannedNode[] = [];
+    const addedIds = new Set<string>();
+    for (const node of roots) {
+      // Gone before we got to it (a transient spinner, a replaced route), or
+      // already covered by a queued ancestor's subtree scan.
+      if (!node.isConnected) continue;
+      const candidates: Element[] = [];
+      if (
+        OBSERVE_TAGS.has(node.tagName) &&
+        (node.hasAttribute('data-sentient-id') || node.hasAttribute('aria-label'))
+      ) {
+        candidates.push(node);
+      }
+      // Also scan the inserted SUBTREE with the initial scan's criteria
+      // (see SUBTREE_SELECTOR): the root of a SPA/framework mount is
+      // usually a plain wrapper, and its sections arrive as descendants
+      // of ONE childList mutation — inspecting only the root meant they
+      // were never captured at all.
+      try {
+        node.querySelectorAll(SUBTREE_SELECTOR).forEach((el) => candidates.push(el));
+      } catch {
+        /* exotic host without querySelectorAll — root-only scan stands */
+      }
+      for (const el of candidates) {
+        // Skip elements already registered: a parent and its child can
+        // both be queued (the child once via the parent's subtree, once
+        // directly), which would emit duplicate nodes.
+        if (knownElementToId.has(el)) continue;
+        const scanned = scanElement(el, getProminenceScore, sectionTypes);
+        added.push(scanned);
+        addedIds.add(scanned.componentId);
+        knownElementToId.set(el, scanned.componentId);
+      }
+    }
+    if (added.length === 0 || !contentCallback) return;
+    // Drop elements no longer in the document so removed nodes don't dangle
+    // and the map stays bounded.
+    for (const el of [...knownElementToId.keys()]) {
+      if (!el.isConnected) knownElementToId.delete(el);
+    }
+    // Detect over the FULL known set so a child inserted under an already-
+    // scanned parent still gets its parent→child edge, then surface only the
+    // edges that touch a newly-added node (existing edges were already emitted).
+    const edges = detectStructuralEdges(knownElementToId).filter(
+      (e) => addedIds.has(e.fromComponentId) || addedIds.has(e.toComponentId),
+    );
+    contentCallback({ nodes: added, edges, addedAt: Date.now() });
+  };
+
   const observe = (onContentAdded: (event: ContentAddedEvent) => void): void => {
     contentCallback = onContentAdded;
     try {
+      // The callback only QUEUES added roots; the subtree scan runs once per
+      // burst, OBSERVE_BATCH_MS after it starts (audit S11). It used to run a
+      // querySelectorAll per added element inside every mutation callback — on
+      // a page with constant DOM churn (a chat, a virtualised list, a ticker)
+      // that was main-thread work on every frame, for sections that mostly
+      // arrive once, at mount or route change.
       observer = new MutationObserver((mutations) => {
-        const added: ScannedNode[] = [];
-        const addedIds = new Set<string>();
         for (const mutation of mutations) {
           if (mutation.type !== 'childList') continue;
           mutation.addedNodes.forEach((node) => {
-            if (!(node instanceof Element)) return;
-            const candidates: Element[] = [];
-            if (
-              OBSERVE_TAGS.has(node.tagName) &&
-              (node.hasAttribute('data-sentient-id') || node.hasAttribute('aria-label'))
-            ) {
-              candidates.push(node);
-            }
-            // Also scan the inserted SUBTREE with the initial scan's criteria
-            // (see SUBTREE_SELECTOR): the root of a SPA/framework mount is
-            // usually a plain wrapper, and its sections arrive as descendants
-            // of ONE childList mutation — inspecting only the root meant they
-            // were never captured at all.
-            try {
-              node.querySelectorAll(SUBTREE_SELECTOR).forEach((el) => candidates.push(el));
-            } catch {
-              /* exotic host without querySelectorAll — root-only scan stands */
-            }
-            for (const el of candidates) {
-              // Skip elements already registered: a parent and its child can
-              // both appear in addedNodes (the child once via the parent's
-              // subtree, once directly), which would emit duplicate nodes.
-              if (knownElementToId.has(el)) continue;
-              const scanned = scanElement(el, getProminenceScore, sectionTypes);
-              added.push(scanned);
-              addedIds.add(scanned.componentId);
-              knownElementToId.set(el, scanned.componentId);
-            }
+            if (node instanceof Element) pendingRoots.add(node);
           });
         }
-        if (added.length === 0 || !contentCallback) return;
-        // Drop elements no longer in the document so removed nodes don't dangle
-        // and the map stays bounded.
-        for (const el of [...knownElementToId.keys()]) {
-          if (!el.isConnected) knownElementToId.delete(el);
-        }
-        // Detect over the FULL known set so a child inserted under an already-
-        // scanned parent still gets its parent→child edge, then surface only the
-        // edges that touch a newly-added node (existing edges were already emitted).
-        const edges = detectStructuralEdges(knownElementToId).filter(
-          (e) => addedIds.has(e.fromComponentId) || addedIds.has(e.toComponentId),
-        );
-        contentCallback({ nodes: added, edges, addedAt: Date.now() });
+        if (pendingRoots.size > 0 && flushTimer === null) flushTimer = setTimeout(processPending, OBSERVE_BATCH_MS);
       });
       observer.observe(document.body, { childList: true, subtree: true });
     } catch {
@@ -436,6 +460,9 @@ export function createDOMScanner(options: DOMScannerOptions = {}): DOMScanner {
       observer.disconnect();
       observer = null;
     }
+    if (flushTimer !== null) clearTimeout(flushTimer);
+    flushTimer = null;
+    pendingRoots.clear();
     if (idleCallbackId && typeof cancelIdleCallback === 'function') {
       try {
         cancelIdleCallback(idleCallbackId);

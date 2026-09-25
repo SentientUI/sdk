@@ -36,16 +36,34 @@ function gqlMock(responses: unknown[]): (q: string, o?: unknown) => Promise<GqlR
 // pixel.server.test.ts, alongside the healWebPixelApiBase coverage.
 
 describe('savePersonaTagMapping', () => {
-  it('writes the mapping as an app-owned shop metafield', async () => {
+  // Liquid's `app.metafields.config.*` (the theme embed) reads app-DATA
+  // metafields — owned by the app installation. The shop-owned `$app:config`
+  // write was invisible to it, so the storefront never applied the mapping.
+  it('writes the mapping as an app-data metafield on the app installation', async () => {
     const gql = gqlMock([
-      { data: { shop: { id: 'gid://shopify/Shop/1' } } },
+      { data: { currentAppInstallation: { id: 'gid://shopify/AppInstallation/1' } } },
       { data: { metafieldsSet: { metafields: [{ id: 'gid://mf/1' }], userErrors: [] } } },
     ]);
     expect(await savePersonaTagMapping(gql, { vip: 'vip' })).toBe(true);
+    const [query] = (gql as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(query)).toContain('currentAppInstallation');
     const [, opts] = (gql as ReturnType<typeof vi.fn>).mock.calls[1]!;
-    const mf = (opts as { variables: { metafields: Array<Record<string, string>> } }).variables.metafields[0]!;
-    expect(mf.namespace).toBe('$app:config');
-    expect(mf.type).toBe('json');
-    expect(JSON.parse(mf.value)).toEqual({ vip: 'vip' });
+    const mfs = (opts as { variables: { metafields: Array<Record<string, string>> } }).variables.metafields;
+    expect(mfs).toHaveLength(1);
+    expect(mfs[0]!.ownerId).toBe('gid://shopify/AppInstallation/1');
+    expect(mfs[0]!.namespace).toBe('config');
+    expect(mfs[0]!.type).toBe('json');
+    expect(JSON.parse(mfs[0]!.value)).toEqual({ vip: 'vip' });
+  });
+
+  it('also writes the pk_ the theme embed falls back to, so it is pasted once (audit H10)', async () => {
+    const gql = gqlMock([
+      { data: { currentAppInstallation: { id: 'gid://shopify/AppInstallation/1' } } },
+      { data: { metafieldsSet: { metafields: [{ id: 'a' }, { id: 'b' }], userErrors: [] } } },
+    ]);
+    expect(await savePersonaTagMapping(gql, {}, 'pk_live_abc')).toBe(true);
+    const [, opts] = (gql as ReturnType<typeof vi.fn>).mock.calls[1]!;
+    const pk = (opts as { variables: { metafields: Array<Record<string, string>> } }).variables.metafields[1]!;
+    expect(pk).toMatchObject({ namespace: 'config', key: 'publishable_key', type: 'single_line_text_field', value: 'pk_live_abc' });
   });
 });

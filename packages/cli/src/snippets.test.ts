@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { wrapSnippet } from './snippets.js';
+import { wrapSnippet, consentNote, unknownInstructions } from './snippets.js';
 import { envVarName } from './env-file.js';
 import type { Framework } from './detect.js';
 
@@ -59,5 +59,26 @@ describe('wrapSnippet', () => {
   it('cra reads REACT_APP_ via process.env', () => {
     const snippet = wrapSnippet('cra', envVarName('cra'));
     expect(snippet).toContain('process.env.REACT_APP_SENTIENT_API_KEY');
+  });
+});
+
+describe('--consent (audit S6)', () => {
+  it('puts consentFrom on the provider for every framework', () => {
+    for (const fw of ['next-app', 'next-pages', 'vite', 'remix', 'cra'] as const) {
+      expect(wrapSnippet(fw, 'X', 'cookiebot')).toContain('consentFrom="cookiebot"');
+      expect(wrapSnippet(fw, 'X')).not.toContain('consentFrom');
+    }
+  });
+  it('without it, says tracking is ungated and how to gate it', () => {
+    expect(consentNote()).toMatch(/none configured[^]*every visitor/);
+    expect(consentNote()).toContain('--consent');
+    expect(consentNote('onetrust')).toContain('waits for onetrust');
+  });
+});
+
+describe('--consent with an undetected framework (review #10)', () => {
+  it('still puts consentFrom in the manual instructions', () => {
+    expect(unknownInstructions('tcf')).toContain('consentFrom="tcf"');
+    expect(unknownInstructions()).not.toContain('consentFrom');
   });
 });

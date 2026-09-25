@@ -9,8 +9,8 @@ import { authenticate } from "../shopify.server";
 
 export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 
-// The app itself is free. The merchant pays SentientUI on traffic, on their
-// SentientUI account — see the note in shopify.server.ts.
+// The free plan covers everything the app sets up; paid plans are bought on
+// Shopify's hosted plan page (Managed Pricing) — see shopify.server.ts.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
 

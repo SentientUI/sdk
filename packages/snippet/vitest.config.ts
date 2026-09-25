@@ -9,6 +9,9 @@ export default defineConfig({
       // Order matters: subpath keys must precede the package root.
       '@sentientui/core/local': fileURLToPath(new URL('../core/src/index-local.ts', import.meta.url)),
       '@sentientui/core/engagement': fileURLToPath(new URL('../core/src/index-engagement.ts', import.meta.url)),
+      '@sentientui/core/region': fileURLToPath(new URL('../core/src/index-region.ts', import.meta.url)),
+      '@sentientui/core/style-sample': fileURLToPath(new URL('../core/src/index-style-sample.ts', import.meta.url)),
+      '@sentientui/core/consent': fileURLToPath(new URL('../core/src/index-consent.ts', import.meta.url)),
       '@sentientui/policy': fileURLToPath(new URL('../policy/src/index.ts', import.meta.url)),
       '@sentientui/core': fileURLToPath(new URL('../core/src/index.ts', import.meta.url)),
     },

@@ -3,8 +3,8 @@
 > SentientUI makes websites adapt to each visitor. The SDK observes behaviour, classifies
 > visitors into the personas your app declares (e.g. admin, evaluator) or discovery proposes
 > (`unknown` until then), and a server-side persona-keyed optimizer picks, per visitor type,
-> which styling, content, and section order to show, learning from real conversions. Decisions are locked per session: Visit 1 learns,
-> Visit 2 converts. React SDK, vanilla JS SDK, and a script-tag snippet are open source; the
+> which styling, content, and section order to show, learning from real conversions. It measures the lift against a held-out control
+> group. Decisions are locked per session: a first visit sees the original, the return visit adapts. React SDK, vanilla JS SDK, and a script-tag snippet are open source; the
 > learning API is hosted (api.sentient-ui.com).
 
 ## Install (agent quickstart)

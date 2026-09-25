@@ -1,8 +1,7 @@
 # SentientUI SDKs
 
 Open source client SDKs for [**SentientUI**](https://sentient-ui.com) — an adaptive UI
-personalization platform. Your UI learns what converts for each visitor: **Visit 1 learns,
-Visit 2 converts.**
+personalization platform. **Your site adapts to each kind of visitor — and shows you the lift against your original.**
 
 These packages are the client side of SentientUI. They observe behavior, request decisions,
 and render learned variants. The optimizer, persona clustering, and management API are hosted;
@@ -51,7 +50,10 @@ provider snippet to add to your root layout. Full reference: [`packages/react`](
 <script>
   window.sentient = {
     apiKey: 'pk_your_key',
-    context: 'landing',
+    // Cookie banner? Uncomment and name it: 'cookiebot' | 'onetrust' | 'cookieyes' |
+    // 'tcf' | 'google-consent-mode' (Shopify's is followed automatically). Without a
+    // gate, tracking starts on the first page view.
+    // consentFrom: 'cookiebot',
     slots: { hero: { dims: { tone: ['calm', 'urgent'] }, target: '#hero' } },
   };
 </script>

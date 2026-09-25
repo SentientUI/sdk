@@ -1,3 +1,7 @@
+import { DECIDE_TIMEOUT_MS, REQUEST_TIMEOUT_MS, SESSION_WAIT_MS, settlesWithin, timeoutSignal } from './timeout.js';
+import { setCspNonce } from './csp-nonce.js';
+import { forgetVisitor } from './forget.js';
+import { forgetGeneration, markForgotten, storageSuffix } from './storage-key.js';
 import { initSession, type SessionConfig, type SessionManager } from './session';
 import {
   createEventQueue,
@@ -36,6 +40,12 @@ import {
   type SlotResult,
 } from './slots.js';
 import { readSnapshot, writeSnapshot, SNAPSHOT_STORAGE_KEY_PREFIX, type SlotConfigEntry, type CompoundLocator } from './snapshot.js';
+import type { RegionSkeleton, RenderCaps } from './region-skeleton.js';
+
+/** A captured skeleton, or why none could be captured. */
+export type SkeletonReport = RegionSkeleton | { status: 'too_large' | 'empty' | 'unaddressable' };
+/** One authored arm of a hybrid <Adaptive>, as it rendered. */
+export type AuthoredArmReport = { key: string; text?: string; skeleton?: RegionSkeleton };
 import { confidenceBand } from '@sentientui/policy';
 import { createLocalModeClient } from './local-mode.js';
 import { randomUuidV4 } from './uuid.js';
@@ -197,6 +207,8 @@ export type SentientConfig = {
   initialSlotConfig?: Record<string, SlotConfigEntry>;
   /** Site palette decided outside the browser (SSR). Seeds `getSitePalette()`. */
   initialPalette?: import('./blocks.js').SitePalette;
+  /** Site styles the SSR decision's Redesign arms borrow. Seeds `getStyleVocabulary()`. */
+  initialVocabulary?: import('./style-vocabulary.js').StyleVocabulary;
   /**
    * Persona decided during SSR. Takes priority over the html-attribute
    * adoption and the local snapshot.
@@ -223,6 +235,12 @@ export type SentientConfig = {
    * the fields, and omitting it changes nothing.
    */
   sdk?: { name: string; version: string };
+  /**
+   * CSP nonce for the <style> elements the SDK injects (the adaptation
+   * reveal). Without one the page's CSP needs `style-src 'unsafe-inline'`.
+   * Defaults to the nonce of a script already on the page.
+   */
+  nonce?: string;
 };
 
 export type AssignResult = { variantId: string; assignmentTtlMs: number; content?: string };
@@ -239,6 +257,14 @@ export {
 export type { DecisionSnapshot, SlotConfigEntry, SlotOps, CompoundLocator } from './snapshot.js';
 export { pageScopeMatches, PAGE_SCOPE_RE } from './page-scope.js';
 export * from './blocks.js';
+export * from './region-skeleton.js';
+// Types only: the vocabulary's runtime constants (roles, id pattern, caps) are
+// server/editor concerns and live on `@sentientui/core/style-sample`, so the
+// lean bundle every visitor downloads doesn't carry them.
+export type { StyleRole, StyleEntry, SiteImage, StyleVocabulary, ComposeArm } from './style-vocabulary.js';
+// Consent sources: the runtime is `@sentientui/core/consent` (loaded only by
+// installs that configure a consent platform); the types live here.
+export type { ConsentSource, ConsentPreset, ConsentWatcher } from './consent-sources.js';
 
 /** An editor-defined goal delivered with a registry-mode decision, for the
  *  snippet to install delegated listeners from. */
@@ -276,6 +302,8 @@ export type DecideOutcome = {
   sectionMap?: SectionMapEntry[];
   // Registry mode only: derived site palette for Composition Block rendering.
   palette?: import('./blocks.js').SitePalette;
+  // Registry mode only: the site styles served Redesign arms borrow.
+  vocabulary?: import('./style-vocabulary.js').StyleVocabulary;
 };
 
 export type DecideInput = {
@@ -291,6 +319,10 @@ export type DecideInput = {
   /** Registry mode only: `false` omits the snippet bootstrap data (editor goals,
    *  section map) the React SDK never reads — two queries per page saved. */
   bootstrap?: false;
+  /** Registry mode only: what the page can render per mounted slot. The
+   *  server narrows each slot's arm space to it before drawing (CONTRACTS §2
+   *  — an arm the page would refuse still books a trial). */
+  render?: Record<string, RenderCaps>;
   /**
    * Caller's build version (e.g. the snippet's `__SNIPPET_VERSION__`), sent
    * as `v` on the wire. Additive/best-effort: the server persists it for
@@ -381,7 +413,24 @@ export type SentientClient = {
    *  generation can ground its versions in what they replace — sent only on
    *  the first report of an id, capped, and the server keeps it only at
    *  first registration. */
-  reportSlots(slotIds: string[], baselineTexts?: Record<string, string>): void;
+  reportSlots(
+    slotIds: string[],
+    baselineTexts?: Record<string, string>,
+    baselineSkeletons?: Record<string, SkeletonReport>,
+    /** A hybrid <Adaptive>'s authored arms seen on screen (spec 2026-09-23
+     *  §7.4): recorded for the dashboard and to ground generation. Sent once
+     *  per (slot, key) per client. */
+    authoredArms?: Record<string, AuthoredArmReport[]>,
+  ): void;
+  /** Report a skeleton for a PUBLISHED slot the server flagged `needsSkeleton`
+   *  (registered before skeletons existed). Once per id per client; the server
+   *  stores it only while the slot has none. Optional for hand-rolled clients. */
+  reportSkeleton?(slotId: string, skeleton: SkeletonReport): void;
+  /** A served Rewrite arm could not be applied because the region's markup no
+   *  longer matches the skeleton it was written for. Batched, deduped per
+   *  (slot, fingerprint), never throws. Enough distinct visitors reporting the
+   *  same drift suspend that skeleton's arms. Optional for hand-rolled clients. */
+  reportDrift?(slotId: string, expectedFp: string, observedFp: string | null, reason: 'fp_mismatch' | 'unaddressable' | 'forms'): void;
   /**
    * Ask the server for the registry config of these MOUNTED slots. Batches a
    * tick's mounts into one decide scoped to exactly those ids, once per id per
@@ -390,7 +439,11 @@ export type SentientClient = {
    * Listeners from `onSlotsChanged` fire when the answer lands. Optional so
    * hand-rolled/test clients keep type-checking.
    */
-  requestSlots?(slotIds: string[], baselineTexts?: Record<string, string>): void;
+  requestSlots?(
+    slotIds: string[],
+    baselineTexts?: Record<string, string>,
+    extras?: { render?: Record<string, RenderCaps>; skeletons?: Record<string, SkeletonReport> },
+  ): void;
   /**
    * Decide these MOUNTED request-declared slots (useAdaptiveTokens,
    * AdaptiveGroup) that nothing preloaded: a tick's mounts batch into one
@@ -420,6 +473,9 @@ export type SentientClient = {
   isSlotDecided?(slotId: string): boolean;
   /** Site palette served with registry block decisions. Null when absent. */
   getSitePalette(): import('./blocks.js').SitePalette | null;
+  /** Site styles the served Redesign (compose) arms borrow; null when none.
+   *  Optional so hand-rolled clients keep type-checking. */
+  getStyleVocabulary?(): import('./style-vocabulary.js').StyleVocabulary | null;
   /** Current persona estimate. Band is always `confidenceBand(confidence)`. Null when nothing is known yet. */
   getPersona(): { persona: string; confidence: number; band: 'low' | 'medium' | 'high' } | null;
   /** Fetches current bandit weights for all components in this project. Used by the provider to keep live-weight polling fresh. */
@@ -453,12 +509,25 @@ export type SentientClient = {
   destroy(): void;
   /** True when this client is the keyless local-mode client (dev only). */
   readonly isLocal?: boolean;
+  /** True while this is a consent-gated client not yet upgraded in place:
+   *  goals and events are held until then, and a decide is held (or dropped
+   *  if the page changed). A released one still reads true but can't be
+   *  upgraded — check `released`. Absent on a tracking client. */
+  readonly gated?: boolean;
+  /** @internal True once a gated client was disposed/destroyed before any
+   *  upgrade: its decides resolve null without being sent. */
+  readonly released?: boolean;
+  /** @internal The gated client's held goal() calls, removed from it. */
+  takeHeld?(): Array<(c: SentientClient) => void>;
 };
 
 // SSR preload helpers moved to the `@sentientui/core/server` entry in 0.6.0 so
 // ~200 lines of Node-only fetch logic stop shipping in the browser bundle.
 
 export { REVEAL_MS, reveal, resetRevealStyles } from './reveal.js';
+export { setCspNonce, cspNonce, applyNonce } from './csp-nonce.js';
+export { forgetVisitor } from './forget.js';
+export { forgetGeneration } from './storage-key.js';
 export type { RevealOptions } from './reveal.js';
 export { attachMicroSignalDetectors } from './micro-signals.js';
 export type { MicroSignalEmitter, MicroSignalType } from './micro-signals.js';
@@ -836,7 +905,7 @@ export function grantConsent(apiKey?: string): void {
   _clients.set(key, { config: { ...config, consent: true }, upgrade: null, dispose: disposed });
 }
 
-function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient; setInner: (c: SentientClient) => void } {
+function createPreConsentProxy(config: SentientConfig, neverUpgrades: boolean): { proxy: SentientClient; setInner: (c: SentientClient) => void } {
   // 'control' (the default) must reach the network zero times before consent.
   // The proxy still exists so grantConsent() has something to upgrade in place
   // — without it, a site wanting no pre-consent traffic could only start
@@ -875,11 +944,18 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
         try {
           const params = new URLSearchParams({ componentId });
           for (const v of variantIds ?? []) params.append('variantIds[]', v);
-          const res = await fetch(`${baseUrl}/winner?${params.toString()}`, {
-            headers: authHeaders,
-          });
-          if (!res.ok) return variantIds?.[0] ? { variantId: variantIds[0], assignmentTtlMs: 0 } : null;
-          const body = (await res.json()) as { variantId: string };
+          const t = timeoutSignal(REQUEST_TIMEOUT_MS);
+          let body: { variantId: string };
+          try {
+            const res = await fetch(`${baseUrl}/winner?${params.toString()}`, {
+              headers: authHeaders,
+              signal: t.signal,
+            });
+            if (!res.ok) return variantIds?.[0] ? { variantId: variantIds[0], assignmentTtlMs: 0 } : null;
+            body = (await res.json()) as { variantId: string };
+          } finally {
+            t.clear();
+          }
           const result: AssignResult = { variantId: body.variantId, assignmentTtlMs: 0 };
           winnerCache.set(componentId, result);
           return result;
@@ -902,28 +978,118 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
 
   let upgraded = false;
   const slotListeners = new Set<() => void>();
-  const queuedSlots: Array<[string[], Record<string, string> | undefined]> = [];
+  // Every argument is queued and forwarded: the render caps and skeletons
+  // (native generation) ride the third one, and dropping them made a
+  // consent-gated page read as a legacy SDK — never drawn a Rewrite arm.
+  const queuedSlots: Array<[string[], Parameters<NonNullable<SentientClient['requestSlots']>>[1], Parameters<NonNullable<SentientClient['requestSlots']>>[2]]> = [];
   let queuedDecls: SlotDeclInput[] = [];
+  // decide() while gated: held and replayed on upgrade (audit N1). The pre-
+  // consent client answered null and nothing asked again, so a visitor whose
+  // consent arrived a moment later — every consentFrom snippet page view, now
+  // that the presets load lazily — got no decision for the whole page view.
+  // Keyed by path: a decide replayed after an SPA navigation would book trials
+  // for slots that are no longer on the page (CONTRACTS §2), so it resolves null.
+  const queuedDecides: Array<[Parameters<SentientClient['decide']>[0], string, (o: DecideOutcome | null) => void]> = [];
+
+  const releaseDecides = (): void => {
+    for (const [, , done] of queuedDecides.splice(0)) done(null);
+    heldCalls.length = 0;
+  };
+  // Session-level conversions (goal()) recorded while consent is still
+  // unknown — every consentFrom snippet page boots gated while the presets
+  // chunk loads, so a consented visitor's order-confirmation goal() used to
+  // vanish (grader NEW-1; CONTRACTS §7: never swallowed). Held in memory only
+  // — nothing is stored or sent — and replayed if consent arrives in this
+  // page view, dropped on dispose/destroy/refusal. Never held under DNT/GPC
+  // (no upgrade). NOT componentGoal/track: those attribute to a variant, and
+  // pre-consent the visitor saw the baseline — replayed after the grant they
+  // credited whatever the tracking client then held (review #4).
+  const heldCalls: Array<(c: SentientClient) => void> = [];
+  // Set by dispose()/destroy() before an upgrade: a released gated client
+  // holds nothing more (goals fired after a refusal were held again and sent
+  // on a later accept — grader N7-3) and answers any decide with null at once
+  // (a held decide on it could never settle — review #3). `released` tells a
+  // caller that a null came from this, not from a failed request.
+  let released = false;
+  // A released proxy also leaves the grantConsent() registry: a later global
+  // grant upgraded it in place, reviving a client its owner had let go of
+  // (review R8 #6). Only our own hook — a newer init under the key keeps its.
+  const release = (): void => {
+    if (upgraded) return;
+    released = true;
+    const entry = _clients.get(config.apiKey);
+    if (entry?.upgrade === setInner) {
+      _clients.set(config.apiKey, {
+        config,
+        upgrade: null,
+        upgradeBlockedReason:
+          '[sentient] grantConsent(): client released before consent; call init() again',
+      });
+    }
+  };
+  // Held calls replay one per task after the upgrade (see setInner); a goal
+  // fired meanwhile joins the back of that line, or it was sent before the
+  // conversions that happened first (grader N11-3).
+  const replay: Array<(c: SentientClient) => void> = [];
+  const pumpReplay = (): void =>
+    void setTimeout(() => {
+      try {
+        replay.shift()?.(inner);
+      } catch {
+        /* one bad call never blocks the rest */
+      }
+      if (replay.length) pumpReplay();
+    });
+  const hold = (call: (c: SentientClient) => void): void => {
+    if (upgraded) {
+      if (replay.length) replay.push(call);
+      else call(inner);
+    } else if (!neverUpgrades && !released && heldCalls.length < 100) heldCalls.push(call);
+    // Visible in debug: a goal after a refusal is dropped on purpose, and a
+    // silent drop read as a broken integration (grader N10-2).
+    else if (released && config.debug) console.warn('[sentient] goal dropped: client released');
+  };
   const proxy: SentientClient = {
+    get gated() {
+      return !upgraded && !neverUpgrades;
+    },
+    get released() {
+      return released && !upgraded;
+    },
+    /** @internal Hand the held conversions to another client (React re-inits
+     *  on a grant instead of upgrading in place) and clear them. */
+    takeHeld: () => heldCalls.splice(0),
     track: (e) => inner.track(e),
     // Cast: a single arrow can't structurally satisfy the overloaded member;
     // the passthrough forwards both call shapes untouched.
-    goal: ((n: string, m?: Record<string, unknown>, w?: number, s?: number) => inner.goal(n, m, w, s)) as SentientClient['goal'],
+    goal: ((n: string, m?: Record<string, unknown>, w?: number, s?: number) => hold((c) => c.goal(n, m, w, s))) as SentientClient['goal'],
     componentGoal: (c, g, o) => inner.componentGoal(c, g, o),
     identify: (u) => inner.identify(u),
     getAssignment: (c, s) => inner.getAssignment(c, s),
     assign: (c, v, a, av) => inner.assign(c, v, a, av),
-    decide: (i) => inner.decide(i),
+    decide: (i) =>
+      upgraded
+        ? inner.decide(i)
+        : released
+          ? Promise.resolve(null)
+          : // DNT/GPC can never be upgraded: held, it would never resolve, and a
+          // core-direct `await client.decide()` hung for every GPC browser (F1).
+          neverUpgrades
+          ? Promise.resolve(null)
+          : new Promise<DecideOutcome | null>((done) => queuedDecides.push([i, routeKey(), done])),
     getSlotResult: (s) => inner.getSlotResult(s),
     isSlotDecided: (s) => inner.isSlotDecided?.(s) ?? true,
     getSlotConfig: (s) => inner.getSlotConfig(s),
     getSitePalette: () => inner.getSitePalette(),
-    reportSlots: (ids, texts) => inner.reportSlots(ids, texts),
+    getStyleVocabulary: () => inner.getStyleVocabulary?.() ?? null,
+    reportSlots: (ids, texts, skels, authored) => inner.reportSlots(ids, texts, skels, authored),
+    reportSkeleton: (id, sk) => inner.reportSkeleton?.(id, sk),
+    reportDrift: (id, e, o, r) => inner.reportDrift?.(id, e, o, r),
     // Pre-consent: queue mounted slots and hold listeners, then hand both to
     // the real client on upgrade. A grantConsent() upgrade swaps the client in
     // place without remounting, so a slot that asked while gated would
     // otherwise never be decided.
-    requestSlots: (ids, texts) => (upgraded ? inner.requestSlots?.(ids, texts) : queuedSlots.push([ids, texts])),
+    requestSlots: (ids, texts, extras) => (upgraded ? inner.requestSlots?.(ids, texts, extras) : queuedSlots.push([ids, texts, extras])),
     decideSlots: (d) => (upgraded ? inner.decideSlots?.(d) : queuedDecls.push(...d)),
     // Pre-consent, an unmounted slot leaves the queue too: consent may be
     // granted minutes later on a different route, and the slots the visitor
@@ -939,19 +1105,45 @@ function createPreConsentProxy(config: SentientConfig): { proxy: SentientClient;
     fetchWeights: () => inner.fetchWeights(),
     getGraph: () => inner.getGraph(),
     flush: () => inner.flush(),
-    dispose: () => inner.dispose(),
-    destroy: () => inner.destroy(),
+    dispose: () => (release(), releaseDecides(), inner.dispose()),
+    // Before consent there is no tracking client to destroy, but a returning
+    // visitor may still have an id, snapshot and buckets from an earlier
+    // consented visit: forget-me deletes them all the same (grader F2 — a
+    // "Reject" on a manual gate used to delete nothing).
+    destroy: () => (release(), releaseDecides(), upgraded ? inner.destroy() : forgetVisitor(config.apiKey)),
   };
 
   function setInner(fullClient: SentientClient) {
     inner = fullClient;
     upgraded = true;
+    // Each in its own task: replayed in one go they shared one latch window
+    // (createActionLatch), so two held add_to_cart clicks became one (NEW-3).
+    // In order, one per task (see pumpReplay).
+    if (heldCalls.length) {
+      replay.push(...heldCalls.splice(0));
+      pumpReplay();
+    }
+    const path = routeKey();
+    for (const [input, at, done] of queuedDecides.splice(0)) {
+      if (at !== path) done(null);
+      else fullClient.decide(input).then(done, () => done(null));
+    }
     fullClient.onSlotsChanged?.(() => slotListeners.forEach((l) => l()));
-    for (const [ids, texts] of queuedSlots.splice(0)) if (ids.length > 0) fullClient.requestSlots?.(ids, texts);
+    for (const [ids, texts, extras] of queuedSlots.splice(0)) if (ids.length > 0) fullClient.requestSlots?.(ids, texts, extras);
     if (queuedDecls.length > 0) fullClient.decideSlots?.(queuedDecls.splice(0));
   }
 
   return { proxy, setInner };
+}
+
+/**
+ * The page a decision belongs to: the pathname plus a route-shaped fragment.
+ * Hash routers (`#/pricing`) navigate without changing the pathname; an
+ * in-page anchor (`#faq`) is not a route. Shared by the held-decide drop rule
+ * and the snippet's re-decide check, which must agree (grader NEW-2).
+ */
+export function routeKey(): string {
+  return typeof location === 'undefined' ? '' : location.pathname + (/^#!?\//.test(location.hash) ? location.hash : '');
 }
 
 /**
@@ -985,6 +1177,8 @@ export function init(config: SentientConfig): SentientClient {
   if (typeof window === 'undefined') {
     return SSR_CLIENT;
   }
+
+  if (config.nonce) setCspNonce(config.nonce);
 
   // `|| 'local'`: keyless clients register under the 'local' fallback key
   // below, and `_lastApiKey = ''` is falsy — so a no-arg grantConsent() after
@@ -1057,7 +1251,7 @@ export function init(config: SentientConfig): SentientClient {
     // one — otherwise grantConsent() is silently dead for the 'control' default
     // and the site has to reload to start tracking. Control mode still makes no
     // request; the proxy only exists so consent can swap the inner client.
-    const { proxy, setInner } = createPreConsentProxy(config);
+    const { proxy, setInner } = createPreConsentProxy(config, dntBlocked);
     // Under DNT the read-only winner still serves, but consent can never
     // upgrade it to tracking — so drop the upgrade hook.
     _clients.set(config.apiKey, { config, upgrade: dntBlocked ? null : setInner });
@@ -1078,7 +1272,20 @@ export function init(config: SentientConfig): SentientClient {
 
   const sessionStart = Date.now();
   const session = initSession({ ssrSessionId: config.ssrSessionId, apiKey: config.apiKey });
-  const assignmentCache = createAssignmentCache(undefined, config.apiKey);
+  const rawCache = createAssignmentCache(undefined, config.apiKey);
+  // Set by this client's destroy(). The window marker covers other bundles'
+  // forget-me, but a new grant clears it — and this client's own in-flight
+  // answer must never write a forgotten visitor back after that either.
+  let forgottenHere = false;
+  const createdGen = forgetGeneration(config.apiKey);
+  const mayPersist = (): boolean => !forgottenHere && forgetGeneration(config.apiKey) === createdGen;
+  // Same rule as the snapshot write: nothing is cached for a forgotten visitor.
+  const assignmentCache: typeof rawCache = {
+    ...rawCache,
+    set: (...a) => {
+      if (mayPersist()) rawCache.set(...a);
+    },
+  };
   const eventQueue = createEventQueue({ ingestUrl: resolvedIngestUrl, apiKey: config.apiKey });
   const baseUrl = deriveBaseUrl(resolvedIngestUrl);
 
@@ -1152,6 +1359,7 @@ export function init(config: SentientConfig): SentientClient {
   // snippet was the only consumer and this never left the decide outcome.
   const slotConfigStore = new Map<string, SlotConfigEntry>();
   let sitePalette: import('./blocks.js').SitePalette | null = null;
+  let styleVocabulary: import('./style-vocabulary.js').StyleVocabulary | null = null;
   let personaState: { persona: string; confidence: number } | null = null;
   // First-seen slot registration (reportSlots): once per id per client.
   const reportedSlotIds = new Set<string>();
@@ -1159,6 +1367,11 @@ export function init(config: SentientConfig): SentientClient {
   // Baseline text captured with the first report of an id. Bounded by the
   // once-per-id dedupe above, normalized + capped before it leaves the page.
   const pendingBaselineTexts = new Map<string, string>();
+  const pendingBaselineSkeletons = new Map<string, SkeletonReport>();
+  const reportedSkeletonIds = new Set<string>();
+  // Drift: once per (slot, expected fp) per client.
+  const reportedDrift = new Set<string>();
+  const reportedAuthored = new Set<string>();
   let slotReportTimer: ReturnType<typeof setTimeout> | null = null;
   // Mirror of the server's slot-id rule (apps/api/src/routes/slots-observed.ts):
   // the server 400s the WHOLE batch when any one id fails it, and every
@@ -1170,7 +1383,7 @@ export function init(config: SentientConfig): SentientClient {
   // requestSlots: mounted-slot decides, once per id per client.
   const slotListeners = new Set<() => void>();
   const requestedSlotIds = new Set<string>();
-  const pendingSlotTexts = new Map<string, string | undefined>();
+  const pendingSlotTexts = new Map<string, { text?: string; render?: RenderCaps; skeleton?: SkeletonReport }>();
   let slotRequestTimer: ReturnType<typeof setTimeout> | null = null;
   // decideSlots: mounted request-declared slots, once per id per client.
   const decidedDeclIds = new Set<string>();
@@ -1231,6 +1444,7 @@ export function init(config: SentientConfig): SentientClient {
     }
   }
   if (config.initialPalette) sitePalette = config.initialPalette;
+  if (config.initialVocabulary) styleVocabulary = config.initialVocabulary;
   const seedSnapshot = readSnapshot(config.apiKey);
   if (seedSnapshot) {
     for (const [slotId, result] of Object.entries(seedSnapshot.slots)) {
@@ -1240,6 +1454,7 @@ export function init(config: SentientConfig): SentientClient {
       if (!slotConfigStore.has(slotId)) slotConfigStore.set(slotId, entry);
     }
     if (!sitePalette && seedSnapshot.palette) sitePalette = seedSnapshot.palette;
+    if (!styleVocabulary && seedSnapshot.vocabulary) styleVocabulary = seedSnapshot.vocabulary;
   }
 
   // Band-only persona sources (html attrs, snapshot) become a band-consistent
@@ -1324,12 +1539,17 @@ export function init(config: SentientConfig): SentientClient {
     // failure costs a moment rather than the visit's whole conversion history.
     const upsertSession = async (): Promise<undefined> => {
       for (let attempt = 0; ; attempt++) {
+        // Stop retrying once this client is torn down or the visitor was
+        // forgotten: the retries POSTed the forgotten id again (N7-6).
+        if (slotDecideTornDown || !mayPersist()) return undefined;
+        const t = timeoutSignal(REQUEST_TIMEOUT_MS);
         try {
           const res = await fetch(`${baseUrl}/sessions`, {
             method: 'POST',
             keepalive: true,
             body: JSON.stringify(sessionBody),
             headers: authHeaders,
+            signal: t.signal,
           });
           if (res.status === 402) {
             console.warn(
@@ -1339,7 +1559,11 @@ export function init(config: SentientConfig): SentientClient {
           }
           if (res.ok || classifyResponse(res) === 'dropped') return undefined;
         } catch {
-          /* network failure — same retry path as a 5xx */
+          /* network failure or timeout — same retry path as a 5xx (the
+             upsert is idempotent, so a timed-out attempt that did land is
+             harmless to repeat) */
+        } finally {
+          t.clear();
         }
         if (attempt >= SESSION_UPSERT_RETRIES) {
           // Say so once: from here every conversion this visit will 400, and
@@ -1398,7 +1622,8 @@ export function init(config: SentientConfig): SentientClient {
   const client: SentientClient = {
     goal(name: string, metadataOrOpts: Record<string, unknown> = {}, weight = 1.0, stepIndex = 0) {
       const sid = session.getSessionId();
-      if (!sid) return;
+      // Nothing is sent by a client that was disposed (a pause) or forgotten.
+      if (!sid || slotDecideTornDown || !mayPersist()) return;
       const opts: GoalOptions = isGoalOptions(metadataOrOpts)
         ? (metadataOrOpts as GoalOptions)
         : { metadata: metadataOrOpts };
@@ -1460,7 +1685,9 @@ export function init(config: SentientConfig): SentientClient {
 
     componentGoal(componentId, goalType, opts) {
       const sid = session.getSessionId();
-      if (!sid) return;
+      // Same gate as goal(): a paused or forgotten client's component
+      // conversion was still queued and sent (review R8 #3).
+      if (!sid || slotDecideTornDown || !mayPersist()) return;
       // Variant experiments resolve from the assignment cache; adaptive slots
       // (useAdaptiveTokens / AdaptiveGroup) resolve from the slot state, using
       // the canonical arm string as the attributed variantId.
@@ -1506,12 +1733,14 @@ export function init(config: SentientConfig): SentientClient {
       if (config.debug) {
         console.log('[sentient] componentGoal', fullEvent);
       }
-      sessionReady.then(() => eventQueue.push(fullEvent));
+      sessionReady.then(() => {
+        if (!slotDecideTornDown && mayPersist()) eventQueue.push(fullEvent);
+      });
     },
 
     identify(userId) {
       const sid = session.getSessionId();
-      if (!sid) return;
+      if (!sid || slotDecideTornDown || !mayPersist()) return;
       sessionReady.then(() => {
         fetch(`${baseUrl}/sessions`, {
           method: 'POST',
@@ -1524,7 +1753,7 @@ export function init(config: SentientConfig): SentientClient {
 
     track(event) {
       const sessionId = session.getSessionId();
-      if (!sessionId) return;
+      if (!sessionId || slotDecideTornDown || !mayPersist()) return;
       // Same rule as componentGoal: an impression for a slot arm the core holds
       // without a decision this session (snapshot, failure baseline) trains an
       // arm the server never served. Only ids the core knows AS SLOTS are
@@ -1580,15 +1809,24 @@ export function init(config: SentientConfig): SentientClient {
       // Coalesce concurrent assigns for the same component (e.g. several
       // mounted slots sharing one id) into a single network request.
       return coalesce(inflightAssigns, componentId, async () => {
-        await sessionReady;
+        // Bounded: see SESSION_WAIT_MS. null = the caller keeps its fallback.
+        if (!(await settlesWithin(sessionReady, SESSION_WAIT_MS))) return null;
+        // Torn down or forgotten while waiting for the session: never send —
+        // a sent assign books an exposure the page will not show (NEW-2).
+        if (slotDecideTornDown || !mayPersist()) return null;
+        const t = timeoutSignal(DECIDE_TIMEOUT_MS);
         try {
           const body: Record<string, unknown> = { sessionId: sid, componentId, variantIds };
           if (agentDataByVariant !== undefined) body.agentDataByVariant = agentDataByVariant;
           else if (agentData !== undefined) body.agentData = agentData;
+          // Sent = booked: /v1/assign records the exposure at draw time, so
+          // like decide it is never cut short on latency (DECIDE_TIMEOUT_MS
+          // frees a dead connection only; a slow answer is still applied).
           const res = await fetch(`${baseUrl}/assign`, {
             method: 'POST',
             body: JSON.stringify(body),
             headers: authHeaders,
+            signal: t.signal,
           });
           if (!res.ok) return null;
           const result = (await res.json()) as AssignResult;
@@ -1607,6 +1845,8 @@ export function init(config: SentientConfig): SentientClient {
           return result;
         } catch {
           return null;
+        } finally {
+          t.clear();
         }
       });
     },
@@ -1626,6 +1866,7 @@ export function init(config: SentientConfig): SentientClient {
         body.slotsFrom = 'registry';
         if (input.registrySlotIds) body.registrySlotIds = input.registrySlotIds;
         if (input.bootstrap === false) body.bootstrap = false;
+        if (input.render && Object.keys(input.render).length > 0) body.render = input.render;
       }
       if (input.v) body.v = input.v;
       // 0 is meaningful here (a two-tag snippet install with no inline pre-paint
@@ -1645,12 +1886,24 @@ export function init(config: SentientConfig): SentientClient {
       // same toWireSlot, so identical payloads imply identical outcomes.
       const decideKey = JSON.stringify(body);
       return coalesce(inflightDecides, decideKey, async () => {
-        await sessionReady;
+        // Bounded: a decide never sent writes no trial (SESSION_WAIT_MS).
+        if (!(await settlesWithin(sessionReady, SESSION_WAIT_MS)) || slotDecideTornDown || !mayPersist()) {
+          // Not sent: the session never came, or the visitor withdrew
+          // (dispose/destroy/forget) while we waited — a decide sent now
+          // would book trials for a page that will not show them (NEW-2).
+          seedSlotBaselines(declared);
+          return null;
+        }
+        // Once sent, the server writes the decision whether or not we read
+        // the answer, so this is NOT a latency ceiling (see DECIDE_TIMEOUT_MS):
+        // an abort leaves a trial for an arm the page never showed.
+        const t = timeoutSignal(DECIDE_TIMEOUT_MS);
         try {
           const res = await fetch(`${baseUrl}/decide`, {
             method: 'POST',
             body: decideKey,
             headers: authHeaders,
+            signal: t.signal,
           });
           if (!res.ok) {
             seedSlotBaselines(declared);
@@ -1664,6 +1917,7 @@ export function init(config: SentientConfig): SentientClient {
             goals?: GoalDefinition[];
             sectionMap?: SectionMapEntry[];
             palette?: import('./blocks.js').SitePalette;
+            vocabulary?: import('./style-vocabulary.js').StyleVocabulary;
             persona?: string;
             confidence?: number;
           };
@@ -1739,6 +1993,8 @@ export function init(config: SentientConfig): SentientClient {
             }
           }
           if (data.palette) sitePalette = data.palette;
+          // Served wins; an absent one leaves the cached copy (same rule as palette).
+          if (data.vocabulary) styleVocabulary = data.vocabulary;
           // A scoped registry decide is authoritative for the ids it asked
           // about: one with no config has nothing published NOW. Drop what an
           // earlier visit's snapshot seeded — before the snapshot is rewritten
@@ -1752,7 +2008,9 @@ export function init(config: SentientConfig): SentientClient {
           }
 
           // Persist for the next visit's pre-paint (SPA cache-first pattern).
-          writeSnapshot(config.apiKey, {
+          // A decide that landed after forget-me must not write the visitor back
+          // (grader NEW-3: destroy() ran while it was in flight).
+          if (mayPersist()) writeSnapshot(config.apiKey, {
             v: 1,
             persona: personaState.persona,
             band: confidenceBand(personaState.confidence),
@@ -1761,6 +2019,7 @@ export function init(config: SentientConfig): SentientClient {
             savedAt: Date.now(),
             ...(slotConfigStore.size > 0 ? { slotConfig: Object.fromEntries(slotConfigStore) } : {}),
             ...(sitePalette ? { palette: sitePalette } : {}),
+            ...(styleVocabulary ? { vocabulary: styleVocabulary } : {}),
           });
 
           return {
@@ -1773,10 +2032,13 @@ export function init(config: SentientConfig): SentientClient {
             ...(data.goals ? { goals: data.goals } : {}),
             ...(data.sectionMap ? { sectionMap: data.sectionMap } : {}),
             ...(data.palette ? { palette: data.palette } : {}),
+            ...(data.vocabulary ? { vocabulary: data.vocabulary } : {}),
           };
         } catch {
           seedSlotBaselines(declared);
           return null;
+        } finally {
+          t.clear();
         }
       });
     },
@@ -1793,7 +2055,28 @@ export function init(config: SentientConfig): SentientClient {
       return slotConfigStore.get(slotId) ?? null;
     },
 
-    reportSlots(slotIds, baselineTexts) {
+    reportSlots(slotIds, baselineTexts, baselineSkeletons, authoredArms) {
+      // Authored arms go straight out, deduped per (slot, key): unlike the
+      // first-seen id registration below, a hybrid's arms are seen one at a
+      // time as the visitor is served them.
+      const authored: Record<string, AuthoredArmReport[]> = {};
+      for (const [id, list] of Object.entries(authoredArms ?? {})) {
+        for (const a of list) {
+          const k = `${id}|${a.key}`;
+          if (!SLOT_ID_RE.test(id) || reportedAuthored.has(k)) continue;
+          reportedAuthored.add(k);
+          // Sent as given: the server normalizes and caps the text (the same
+          // rule as baselineText), so the lean bundle doesn't carry it twice.
+          (authored[id] ??= []).push(a);
+        }
+      }
+      if (Object.keys(authored).length > 0) {
+        void fetch(`${baseUrl}/slots/observed`, {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({ slotIds: Object.keys(authored), authoredArms: authored }),
+        }).catch(() => undefined);
+      }
       // Batch a tick's worth of AdaptiveSlot mounts into one request, once per
       // id per client lifetime — a page of N slots must not fire N registrations
       // on every navigation.
@@ -1824,6 +2107,8 @@ export function init(config: SentientConfig): SentientClient {
             const text = raw.replace(/\s+/g, ' ').trim().slice(0, 400);
             if (text !== '') pendingBaselineTexts.set(id, text);
           }
+          const sk = baselineSkeletons?.[id];
+          if (sk !== undefined) pendingBaselineSkeletons.set(id, sk);
         }
       }
       if (pendingSlotReports.size === 0 || slotReportTimer != null) return;
@@ -1838,11 +2123,17 @@ export function init(config: SentientConfig): SentientClient {
         for (let i = 0; i < all.length; i += 20) {
           const chunk = all.slice(i, i + 20);
           const texts: Record<string, string> = {};
+          const skels: Record<string, SkeletonReport> = {};
           for (const id of chunk) {
             const t = pendingBaselineTexts.get(id);
             if (t !== undefined) {
               texts[id] = t;
               pendingBaselineTexts.delete(id);
+            }
+            const sk = pendingBaselineSkeletons.get(id);
+            if (sk !== undefined) {
+              skels[id] = sk;
+              pendingBaselineSkeletons.delete(id);
             }
           }
           void fetch(`${baseUrl}/slots/observed`, {
@@ -1851,20 +2142,58 @@ export function init(config: SentientConfig): SentientClient {
             body: JSON.stringify({
               slotIds: chunk,
               ...(Object.keys(texts).length > 0 ? { baselineTexts: texts } : {}),
+              ...(Object.keys(skels).length > 0 ? { baselineSkeletons: skels } : {}),
+              // Where these regions live: a Redesign brief reads that page's text.
+              pagePaths: Object.fromEntries(chunk.map((id) => [id, location.pathname])),
+              // A baseline-text vote counts only once this session is scored
+              // human with events (server C8); without it the vote never
+              // promotes, so the text would wait for owner confirmation.
+              ...(Object.keys(texts).length > 0 && session.getSessionId() ? { sessionId: session.getSessionId() } : {}),
             }),
           }).catch(() => undefined);
         }
       }, 1000);
     },
 
-    requestSlots(slotIds, baselineTexts) {
+    reportSkeleton(slotId, skeleton) {
+      if (!SLOT_ID_RE.test(slotId) || reportedSkeletonIds.has(slotId)) return;
+      reportedSkeletonIds.add(slotId);
+      // Same endpoint as first registration: the slot exists, so the insert is
+      // a no-op and the server's fill-once UPDATE stores the skeleton.
+      void fetch(`${baseUrl}/slots/observed`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ slotIds: [slotId], baselineSkeletons: { [slotId]: skeleton } }),
+      }).catch(() => undefined);
+    },
+
+    reportDrift(slotId, expectedFp, observedFp, reason) {
+      // Once per (slot, fingerprint) per client — that dedupe bounds volume,
+      // so no batching timer. The server applies the visitors-and-rate rule.
+      const key = `${slotId}|${expectedFp}`;
+      const sid = session.getSessionId();
+      if (!sid || reportedDrift.has(key)) return;
+      reportedDrift.add(key);
+      void fetch(`${baseUrl}/slots/drift`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ sessionId: sid, reports: [{ slotId, expectedFp, observedFp, reason }] }),
+      }).catch(() => undefined);
+    },
+
+    requestSlots(slotIds, baselineTexts, extras) {
       for (const id of slotIds) {
         if (requestedSlotIds.has(id)) continue;
         requestedSlotIds.add(id);
         // An invalid id would 400 the whole scoped decide; reportSlots owns
         // the dev warning for it and refuses it there.
-        if (SLOT_ID_RE.test(id)) pendingSlotTexts.set(id, baselineTexts?.[id]);
-        else client.reportSlots([id]);
+        if (SLOT_ID_RE.test(id)) {
+          pendingSlotTexts.set(id, {
+            text: baselineTexts?.[id],
+            render: extras?.render?.[id],
+            skeleton: extras?.skeletons?.[id],
+          });
+        } else client.reportSlots([id]);
       }
       if (pendingSlotTexts.size === 0 || slotRequestTimer != null) return;
       // 0ms: every AdaptiveSlot mounted in the same commit lands in one request.
@@ -1874,25 +2203,43 @@ export function init(config: SentientConfig): SentientClient {
         pendingSlotTexts.clear();
         for (let i = 0; i < all.length; i += 50) {
           const chunk = all.slice(i, i + 50);
-          void client.decide({ slotsFrom: 'registry', registrySlotIds: chunk.map(([id]) => id), bootstrap: false }).then((out) => {
+          const render: Record<string, RenderCaps> = {};
+          for (const [id, p] of chunk) if (p.render) render[id] = p.render;
+          void client
+            .decide({ slotsFrom: 'registry', registrySlotIds: chunk.map(([id]) => id), bootstrap: false, render })
+            .then((out) => {
             // A failed decide registers nothing: "the network blipped" must not
             // read as "this slot has nothing published".
             if (out) {
               const texts: Record<string, string> = {};
+              const skels: Record<string, SkeletonReport> = {};
               const missing: string[] = [];
-              for (const [id, text] of chunk) {
-                if (out.slotConfig?.[id]) continue;
+              for (const [id, p] of chunk) {
+                const cfg = out.slotConfig?.[id];
+                if (cfg) {
+                  // Published but never captured: fill it from this page.
+                  if (cfg.needsSkeleton && p.skeleton) client.reportSkeleton?.(id, p.skeleton);
+                  continue;
+                }
                 missing.push(id);
-                if (text) texts[id] = text;
+                if (p.text) texts[id] = p.text;
+                if (p.skeleton) skels[id] = p.skeleton;
               }
-              if (missing.length > 0) client.reportSlots(missing, texts);
+              if (missing.length > 0) client.reportSlots(missing, texts, skels);
             } else {
               // Release the ids (a remount re-asks) and retry this batch with
               // backoff — see retryFailedSlots.
               retryFailedSlots(chunk.map(([id]) => id), requestedSlotIds, (retry) => {
                 const texts: Record<string, string> = {};
-                for (const [id, t] of chunk) if (retry.has(id) && t) texts[id] = t;
-                client.requestSlots?.([...retry], texts);
+                const retryRender: Record<string, RenderCaps> = {};
+                const skels: Record<string, SkeletonReport> = {};
+                for (const [id, p] of chunk) {
+                  if (!retry.has(id)) continue;
+                  if (p.text) texts[id] = p.text;
+                  if (p.render) retryRender[id] = p.render;
+                  if (p.skeleton) skels[id] = p.skeleton;
+                }
+                client.requestSlots?.([...retry], texts, { render: retryRender, skeletons: skels });
               });
             }
             slotListeners.forEach((l) => l());
@@ -1943,6 +2290,10 @@ export function init(config: SentientConfig): SentientClient {
       return () => void slotListeners.delete(listener);
     },
 
+    getStyleVocabulary() {
+      return styleVocabulary;
+    },
+
     getSitePalette() {
       return sitePalette;
     },
@@ -1957,13 +2308,16 @@ export function init(config: SentientConfig): SentientClient {
     },
 
     async fetchWeights() {
+      const t = timeoutSignal(REQUEST_TIMEOUT_MS);
       try {
-        const res = await fetch(`${baseUrl}/weights`, { headers: authHeaders });
+        const res = await fetch(`${baseUrl}/weights`, { headers: authHeaders, signal: t.signal });
         if (!res.ok) return [];
         const data = (await res.json()) as { components: ComponentWeightEntry[] };
         return data.components ?? [];
       } catch {
         return [];
+      } finally {
+        t.clear();
       }
     },
 
@@ -2000,8 +2354,11 @@ export function init(config: SentientConfig): SentientClient {
       stopPageviews?.();
       pageviewsTornDown = true;
       slotDecideTornDown = true;
-      eventQueue.destroy();
-      goalQueue.destroy();
+      // Before anything else: in-flight decides/assigns check these.
+      forgottenHere = true;
+      markForgotten(config.apiKey);
+      eventQueue.destroy({ forget: true });
+      goalQueue.destroy({ forget: true });
       session.destroy();
       // The assignment cache persists in localStorage (`_snt_asgn_*`) with a
       // 30-minute default TTL — left in place, a revoked visitor returning
@@ -2018,6 +2375,10 @@ export function init(config: SentientConfig): SentientClient {
         localStorage.removeItem(SNAPSHOT_STORAGE_KEY_PREFIX + config.apiKey);
         localStorage.removeItem(retryStorageKey(config.apiKey));
         localStorage.removeItem(goalRetryStorageKey(config.apiKey));
+        // The graph caches too (the graph entry also clears them): forget-me
+        // on a lean client left them (review #9).
+        localStorage.removeItem(`_snt_graph_nodes${storageSuffix(config.apiKey)}`);
+        localStorage.removeItem('_snt_graph_edges');
       } catch {
         /* storage unavailable — nothing persisted to remove */
       }

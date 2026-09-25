@@ -1,5 +1,11 @@
 # @sentientui/policy
 
+## 0.12.1
+
+### Patch Changes
+
+- ca64b25: Single-dimension token slots are trained once per trial. New `trainingArmKeys(arm)` returns each weight-row key a trial trains exactly once (a one-dim arm's bundle key equals its marginal key, and every writer used to bump both). `validateSlotDecl` and the snippet's config parser now reject `=` and `|` in dim names and values, which made a slot's arms unparseable (it never learned).
+
 ## 0.12.0
 
 ### Minor Changes

@@ -16,10 +16,12 @@ import { action } from './webhooks.shop.redact';
 vi.mock('../shopify.server', () => ({
   authenticate: { webhook: vi.fn() },
 }));
+vi.mock('../lib/settings.server', () => ({ revokeConnectPair: vi.fn() }));
 vi.mock('../db.server', () => ({
   default: {
     session: { findFirst: vi.fn(), deleteMany: vi.fn() },
     sentientSettings: { findUnique: vi.fn(), deleteMany: vi.fn() },
+    pendingConnect: { deleteMany: vi.fn(), findUnique: vi.fn(async () => null) },
   },
 }));
 

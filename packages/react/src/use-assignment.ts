@@ -162,6 +162,11 @@ export function useAssignment(componentId: string, variantIds: string[], agentDa
     const cached = client.getAssignment(componentId, segment);
     if (cached && variantIds.includes(cached.variantId)) return;
 
+    // A late answer is still swapped in. Declining it (audit S9's deadline)
+    // would not avoid a trial: /v1/assign records the exposure server-side at
+    // draw time, so a declined arm was booked as shown while the page showed
+    // the placeholder. Bounding lateness happens before the request instead
+    // (core's SESSION_WAIT_MS: an assign that would start late isn't sent).
     let cancelled = false;
     void client.assign(componentId, variantIds, agentData, agentDataByVariant).then((result: AssignResult | null) => {
       if (cancelled) return;

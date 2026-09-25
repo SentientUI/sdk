@@ -42,6 +42,26 @@ export function marginalArmKey(dim: string, value: string): string {
 }
 
 /**
+ * Every slot_weights row key ONE trial on `arm` trains — each exactly once.
+ * The bundle arm plus, for a dims arm, one marginal per dimension.
+ *
+ * Distinct on purpose. For a single-dimension slot the bundle key IS the
+ * marginal key (`canonicalArm({ tone: 'calm' })` === `marginalArmKey('tone',
+ * 'calm')` === 'tone=calm'), and every writer used to bump the bundle and then
+ * each marginal — the same row twice. Each trial counted as two: the posterior
+ * was twice as confident as the data (Beta(2c+1, 2(n−c)+1)), Thompson locked in
+ * ~2× faster and onto the wrong arm 3–6× more often, and the 100-sample evidence
+ * floor fell at ~50 visitors. Close-out, the late correction, the refund
+ * clawback and the replay simulator must all expand through this one function,
+ * or a clawback debits a different amount than close-out credited.
+ */
+export function trainingArmKeys(arm: string): string[] {
+  const parsed = parseArm(arm);
+  if (!parsed) return [arm];
+  return [...new Set([arm, ...Object.entries(parsed).map(([dim, value]) => marginalArmKey(dim, value))])];
+}
+
+/**
  * Canonical arm string of the declared baseline, or the default baseline
  * (first arm / first value per dim) when none is declared. Assumes the decl
  * passed validateSlotDecl.
@@ -97,6 +117,17 @@ export function validateSlotDecl(decl: SlotDecl): { ok: true } | { ok: false; re
   if (entries.length > 4) return { ok: false, reason: 'dims allows at most 4 dimensions' };
   let product = 1;
   for (const [dim, values] of entries) {
+    // '=' and '|' are the dims encoding's own delimiters (`a=x|b=y`). A dim
+    // name or value containing one makes parseArm misread the arm: 'tone=a=b'
+    // parses to null, so no marginal row is written and — since serving reads
+    // marginals only — the slot silently never learns; a '|' writes ghost
+    // marginals under the wrong keys; and two dims can collide on one key
+    // ('a' + 'b=c' vs 'a=b' + 'c'). Same reservation enumerated arm ids have.
+    if (/[=|]/.test(dim)) return { ok: false, reason: `dim name "${dim}" may not contain '=' or '|' (reserved for dims encoding)` };
+    const bad = values.find((v) => /[=|]/.test(v));
+    if (bad !== undefined) {
+      return { ok: false, reason: `dim "${dim}" value "${bad}" may not contain '=' or '|' (reserved for dims encoding)` };
+    }
     if (values.length < 2) return { ok: false, reason: `dim "${dim}" requires at least 2 values` };
     if (values.length > 6) return { ok: false, reason: `dim "${dim}" allows at most 6 values` };
     if (new Set(values).size !== values.length) return { ok: false, reason: `dim "${dim}" has duplicate values` };

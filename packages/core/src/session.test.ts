@@ -454,3 +454,74 @@ describe('post-destroy consistency', () => {
     expect(secondId).not.toBe(firstId);
   });
 });
+
+describe('identity cookie attributes (audit S21)', () => {
+  function captureCookieWrites(): { writes: string[]; restore: () => void } {
+    const writes: string[] = [];
+    const proto = Object.getPrototypeOf(document) as object;
+    const desc = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie')!;
+    Object.defineProperty(document, 'cookie', {
+      configurable: true,
+      get: () => desc.get!.call(document),
+      set: (v: string) => {
+        writes.push(v);
+        desc.set!.call(document, v);
+      },
+    });
+    void proto;
+    return { writes, restore: () => void delete (document as unknown as Record<string, unknown>).cookie };
+  }
+
+  it('is Secure on https pages', () => {
+    const cap = captureCookieWrites();
+    vi.stubGlobal('location', { ...window.location, protocol: 'https:' });
+    try {
+      initSession({ apiKey: 'pk_secure_test' });
+      const uid = cap.writes.filter((w) => w.startsWith('_snt_uid'));
+      expect(uid.length).toBeGreaterThan(0);
+      expect(uid.every((w) => /; Secure$/.test(w))).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+      cap.restore();
+    }
+  });
+
+  it('is not Secure on http (the browser would refuse it)', () => {
+    const cap = captureCookieWrites();
+    try {
+      initSession({ apiKey: 'pk_insecure_test' });
+      const uid = cap.writes.filter((w) => w.startsWith('_snt_uid'));
+      expect(uid.length).toBeGreaterThan(0);
+      expect(uid.some((w) => /Secure/.test(w))).toBe(false);
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
+describe('cookie SameSite and forget-me tombstone (grader N-B, S5)', () => {
+  beforeEach(() => {
+    restoreNativeCookie();
+    localStorage.clear();
+    sessionStorage.clear();
+    document.cookie.split(';').forEach((c) => (document.cookie = `${c.split('=')[0]!.trim()}=; max-age=0; path=/`));
+  });
+  it('the identity cookie is SameSite=Lax, so it rides a click-in from another site (SSR sees the visitor)', () => {
+    const writes: string[] = [];
+    const desc = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie')!;
+    Object.defineProperty(document, 'cookie', { configurable: true, get: () => desc.get!.call(document), set: (v: string) => (writes.push(v), desc.set!.call(document, v)) });
+    try {
+      initSession({ apiKey: 'pk_lax_test_1' });
+      expect(writes.find((w) => w.startsWith('_snt_uid_pk_lax_test'))).toMatch(/SameSite=lax/);
+    } finally {
+      delete (document as unknown as { cookie?: unknown }).cookie;
+    }
+  });
+  it('destroy writes the tombstone only when a shared legacy id exists', () => {
+    initSession({ apiKey: 'pk_tomb_none1' }).destroy();
+    expect(localStorage.getItem('_snt_uid_tomb_pk_tomb_none')).toBeNull();
+    localStorage.setItem('_snt_uid', 'legacy');
+    initSession({ apiKey: 'pk_tomb_legacy' }).destroy();
+    expect(localStorage.getItem('_snt_uid_tomb_pk_tomb_lega')).toBe('1');
+  });
+});

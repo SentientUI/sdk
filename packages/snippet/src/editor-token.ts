@@ -1,6 +1,6 @@
 // Shared key for stashing the on-site editor bearer token in sessionStorage.
-// The snippet strips the token from the URL immediately (security: keep it out of
-// history, referrer, bookmarks, and logs) but caches it here so a plain reload —
+// The token never travels in a URL (grade E1): the editor bundle gets it by
+// exchanging the dashboard's one-time fragment code, and caches it here so a plain reload —
 // or navigating to another page of the same site within this tab — re-enters
 // editor mode without reopening the dashboard. Kept in its own tiny module so both
 // IIFE bundles (snippet + editor) can share the constant without either importing

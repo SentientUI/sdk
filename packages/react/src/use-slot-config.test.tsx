@@ -74,7 +74,7 @@ afterEach(() => {
 describe('useSlotConfig resolution order', () => {
   it('returns none/null with no provider data', () => {
     const { result } = renderHook(() => useSlotConfig('hero'), { wrapper: wrapperWith() });
-    expect(result.current).toEqual({ config: null, arm: '', palette: null, source: 'none' });
+    expect(result.current).toEqual({ config: null, arm: '', palette: null, vocabulary: null, source: 'none' });
   });
 
   it('returns the SSR-preloaded entry with source preloaded (and on the server render)', () => {

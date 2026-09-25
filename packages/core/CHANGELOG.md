@@ -1,5 +1,99 @@
 # @sentientui/core
 
+## 0.36.0
+
+### Minor Changes
+
+- 2cc598a: Consent fixes and hardening from the 2026-09-24 SDK audit.
+
+  **Consent**
+  - `consentFrom: 'google-consent-mode'` now reads region-scoped defaults (`gtag('consent', 'default', { …, region: ['ES'] })`). Before, a region-scoped denial with a global grant read as granted everywhere, EU visitors included. Pass `region` (e.g. from your CDN's country header) to resolve them exactly. Without it, a region-scoped denial reads as denied until an `update`.
+  - New `consentFrom: 'shopify'` preset (Shopify Customer Privacy API). On a Shopify storefront the snippet uses it automatically when neither `consent` nor `consentFrom` is set, because Shopify's own banner and every Shopify cookie-banner app report into it.
+  - **Behavior change:** `consentFrom: 'tcf'` now requires purposes 1, 5, 6 and 8 (storage, content profiling, personalised content, content measurement; 8 may rest on legitimate interest) instead of purpose 1 alone, and takes an optional `vendorId`. Sites whose CMP grants only purpose 1 stay gated. Only a refusal of purpose 1 (storage) deletes the visitor's data. Missing profiling purposes only gate, because many CMPs never offer them. Under `purposeOneTreatment` the TC string carries no storage answer, so no TCF signal deletes there: a refusal only gates.
+  - React: withdrawing consent with `preConsentBehavior="statistical_winner"` now forgets the visitor (cookie, assignment cache, decision snapshot), as it already did without it. Engagement capture no longer starts, or POSTs `/v1/section-map`, for a visitor who hasn't consented.
+  - A refusal recorded by a consent source (`consentFrom`) forgets the visitor even when it was given before this page loaded, and `revokeConsent()` / `client.destroy()` forget even when no tracking client ever started (a "Reject" on a manual gate). `consent: false` on its own is a gate, not a refusal, and deletes nothing. Before, only a revocation during a page view with a live tracking client deleted anything, so a "no" given on a CMP settings page or at checkout left the 365-day ID and the decision snapshot in place. Watchers gain `refused()`, which is true only for a recorded "no": a Cookiebot, OneTrust or CookieYes answer, a Shopify `'no'`, a TCF decision that refuses purpose 1 (storage), or a Consent Mode `update` (never a `default`). A platform that is still loading, showing its banner, or reopened by a consented visitor only pauses tracking and keeps the visitor's identity. `forgetVisitor(apiKey)` is exported from `@sentientui/core/consent`.
+  - `client.destroy()` no longer re-creates the retry bucket when its final delivery fails.
+  - Session-level conversions (`goal()`) recorded while consent is pending (in memory only, capped at 100) are sent if consent is granted in the same page view. They are dropped on refusal, dispose, or under DNT/GPC. A consented visitor's goal fired before the consent platform answered used to be lost. This covers the snippet and core's `grantConsent()`, and in React a provider with `preConsentBehavior`. Without `preConsentBehavior`, React has no client before consent, so fire conversions once `useSentient()` returns one, or use `usePageGoal`, which waits for the tracking client. Component goals and exposures from before consent are not recorded: the visitor saw the baseline, and replaying them would credit a variant they never saw. Gated clients expose `gated: true`.
+  - A `decide()` asked while consent is pending is held and sent once consent is granted, so a consented visitor whose consent platform answers after the page starts is still personalized on that page. It is dropped if the visitor has moved to another path.
+  - **Snippet: a consent config it can't use fails closed.** An unknown `consentFrom` or a non-boolean `consent` now keeps tracking off and logs a warning. Before, it was ignored, so every visitor was tracked.
+  - TCF consent recorded in the publisher segment counts too, both in the browser and on the server (`AdaptiveRoot`).
+  - Custom `{ check }` sources take an optional `refused: () => boolean`. Without it they only pause on false.
+  - The decision snapshot is ignored after 30 days, as documented. A decide still in flight when the visitor is forgotten no longer writes the snapshot or assignment cache back. After a failed first decide, the snippet decides again on the next SPA navigation. Hash-router navigations count as page changes for the held decide.
+  - `SentientPersonaScript`'s snapshot fallback skips DNT/GPC browsers and snapshots older than 30 days. It renders nothing when given `consent={false}`, or `consentFrom` without `consent={true}`, unless it was passed a server-decided `persona`, which reads no storage.
+  - A forget-me can't be undone within the page. Every client and queue remembers the project's forget generation and never writes after it changes, even when a later grant creates a new client. A decide or assign still waiting for the session isn't sent once the client is torn down.
+  - Held conversions are replayed one per task, so two identical held clicks stay two conversions. React drops held conversions when the consent source records a refusal. A gated client that was refused (or disposed) holds nothing more, so goals fired after a "no" are never sent on a later accept, and it answers `decide()` with `null` without sending (`client.released`). A disposed or forgotten client sends nothing more: no goals, identify, events or session retries.
+  - The OneTrust cookie parser reads only the real `groups` field. An encoded `groups=…` inside `landingPath` (the landing URL, before any answer) used to read as consent, in the browser and in `AdaptiveRoot`, which now reads the raw `Cookie` header because Next's `cookies()` decodes values.
+  - A consent-gated client that was disposed or destroyed before consent arrived is no longer upgraded by a later `grantConsent()` (it warns instead); call `init()` again. In React a recorded refusal releases the gated client, so goals fired after it are dropped. In React, once a consent source has answered in the page load (across provider remounts), a later "no answer" (for example a banner reset that deletes its cookie) pauses tracking instead of falling back to `AdaptiveRoot`'s server-side read. The snippet pauses the same way. Held goals replay in order, ahead of goals fired after the grant. A goal that reaches a paused client's queue while its first session upsert was still in flight is kept for retry on the next page instead of being dropped. A TCF loading callback after a decision no longer resets it to unknown. A second embed of the snippet restores the live `SentientSnippet` API instead of replacing it. The snippet's pre-boot stub can queue `grantConsent` and `revokeConsent` as well as `goal`.
+  - TCF: a loading callback reads as unknown instead of refused, and under `purposeOneTreatment` purpose 1 is not required.
+  - `renderPrePaintScript` is public API. Render it only once consent is known (see the core README).
+  - The dashboard's no-code install page asks which cookie banner the site uses and writes it into the snippet (`consentFrom`, or `consent: false` for the site's own banner). Choosing "no banner" shows a warning.
+  - **Rollout order:** release these packages to npm before the Shopify theme-embed update. The embed loads the latest snippet, and a snippet older than this release ignores `consentFrom: "shopify"`.
+  - Nothing reads the stored decision snapshot before consent. The snippet's own pass and the inline pre-paint script skip it for `consentFrom` and `consent: false` installs until consent is known (the Shopify theme embed declares `consentFrom: "shopify"` from its next release). A DNT/GPC client's `decide()` resolves `null` at once. A `decide()` asked while consent is pending resolves once it is granted, or `null` on `dispose()`.
+  - The snippet's engagement capture is a lazy chunk (`engagement.global.js`), fetched at boot in parallel with the decide. The always-on bundle drops from about 32 KB to about 28 KB gzip (28,670 bytes as measured by `size-check`, which enforces a 29 KiB ceiling).
+  - The identity cookie is `SameSite=Lax` instead of `Strict`, so a server-side render sees a returning visitor who arrives from another site.
+  - The snippet's editor bundle no longer overwrites the `SentientSnippet` page API when it loads. Preview and editor sessions no longer read the consent platform. A malformed `?sentient_preview=` falls through to an ordinary visit. Lazy chunks load from the snippet's own URL even when another vendor's `snippet.js` is on the page.
+  - React warns once in development when neither `consent` nor `consentFrom` is set. `npx @sentientui/cli init --consent <preset>` writes the gate into the printed snippet.
+  - The snippet loads the consent presets as a separate `consent.global.js` chunk, only on pages that configure a consent source, and the `?sentient_preview=` / `?sentient_persona=` QA modes as `preview.global.js`. Every other page's always-on bundle is smaller. **Behavior change:** `SentientSnippet.consentWatcher(source).read()` returns `null` until the presets chunk has loaded, so subscribe to it rather than reading once at load. A chunk URL that can't be derived (an inlined or renamed snippet) keeps tracking off and warns; set `consentSrc`. Self-hosted installs need the chunk files beside `snippet.global.js`.
+
+  **Hardening**
+  - Browser requests time out: 5 s for the read-only calls (winner, weights) and the session upsert, 15 s for queue deliveries. Decide and assign wait at most 2.5 s for the session; after that they aren't sent at all, so no decision or exposure is recorded for a page that won't show it. A decide or assign that has been sent is never cut short for being slow, because the server has already recorded it. Its answer is applied late, and only a dead connection is released, after 30 s.
+  - Block `href`/`src` values are scheme-checked before rendering: https or a site path only, with no whitespace or control characters.
+  - CSP nonce for injected `<style>`/`<script>`: `nonce` on `init`, `<AdaptiveProvider>`, `<AdaptiveRoot>` (already forwarded) and `window.sentient`. By default the SDK uses a page script's nonce.
+  - The identity cookie is `Secure` on https pages.
+  - A version-pinned snippet loads its lazy chunks (consent presets, editor) with Subresource Integrity.
+  - The DOM scanner handles a burst of DOM changes in one pass, 200 ms after the burst starts, instead of on every mutation.
+
+  **API**
+  - `<Adaptive as="li" className="…">`: the wrapper element and class are configurable (both modes).
+  - `useSessionSegment()` is exported from `@sentientui/react`.
+  - Peer ranges are capped at the majors we test: `react >=18 <20` (the suite runs on 18 and 19), `next >=14 <17`. Packages declare `engines.node >=18.18`.
+
+- fc6d2cd: SSR helpers (`preloadAssignments`, `preloadDecisions`) accept an optional `serverKey` (the project's secret key, server-only). When set, calls carry `X-Sentient-Server-Key`, and the API exempts them from the 100 requests/min per-IP cap meant for browsers — all SSR traffic from one server address used to share that cap whatever the plan. Nothing changes when it is unset; it is never sent when `window` exists.
+
+### Patch Changes
+
+- fc6d2cd: Slot registration (`reportSlots` / `requestSlots`) sends the page's session id alongside any baseline text. The API now stores a reported baseline text only when visitors from several networks, on sessions later scored human with real events, agree on it (or when the project owner confirms it in the dashboard). Without the session id a report is still recorded, but it can never be the vote that stores the text.
+- Updated dependencies [ca64b25]
+  - @sentientui/policy@0.12.1
+
+## 0.35.0
+
+### Minor Changes
+
+- 6dcc0b9: Consent platforms built in. `consentFrom` now accepts `'cookiebot'`, `'onetrust'`, `'cookieyes'`, `'tcf'` (any IAB TCF v2.2 CMP) and `'google-consent-mode'` (any CMP that drives Consent Mode v2), or `{ cmp, category | group | purposes | type }`. The SDK reads each platform's own API and events — accept and withdraw — and Next.js `AdaptiveRoot` reads the platform's own consent cookie on the server, so returning consented visitors get server rendering. The snippet supports the same option (`window.sentient = { consentFrom: 'cookiebot' }`).
+
+  Fixes: a server-resolved consent no longer overrides a mid-visit withdrawal; custom `consentFrom.event` is heard on `document` as well as `window` (CookieYes dispatches on `document`). The consent code lives on `@sentientui/core/consent` and React loads it only when `consentFrom` is set. Style capture now ignores floating widgets and consent banners.
+
+## 0.34.3
+
+### Patch Changes
+
+- 0633527: - Next.js `AdaptiveRoot` now passes the site styles from the server decision to the page. Redesigned versions served through server rendering rendered with no site styling at all (plain palette buttons, unreadable text on dark sections).
+  - Style capture picks the right buttons: buttons are ranked by their size on the page rather than by how often they repeat (a page's main call to action appears once), "main button" means a solid fill that stands out from what's behind it (not a subtle chip), and icon-only controls are no longer captured as buttons. Re-capture your site styles after upgrading.
+
+## 0.34.2
+
+### Patch Changes
+
+- 14cfb6f: Redesigned versions keep the text colour of the site styles they borrow. A captured style whose class list doesn't set a text colour (the colour was inherited from the section around it) now records that, and both renderers apply the measured colour to the borrowing element — previously such a button could render with dark text on a dark fill when used somewhere else on the page. Re-capture your site styles (Settings → Site styles → Refresh from your site) after upgrading.
+
+## 0.34.1
+
+### Patch Changes
+
+- e125fe4: Redesign works on components, not just sections, and on Tailwind v4 sites.
+
+  - React: an `<Adaptive>` that wraps a component (`<Adaptive><CtaButtons /></Adaptive>`) was reported as unaddressable and could not be generated for at all. Its structure is now captured for redesigns (the whole region is replaced), while per-element rewording stays off because React can't see a component's inner text.
+  - Style and region capture read modern CSS colours. Browsers report Tailwind v4 colours as `lab()`/`oklch()`, which capture couldn't read, so a site's filled primary button lost its fill and grey text lost its colour. They are now converted to `rgb` (in the editor-only bundles; nothing is added for visitors).
+
+## 0.34.0
+
+### Minor Changes
+
+- b79562c: Redesigned sections render with your site's own styles. Generated sections (heroes, feature bands) now borrow the class lists your site already uses — its buttons, headings, text and section backgrounds — instead of approximating them with a color palette. New: `@sentientui/core/style-sample` (loaded only in dashboard-opened sessions), `getStyleVocabulary()`, heading level 1 in composition blocks (only where the region already holds the page's main heading), and `renderCompose` in `@sentientui/react`. Regions now report the page they live on, so a generated section can agree with the page around it.
+- 46e7db2: Generated versions now edit the region you wrote, element by element: new button labels land inside your own buttons (classes, links, icons intact), with optional hide / reorder / emphasis swap. The SDKs report each region's structure so generation can see it, and tell the server what a page can render so no visitor is ever assigned a version their page can't show. Region capture ships as the new `@sentientui/core/region` entry.
+- 0c6c86b: `<Adaptive>` now accepts `variants` and children together: your hand-written versions and dashboard-generated ones compete in one experiment, with your children as the original. A component that previously ran with `variants` only keeps working unchanged; moving it into a combined experiment is an explicit Migrate action in the dashboard, which archives its earlier results. Also fixes the consent-gated client dropping the page's render capabilities, which kept Rewrite versions from being served there.
+
 ## 0.33.0
 
 ### Minor Changes

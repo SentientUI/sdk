@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createDOMScanner } from './scanner';
+import { createDOMScanner, OBSERVE_BATCH_MS } from './scanner';
 
 describe('createDOMScanner', () => {
   beforeEach(() => {
@@ -203,7 +203,7 @@ describe('createDOMScanner', () => {
     const el = document.createElement('section');
     el.setAttribute('data-sentient-id', 'late');
     document.querySelector('main')!.appendChild(el);
-    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, OBSERVE_BATCH_MS + 10));
     expect(events.flatMap((e) => e.nodes).find((n) => n.componentId === 'late')?.semanticType).toBe('faq');
     scanner.destroy();
   });
@@ -415,5 +415,50 @@ describe('locator emission', () => {
     for (const n of result.nodes) {
       if (n.locator) expect(n.locator).toHaveProperty('v', 1);
     }
+  });
+});
+
+describe('createDOMScanner — batched observation (audit S11)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    document.body.innerHTML = '';
+  });
+
+  it('a burst of insertions is scanned once, after OBSERVE_BATCH_MS; transient nodes are skipped', async () => {
+    vi.useFakeTimers();
+    const scanner = createDOMScanner();
+    const added = vi.fn();
+    scanner.observe(added);
+    for (let i = 0; i < 20; i++) {
+      const s = document.createElement('section');
+      s.setAttribute('data-sentient-id', `burst-${i}`);
+      document.body.appendChild(s);
+    }
+    const spinner = document.createElement('section');
+    spinner.setAttribute('data-sentient-id', 'spinner');
+    document.body.appendChild(spinner);
+    await Promise.resolve(); // deliver the MutationObserver records
+    spinner.remove();
+    expect(added).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(OBSERVE_BATCH_MS);
+    expect(added).toHaveBeenCalledOnce();
+    const ids = added.mock.calls[0]![0].nodes.map((n: { componentId: string }) => n.componentId);
+    expect(ids).toHaveLength(20);
+    expect(ids).not.toContain('spinner');
+    scanner.destroy();
+  });
+
+  it('destroy cancels a pending batch', async () => {
+    vi.useFakeTimers();
+    const scanner = createDOMScanner();
+    const added = vi.fn();
+    scanner.observe(added);
+    const s = document.createElement('section');
+    s.setAttribute('data-sentient-id', 'x');
+    document.body.appendChild(s);
+    await Promise.resolve();
+    scanner.destroy();
+    vi.advanceTimersByTime(OBSERVE_BATCH_MS * 2);
+    expect(added).not.toHaveBeenCalled();
   });
 });

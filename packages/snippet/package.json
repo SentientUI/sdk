@@ -1,9 +1,12 @@
 {
   "name": "@sentientui/snippet",
-  "version": "0.29.0",
+  "version": "0.32.0",
   "private": false,
   "description": "SentientUI Style-rung snippet for non-React sites — persona attributes and adaptive style tokens from one script tag",
   "license": "MIT",
+  "engines": {
+    "node": ">=18.18"
+  },
   "homepage": "https://sentient-ui.com",
   "repository": {
     "type": "git",
@@ -32,7 +35,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsup && node scripts/stamp-chunk-sri.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "size-check": "tsx scripts/size-check.ts",

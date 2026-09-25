@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { BlockNode } from '@sentientui/core';
-import { renderBlock, applySlotBlocks, setBlockPalette, restoreBlockContainer, sweepOrphanBlocks, BLOCK_ARM_ATTR } from './blocks';
+import { renderBlock, applySlotBlocks, setBlockPalette, setBlockVocabulary, restoreBlockContainer, sweepOrphanBlocks, BLOCK_ARM_ATTR } from './blocks';
 import { applyRegistrySlots } from './apply';
 
 const CTA_ROW: BlockNode = {
@@ -304,5 +304,104 @@ describe('teardown when a composition slot goes away', () => {
     expect(document.getElementById('real')!.style.display).toBe('none');
     sweepOrphanBlocks(document, new Set());
     expect(document.getElementById('real')!.style.display).toBe('flex');
+  });
+});
+
+describe('like: borrowing site styles (native generation phase 2)', () => {
+  const vocabulary = {
+    rev: 'r',
+    images: [],
+    entries: [
+      { id: 'button-primary', role: 'button-primary', classes: 'px-8 py-3 bg-blue-600 text-white rounded-lg', computed: {}, seen: { url: '/', count: 1, at: '' }, source: 'editor' },
+      { id: 'section-dark', role: 'section', classes: 'bg-slate-900 py-24', computed: {}, seen: { url: '/', count: 1, at: '' }, source: 'editor' },
+    ],
+  } as never;
+  afterEach(() => {
+    setBlockVocabulary(null);
+    setBlockPalette(null);
+  });
+
+  it('a resolvable like renders the site class list and no palette paint', () => {
+    setBlockPalette({ primaryBg: '#111827', primaryText: '#ffffff', radius: '8px' });
+    setBlockVocabulary(vocabulary);
+    const el = renderBlock({ type: 'button', like: 'button-primary', label: 'Go', href: 'https://x.test/c' } as never, document)!;
+    expect(el.className).toBe('px-8 py-3 bg-blue-600 text-white rounded-lg');
+    expect(el.style.background).toBe('');
+    expect(el.style.borderRadius).toBe('');
+  });
+
+  it('an unresolvable like falls back to palette styling', () => {
+    setBlockPalette({ primaryBg: '#111827', primaryText: '#ffffff', radius: '8px' });
+    setBlockVocabulary(vocabulary);
+    const el = renderBlock({ type: 'button', like: 'gone', label: 'Go', href: 'https://x.test/c' } as never, document)!;
+    expect(el.className).toBe('');
+    expect(el.style.background).not.toBe('');
+  });
+
+  it('a stack borrowing a class list keeps its layout styles', () => {
+    setBlockVocabulary(vocabulary);
+    const el = renderBlock({ type: 'stack', direction: 'row', gap: 'md', like: 'section-dark', children: [{ type: 'text', value: 'a' }] } as never, document)!;
+    expect(el.className).toBe('bg-slate-900 py-24');
+    expect(el.style.display).toBe('flex');
+  });
+
+  it('a compose arm renders on its site surface, hides the originals, and baseline restores them', () => {
+    setBlockVocabulary(vocabulary);
+    document.body.innerHTML = '<div id="hero"><h1 class="orig">Bodyshop</h1></div>';
+    const hero = document.getElementById('hero')!;
+    const arms = { v3: { surface: { like: 'section-dark' }, tree: { type: 'text', value: 'Insurance repairs' } } } as never;
+    applySlotBlocks(hero, arms, 'v3', document);
+    expect(hero.querySelector('div.bg-slate-900 > p')!.textContent).toBe('Insurance repairs');
+    expect((hero.querySelector('h1.orig') as HTMLElement).style.display).toBe('none');
+    applySlotBlocks(hero, arms, 'baseline', document);
+    expect((hero.querySelector('h1.orig') as HTMLElement).style.display).toBe('');
+  });
+});
+
+describe('inherited text colour (same rule as React)', () => {
+  afterEach(() => setBlockVocabulary(null));
+  it('paints the sampled colour only where the class list does not set one', () => {
+    const at = '2026-09-24T00:00:00.000Z';
+    setBlockVocabulary({
+      rev: 'r', images: [],
+      entries: [
+        { id: 'glass', role: 'button-secondary', classes: 'bg-white/10 border', computed: { color: 'rgb(255, 255, 255)', inheritsColor: true }, seen: { url: '/', count: 1, at }, source: 'editor' },
+        { id: 'blue', role: 'button-primary', classes: 'bg-blue-600 text-white', computed: { color: 'rgb(255, 255, 255)' }, seen: { url: '/', count: 1, at }, source: 'editor' },
+      ],
+    } as never);
+    const glass = renderBlock({ type: 'button', label: 'WhatsApp', href: 'https://example.com/x', like: 'glass' } as never, document)!;
+    expect(glass.className).toBe('bg-white/10 border');
+    expect(glass.style.color).toBe('rgb(255, 255, 255)');
+    const blue = renderBlock({ type: 'button', label: 'Quote', href: 'https://example.com/x', like: 'blue' } as never, document)!;
+    expect(blue.style.color).toBe('');
+  });
+});
+
+describe('renderBlock — URL schemes (audit S14)', () => {
+  it('renders https and site-relative targets, drops anything else', () => {
+    const a = (href: string) => (renderBlock({ type: 'link', label: 'x', href }, document) as HTMLAnchorElement).getAttribute('href');
+    expect(a('https://example.com/p')).toBe('https://example.com/p');
+    expect(a('/pricing')).toBe('/pricing');
+    expect(a('javascript:alert(1)')).toBeNull();
+    expect(a('JaVaScRiPt:alert(1)')).toBeNull();
+    expect(a('data:text/html,<script>1</script>')).toBeNull();
+    expect(a('//evil.example')).toBeNull();
+    expect(a('/\\evil.example')).toBeNull();
+    expect(a('http://example.com')).toBeNull();
+    const b = renderBlock({ type: 'button', label: 'Go', href: 'javascript:void 0' }, document) as HTMLAnchorElement;
+    expect(b.getAttribute('href')).toBeNull();
+    expect(b.textContent).toBe('Go');
+    const img = renderBlock({ type: 'image', src: 'javascript:1', alt: 'a' } as BlockNode, document) as HTMLImageElement;
+    expect(img.getAttribute('src')).toBeNull();
+  });
+});
+
+describe('renderBlock — whitespace in URLs (review S14)', () => {
+  it('rejects a path the browser would turn protocol-relative after stripping tabs/newlines', () => {
+    const a = (href: string) => (renderBlock({ type: 'link', label: 'x', href }, document) as HTMLAnchorElement).getAttribute('href');
+    expect(a('/\t/evil.example')).toBeNull();
+    expect(a('/\n/evil.example')).toBeNull();
+    expect(a('/pricing page')).toBeNull();
+    expect(a('/pricing?x=1')).toBe('/pricing?x=1');
   });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { applyPersonaAttributes, applySlotAttributes, applySlotArms, applyRegistrySlots } from './apply';
 import { resetOpsSheet } from './ops';
 
@@ -137,6 +137,58 @@ describe('applyRegistrySlots (registry mode — server-owned config)', () => {
     const el = document.getElementById('cta')!;
     expect(el.getAttribute('data-sentient-arm')).toBe('urgent');
     expect(el.textContent).toBe('Book a demo');
+  });
+
+  it('keeps child markup when the target has one text node (icon + label)', () => {
+    document.body.innerHTML = '<div id="wrap"><button class="btn"><svg data-icon="a"></svg> Book now </button></div>';
+    applyRegistrySlots({ cta: 'v1' }, { cta: { kind: 'arms', target: '#wrap', content: 'Book your MOT' } }, document);
+    const button = document.querySelector('#wrap button.btn')!;
+    expect(button).not.toBeNull();
+    expect(button.querySelector('svg[data-icon="a"]')).not.toBeNull();
+    expect(button.textContent!.trim()).toBe('Book your MOT');
+  });
+
+  it('falls back to textContent on the target when it holds several texts', () => {
+    document.body.innerHTML = '<div id="band"><h2>Title</h2><p>Sub</p></div>';
+    applyRegistrySlots({ band: 'v1' }, { band: { kind: 'arms', target: '#band', content: 'One line' } }, document);
+    const el = document.getElementById('band')!;
+    expect(el.textContent).toBe('One line');
+    expect(el.children.length).toBe(0);
+  });
+
+  describe('Rewrite (edits) arms', () => {
+    const HTML = '<div id="wrap"><button class="btn"><svg data-icon="a"></svg> Book now </button></div>';
+    async function served() {
+      const { captureRegionSkeleton } = await import('@sentientui/core/region');
+      const s = captureRegionSkeleton(document.getElementById('wrap')!).skeleton!;
+      return { fp: s.fp, leafToNode: s.leafToNode };
+    }
+
+    it('rewrites the label inside the site button and keeps its icon; content is ignored', async () => {
+      document.body.innerHTML = HTML;
+      const sk = await served();
+      applyRegistrySlots(
+        { cta: 'v1' },
+        { cta: { kind: 'arms', target: '#wrap', content: 'IGNORED', edits: { edits: { nodes: { '0': { text: 'Book your MOT' } } }, ...sk } } },
+        document,
+      );
+      const button = document.querySelector('#wrap button.btn')!;
+      expect(button.querySelector('svg[data-icon="a"]')).not.toBeNull();
+      expect(button.textContent!.trim()).toBe('Book your MOT');
+    });
+
+    it('a stale fingerprint reports drift and leaves the page alone', () => {
+      document.body.innerHTML = HTML;
+      const onDrift = vi.fn();
+      applyRegistrySlots(
+        { cta: 'v1' },
+        { cta: { kind: 'arms', target: '#wrap', edits: { edits: { nodes: { '0': { text: 'X' } } }, fp: 'deadbeefdeadbeef', leafToNode: [0] } } },
+        document,
+        { onDrift },
+      );
+      expect(onDrift).toHaveBeenCalledWith('cta', 'deadbeefdeadbeef');
+      expect(document.querySelector('#wrap button')!.textContent!.trim()).toBe('Book now');
+    });
   });
 
   it('never uses innerHTML — content with markup lands as literal text', () => {

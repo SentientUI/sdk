@@ -1,4 +1,4 @@
-import type { SlotOps } from '@sentientui/core';
+import { applyNonce, type SlotOps } from '@sentientui/core';
 import { resolveLocatorOne } from './locator';
 import { CSS_PROP, cssValueSafe } from './css-guard';
 
@@ -13,6 +13,16 @@ import { CSS_PROP, cssValueSafe } from './css-guard';
 // unified.
 
 const HTTPS = /^https:\/\//i;
+
+/** A block's href/src, or null when it isn't one the server could have
+ *  validated: absolute https, or a site-relative path (compose arms). The
+ *  server checks every block, but the renderer is the last line — a stale
+ *  snapshot or a bypassed validator must not reach `javascript:` (audit S14). */
+export function safeBlockUrl(v: unknown): string | null {
+  // Control characters and whitespace are rejected outright: browsers strip
+  // tab/newline from URLs, so `/\t/evil.example` would become `//evil.example`.
+  return typeof v === 'string' && !/[\s\x00-\x1f\\]/.test(v) && (HTTPS.test(v) || (v[0] === '/' && v[1] !== '/')) ? v : null;
+}
 
 /** slotId → generated rule body. Rewritten wholesale on each apply so reapply()
  *  after SPA navigation never duplicates or leaks rules. */
@@ -33,7 +43,7 @@ function writeSheet(doc: Document): void {
   if (!styleEl || !styleEl.isConnected) {
     styleEl = doc.querySelector('style[data-sentient-ops]');
     if (!styleEl) {
-      styleEl = doc.createElement('style');
+      styleEl = applyNonce(doc.createElement('style'), doc);
       styleEl.setAttribute('data-sentient-ops', '');
       (doc.head ?? doc.documentElement).appendChild(styleEl);
     }

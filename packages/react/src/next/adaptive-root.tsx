@@ -1,4 +1,5 @@
 import { deriveSessionSegment, extractTrackedParams, matchedAgentToken } from '@sentientui/core';
+import { consentFromCookies } from '@sentientui/core/consent';
 import type { SlotDeclInput, SlotResult } from '@sentientui/core';
 import { cookies, headers } from 'next/headers';
 // `type JSX` from react, not the global namespace removed in @types/react@19
@@ -44,6 +45,7 @@ export type AdaptiveRootProps = Omit<
   | 'initialSlots'
   | 'initialSlotConfig'
   | 'initialPalette'
+  | 'initialVocabulary'
   | 'initialPersona'
   | 'initialLayoutOrder'
   | 'declaredSections'
@@ -51,16 +53,19 @@ export type AdaptiveRootProps = Omit<
   | 'consentFrom'
 > & {
   /**
-   * Cookie-based consent source — see `AdaptiveProviderProps.consentFrom`.
+   * Consent source — see `AdaptiveProviderProps.consentFrom`. A platform preset
+   * (`'cookiebot'`, `'onetrust'`, `'cookieyes'`, `'tcf'`, `'google-consent-mode'`)
+   * or a cookie. Resolved on the server from the platform's own cookie, so a
+   * visitor who already consented gets SSR with no layout shift.
    *
-   * Narrowed to the cookie form: AdaptiveRoot is a Server Component and spreads
+   * No `check` form: AdaptiveRoot is a Server Component and spreads
    * this straight into its client boundary, and a function prop crossing the
    * server→client boundary throws at render ("Functions cannot be passed
    * directly to Client Components"). The provider's type accepted `check`, so
    * a Cookiebot-style predicate typechecked here and then crashed the layout.
    * Need a JS-API CMP predicate? Use `<AdaptiveProvider>` in a client component.
    */
-  consentFrom?: Omit<NonNullable<AdaptiveProviderProps['consentFrom']>, 'check'>;
+  consentFrom?: Exclude<NonNullable<AdaptiveProviderProps['consentFrom']>, { check?: () => boolean; cmp?: undefined }> | { cmp?: undefined; cookie?: string; value?: string; event?: string };
   /**
    * Code-variant components to assign server-side (SEO-safe). Optional — an
    * `<Adaptive>` works without an entry here and assigns after mount.
@@ -173,6 +178,25 @@ function assignmentsToBlocks(assignments: ServerAssignments): AgentBlock[] {
 }
 
 /**
+ * A cookie's value exactly as the browser sent it. The CMP parsers need the
+ * raw form: Next's cookies() decodes every value, which turns an encoded
+ * `&groups=C0002:1` inside OneTrust's `landingPath` (a crafted link, before
+ * any answer) into a real field that read as consent on the server — SSR
+ * then minted a session and handed the client consent={true} (grader R8 NEW-1).
+ * First match wins, like the browser's document.cookie read. A consent cookie
+ * set only by middleware in this request is not in the header: the server
+ * then reads "unknown" and the browser decides (fail-closed).
+ */
+function rawCookie(header: string | null | undefined, name: string): string | undefined {
+  if (!header) return undefined;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq > 0 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return undefined;
+}
+
+/**
  * Next.js Server Component that resolves variant assignments (and optionally
  * section layout order) server-side for zero layout shift on first paint.
  *
@@ -266,11 +290,15 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   // had not consented, contradicting the documented contract ("no SDK is
   // initialised, no cookies are written, no events are sent").
   const cf = providerProps.consentFrom;
+  // The platform's own cookie (Cookiebot CookieConsent, OneTrust
+  // OptanonConsent, CookieYes, the TCF string). Unknown (no cookie yet, a
+  // JS-only source like Consent Mode) stays undefined → gated below; the
+  // browser decides after hydration. A fixed-value cookie comparison could not
+  // express Cookiebot's or OneTrust's format, so consented visitors on those
+  // platforms were never server-rendered.
   const consent =
     providerProps.consent ??
-    (cf?.cookie
-      ? cookieStore.get(cf.cookie)?.value === (cf.value ?? 'accepted')
-      : undefined);
+    (cf ? (consentFromCookies(cf, (name) => rawCookie(headerStore.get('cookie'), name)) ?? undefined) : undefined);
   const skipSsr = doNotTrack || consent === false || (cf != null && consent !== true);
 
   // SSR preload MUST hit the same API host the client will use, otherwise the
@@ -298,6 +326,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   let initialSlots: Record<string, SlotResult> | undefined;
   let initialSlotConfig: LoadAdaptiveDecisionResult['slotConfig'];
   let initialPalette: LoadAdaptiveDecisionResult['palette'];
+  let initialVocabulary: LoadAdaptiveDecisionResult['vocabulary'];
   let initialPersona: { persona: string; confidence: number } | null = null;
   let ssrSessionId: string | undefined;
 
@@ -342,6 +371,12 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
     initialSlots = decision.slots;
     initialSlotConfig = decision.slotConfig;
     initialPalette = decision.palette;
+    // The site styles the served Redesign trees borrow. Without forwarding
+    // them, SSR sites (Bodyshop, 2026-09-24) rendered an approved redesign
+    // with no site classes at all — black palette buttons and near-invisible
+    // text on a navy card — because the client never re-decides a preloaded
+    // slot and so never receives them either.
+    initialVocabulary = decision.vocabulary;
     initialPersona =
       decision.persona !== undefined
         ? { persona: decision.persona, confidence: decision.confidence ?? 0 }
@@ -369,13 +404,20 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
 
   // Single-writer inline script — ALWAYS the first child, before any markup
   // that CSS keyed on the persona attributes could style.
-  const personaScript = (
+  // Not for a request that must not be tracked (DNT/GPC, consent refused or
+  // not yet known): with no server decision the script's fallback reads the
+  // stored snapshot from localStorage, and reading the device's storage before
+  // consent is exactly what a consent gate exists to prevent. The browser SDK
+  // takes over once the visitor's platform says yes.
+  const personaScript = skipSsr ? null : (
     <SentientPersonaScript apiKey={providerProps.apiKey} persona={initialPersona} nonce={nonce} />
   );
 
   const client = (
     <AdaptiveRootClient
       {...providerProps}
+      // The same nonce also covers the <style> the client injects (reveal).
+      nonce={nonce}
       // Forward the server-resolved value so a consented visitor's client does
       // not start gated and re-resolve the same cookie on mount.
       consent={consent}
@@ -389,6 +431,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       // settled, so the client does not decide the same slot a second time.
       initialSlotConfig={initialSlotConfig}
       initialPalette={initialPalette}
+      initialVocabulary={initialVocabulary}
       initialPersona={initialPersona ?? undefined}
       sessionSegment={sessionSegment}
       ssrSessionId={ssrSessionId}

@@ -1,6 +1,13 @@
 import type { Framework } from './detect.js';
 
-export function wrapSnippet(framework: Framework, envVar: string): string {
+/** The consent presets `--consent` accepts (the SDK's `consentFrom` presets). */
+export const CONSENT_PRESETS = ['cookiebot', 'onetrust', 'cookieyes', 'tcf', 'google-consent-mode', 'shopify'] as const;
+export type ConsentPreset = (typeof CONSENT_PRESETS)[number];
+
+export function wrapSnippet(framework: Framework, envVar: string, consent?: ConsentPreset): string {
+  // Rendered into the provider tag: with --consent the SDK waits for the
+  // platform; without it the snippet stays as-is and consentNote() says so.
+  const c = consent ? ` consentFrom="${consent}"` : '';
   switch (framework) {
     case 'next-app':
       // AdaptiveRoot, not AdaptiveProvider: the App Router layout is a Server
@@ -16,7 +23,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     // attributes on <html> before first paint.
     <html lang="en" suppressHydrationWarning>
       <body>
-        <AdaptiveRoot apiKey={process.env.${envVar} ?? ''}>
+        <AdaptiveRoot apiKey={process.env.${envVar} ?? ''}${c}>
           {children}
         </AdaptiveRoot>
       </body>
@@ -30,7 +37,7 @@ import { AdaptiveProvider } from '@sentientui/react';
 
 export default function App({ Component, pageProps }: AppProps) {
   return (
-    <AdaptiveProvider apiKey={process.env.${envVar} ?? ''}>
+    <AdaptiveProvider apiKey={process.env.${envVar} ?? ''}${c}>
       <Component {...pageProps} />
     </AdaptiveProvider>
   );
@@ -42,7 +49,7 @@ import { AdaptiveProvider } from '@sentientui/react';
 import App from './App';
 
 createRoot(document.getElementById('root')!).render(
-  <AdaptiveProvider apiKey={import.meta.env.${envVar} ?? ''}>
+  <AdaptiveProvider apiKey={import.meta.env.${envVar} ?? ''}${c}>
     <App />
   </AdaptiveProvider>,
 );`;
@@ -53,7 +60,7 @@ createRoot(document.getElementById('root')!).render(
 import { AdaptiveProvider } from '@sentientui/react';
 
 // inside the Layout/App component body:
-<AdaptiveProvider apiKey={import.meta.env.${envVar} ?? ''}>
+<AdaptiveProvider apiKey={import.meta.env.${envVar} ?? ''}${c}>
   <Outlet />
 </AdaptiveProvider>`;
     case 'cra':
@@ -63,7 +70,7 @@ import { AdaptiveProvider } from '@sentientui/react';
 import App from './App';
 
 createRoot(document.getElementById('root')!).render(
-  <AdaptiveProvider apiKey={process.env.${envVar} ?? ''}>
+  <AdaptiveProvider apiKey={process.env.${envVar} ?? ''}${c}>
     <App />
   </AdaptiveProvider>,
 );`;
@@ -72,14 +79,27 @@ createRoot(document.getElementById('root')!).render(
   }
 }
 
-export function unknownInstructions(): string {
+export function unknownInstructions(consent?: ConsentPreset): string {
   return `[sentientui] could not detect a supported framework (Next.js, Vite, Remix, CRA).
 Manual setup:
   1. Install the SDK:        npm install @sentientui/react
-  2. Wrap your app root in:  <AdaptiveProvider apiKey="">…</AdaptiveProvider>
+  2. Wrap your app root in:  <AdaptiveProvider apiKey=""${consent ? ` consentFrom="${consent}"` : ''}>…</AdaptiveProvider>
   3. Leave the key empty for local mode; decisions are simulated on-device.
   4. Open your app with ?sentient_persona=a, then ?sentient_persona=b, to preview two personas
      (keyless local mode accepts any key).`;
+}
+
+/** Printed after the snippet. Tracking is default-on, so an install made
+ *  without --consent tracks every visitor from first paint (audit S6). */
+export function consentNote(consent?: ConsentPreset): string {
+  if (consent) {
+    return `Consent: tracking waits for ${consent} to grant, stops on withdrawal, and forgets the visitor on a recorded refusal.`;
+  }
+  return [
+    'Consent: none configured — tracking starts on first paint for every visitor.',
+    '  EU/UK visitors need consent first. Re-run with --consent <cookiebot|onetrust|cookieyes|tcf|google-consent-mode|shopify>,',
+    '  or add consentFrom={{ cookie, value, event }} for your own banner. https://sentient-ui.com/docs#consent',
+  ].join('\n');
 }
 
 export function finale(framework: Framework): string {

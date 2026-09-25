@@ -108,7 +108,10 @@ describe('AdaptiveSlot rendering', () => {
     expect(slot.querySelector('button')!.textContent).toBe('Start free');
   });
 
-  it('renders served content string instead of children', () => {
+  // This test used to assert the bug: the served copy replaced the whole
+  // <button> with a bare string, so a generated version of a styled CTA
+  // rendered as unstyled text (Bodyshop, 2026-09-23).
+  it('puts served content inside the developer’s element, keeping its markup and classes', () => {
     const Wrapper = wrapperWith({
       initialSlotConfig: { hero: { kind: 'arms', content: 'Generated headline' } },
       initialSlots: { hero: 'evaluator_v1' },
@@ -116,14 +119,85 @@ describe('AdaptiveSlot rendering', () => {
     const { container } = render(
       <Wrapper>
         <AdaptiveSlot id="hero">
-          <button>Start free</button>
+          <button className="btn btn-primary">
+            <svg data-icon="arrow" />
+            Start free
+          </button>
         </AdaptiveSlot>
       </Wrapper>,
     );
     const slot = container.querySelector('[data-sentient-slot="hero"]')!;
-    expect(slot.textContent).toBe('Generated headline');
-    expect(slot.querySelector('button')).toBeNull();
+    const button = slot.querySelector('button')!;
+    expect(button).not.toBeNull();
+    expect(button.className).toBe('btn btn-primary');
+    expect(button.querySelector('svg[data-icon="arrow"]')).not.toBeNull();
+    expect(button.textContent).toBe('Generated headline');
     expect(slot.getAttribute('data-sentient-arm')).toBe('evaluator_v1');
+  });
+
+  it('reaches text passed as children of a custom component', () => {
+    function Cta({ children }: { children: ReactNode }) {
+      return <a className="cta" href="/book">{children}</a>;
+    }
+    const Wrapper = wrapperWith({
+      initialSlotConfig: { hero: { kind: 'arms', content: 'Book your MOT' } },
+      initialSlots: { hero: 'evaluator_v1' },
+    });
+    const { container } = render(
+      <Wrapper>
+        <AdaptiveSlot id="hero"><Cta>Book now</Cta></AdaptiveSlot>
+      </Wrapper>,
+    );
+    const a = container.querySelector('a.cta')!;
+    expect(a.textContent).toBe('Book your MOT');
+    expect(a.getAttribute('href')).toBe('/book');
+  });
+
+  // Bodyshop 2026-09-23: two <a> buttons under one flex <div>. Keeping the
+  // root and flattening its inside still rendered a sentence where the buttons
+  // were. A single string has nowhere structural to go in a multi-text region,
+  // so the original renders and no exposure is recorded.
+  it('refuses a content arm on a multi-text region: children render, no exposure', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({
+      initialSlotConfig: { cta: { kind: 'arms', content: 'Get in touch Send photos over WhatsApp' } },
+      initialSlots: { cta: 'unknown_v1' },
+    });
+    const { container } = render(
+      createElement(
+        Wrapper,
+        null,
+        <AdaptiveSlot id="cta">
+          <div className="flex gap-4">
+            <a className="btn-primary" href="/contact">Get in touch</a>
+            <a className="btn-outline" href="https://api.whatsapp.com/send">WhatsApp photos</a>
+          </div>
+        </AdaptiveSlot>,
+      ),
+    );
+    expect(container.querySelector('a.btn-primary')!.textContent).toBe('Get in touch');
+    expect(container.querySelector('a.btn-outline')!.textContent).toBe('WhatsApp photos');
+    const exposures = client.track.mock.calls.filter((c) => (c[0] as { eventType?: string })?.eventType === 'variant_assigned');
+    expect(exposures.length).toBe(0);
+  });
+
+  it('renders children and records no exposure when the text is unreachable (label prop)', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    function Cta({ label }: { label: string }) {
+      return <button className="cta">{label}</button>;
+    }
+    const Wrapper = wrapperWith({
+      initialSlotConfig: { hero: { kind: 'arms', content: 'Generated' } },
+      initialSlots: { hero: 'evaluator_v1' },
+    });
+    const { container } = render(
+      createElement(Wrapper, null, <AdaptiveSlot id="hero"><Cta label="Book now" /></AdaptiveSlot>),
+    );
+    expect(container.querySelector('button.cta')!.textContent).toBe('Book now');
+    const exposures = client.track.mock.calls.filter((c) => (c[0] as { eventType?: string })?.eventType === 'variant_assigned');
+    expect(exposures.length).toBe(0);
   });
 
   it('renders the served arm’s block tree; baseline arm (no tree) renders children', () => {
@@ -396,7 +470,12 @@ describe('baseline text reporting', () => {
     );
     const { rerender } = render(createElement(Wrapper, null, el));
     rerender(createElement(Wrapper, null, el)); // client lands after the provider init effect
-    expect(client.reportSlots).toHaveBeenCalledWith(['hero'], { hero: 'Start free' });
+    const [ids, texts, skeletons] = vi.mocked(client.reportSlots).mock.calls[0]!;
+    expect(ids).toEqual(['hero']);
+    expect(texts).toEqual({ hero: 'Start free' });
+    // The region's structure rides the same first registration (spec
+    // 2026-09-23 §4.1): one action node, the button.
+    expect((skeletons as Record<string, { nodes: Array<{ role: string }> }>).hero.nodes.map((n) => n.role)).toEqual(['action']);
   });
 
   it('reportBaselineText={false} registers the id with no text — for slots wrapping personalized content', () => {
@@ -466,7 +545,10 @@ describe('<Adaptive> without variants is the slot', () => {
     const { container, rerender } = render(createElement(Wrapper, null, el));
     rerender(createElement(Wrapper, null, el)); // client lands after the provider init effect
     expect(container.querySelector('[data-sentient-slot="hero-cta"]')?.textContent).toBe('Start free trial');
-    expect(requestSlots).toHaveBeenCalledWith(['hero-cta'], { 'hero-cta': 'Start free trial' });
+    const [ids, texts, extras] = requestSlots.mock.calls[0]!;
+    expect(ids).toEqual(['hero-cta']);
+    expect(texts).toEqual({ 'hero-cta': 'Start free trial' });
+    expect((extras as { render: Record<string, unknown> }).render['hero-cta']).toMatchObject({ forms: false, compose: true, content: true });
   });
 
   it('renders the served dashboard version in place of the children', async () => {
@@ -480,5 +562,297 @@ describe('<Adaptive> without variants is the slot', () => {
     );
     expect(container.textContent).toContain('Generated headline');
     expect(container.textContent).not.toContain('Original');
+  });
+});
+
+// Native generation phase 1 (spec 2026-09-23 §4.5/§4.6): Rewrite arms land on
+// the developer's own elements; a page that can't take one says so up front
+// (render caps) or reports drift afterwards — it never silently eats a trial.
+describe('Rewrite (edits) arms', () => {
+  const CTA = (
+    <div className="flex gap-4">
+      <a className="btn-primary" href="/contact">Get in touch</a>
+      <a className="btn-outline" href="https://api.whatsapp.com/send">WhatsApp photos</a>
+    </div>
+  );
+  const exposuresOf = (client: ReturnType<typeof makeClient>) =>
+    client.track.mock.calls.filter((c) => (c[0] as { eventType?: string })?.eventType === 'variant_assigned');
+
+  async function fpOf(node: ReactNode): Promise<string> {
+    const { reactFingerprint } = await import('./slot-text.js');
+    return reactFingerprint(node)!;
+  }
+
+  it('renders the new labels inside the site buttons, with one exposure', async () => {
+    const client = makeClient({ reportDrift: vi.fn() });
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({
+      initialSlotConfig: {
+        cta: { kind: 'arms', edits: { edits: { nodes: { '0': { text: 'Book a free assessment' } } }, fp: await fpOf(CTA), leafToNode: [0, 1] } },
+      },
+      initialSlots: { cta: 'unknown_v1' },
+    });
+    const { container } = render(createElement(Wrapper, null, <AdaptiveSlot id="cta">{CTA}</AdaptiveSlot>));
+    expect(container.querySelector('a.btn-primary')!.textContent).toBe('Book a free assessment');
+    expect(container.querySelector('a.btn-outline')!.textContent).toBe('WhatsApp photos');
+    expect(exposuresOf(client)).toHaveLength(1);
+  });
+
+  it('a stale fingerprint renders the original, records no exposure, and reports drift', () => {
+    const reportDrift = vi.fn();
+    const client = makeClient({ reportDrift });
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({
+      initialSlotConfig: { cta: { kind: 'arms', edits: { edits: { nodes: { '0': { text: 'X' } } }, fp: 'deadbeefdeadbeef', leafToNode: [0, 1] } } },
+      initialSlots: { cta: 'unknown_v1' },
+    });
+    const el = <AdaptiveSlot id="cta">{CTA}</AdaptiveSlot>;
+    const { container, rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el)); // client lands after the provider init effect
+    expect(container.querySelector('a.btn-primary')!.textContent).toBe('Get in touch');
+    expect(exposuresOf(client)).toHaveLength(0);
+    expect(reportDrift).toHaveBeenCalledWith('cta', 'deadbeefdeadbeef', expect.any(String), 'fp_mismatch');
+  });
+
+  it('an unserved region asks with its fingerprint and caps, and reports its skeleton', async () => {
+    const requestSlots = vi.fn();
+    const client = makeClient({ requestSlots, onSlotsChanged: vi.fn(() => () => undefined) });
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith();
+    const el = <AdaptiveSlot id="cta">{CTA}</AdaptiveSlot>;
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    const extras = requestSlots.mock.calls[0]![2] as {
+      render: Record<string, { fp: string; forms: boolean; content: boolean }>;
+      skeletons: Record<string, { leaves: string[] }>;
+    };
+    expect(extras.render.cta).toEqual({ fp: await fpOf(CTA), forms: false, compose: true, content: false });
+    expect(extras.skeletons.cta.leaves).toEqual(['Get in touch', 'WhatsApp photos']);
+  });
+
+  // Since 0.35.1: the DOM capture is still sent, marked non-editable, so the
+  // region can be REDESIGNED (replaced whole) — never edited per element.
+  it('text behind a prop is captured non-editable, never addressed for edits', () => {
+    const requestSlots = vi.fn();
+    const client = makeClient({ requestSlots, onSlotsChanged: vi.fn(() => () => undefined) });
+    mockedInit.mockReturnValue(client as never);
+    function Cta({ label }: { label: string }) {
+      return <button>{label}</button>;
+    }
+    const Wrapper = wrapperWith();
+    const el = <AdaptiveSlot id="cta"><Cta label="Book now" /></AdaptiveSlot>;
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    const extras = requestSlots.mock.calls[0]![2] as {
+      skeletons: Record<string, { editable?: boolean; leaves: string[]; fp: string; nodes: Array<{ restylable: boolean }> }>;
+      render: Record<string, { fp?: string }>;
+    };
+    const sk = extras.skeletons.cta!;
+    expect(sk.editable).toBe(false);
+    expect(sk.leaves).toEqual(['Book now']);
+    expect(sk.nodes.every((n) => n.restylable === false)).toBe(true);
+    // The page's declared fingerprint never matches the capture, so no Rewrite
+    // arm bound to it can be drawn here (CONTRACTS §2).
+    expect(extras.render.cta!.fp).not.toBe(sk.fp);
+  });
+
+  it('a component with no props (the Bodyshop CTA shape) is captured too', () => {
+    const requestSlots = vi.fn();
+    const client = makeClient({ requestSlots, onSlotsChanged: vi.fn(() => () => undefined) });
+    mockedInit.mockReturnValue(client as never);
+    function CtaButtons() {
+      return (
+        <div className="flex gap-4">
+          <a href="/contact" className="px-8 bg-blue-600">Get in touch</a>
+          <a href="https://api.whatsapp.com/send" className="px-8 border">WhatsApp photos</a>
+        </div>
+      );
+    }
+    const Wrapper = wrapperWith();
+    const el = <AdaptiveSlot id="cta"><CtaButtons /></AdaptiveSlot>;
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    const sk = (requestSlots.mock.calls[0]![2] as { skeletons: Record<string, { editable?: boolean; leaves: string[]; nodes: Array<{ role: string; href?: string }> }> }).skeletons.cta!;
+    expect(sk.editable).toBe(false);
+    expect(sk.leaves).toEqual(['Get in touch', 'WhatsApp photos']);
+    expect(sk.nodes.map((n) => [n.role, n.href])).toEqual([['action', '/contact'], ['action', 'https://api.whatsapp.com/send']]);
+  });
+
+  it('a preview (override) with a stale fingerprint reports no drift', () => {
+    const reportDrift = vi.fn();
+    const client = makeClient({ reportDrift });
+    mockedInit.mockReturnValue(client as never);
+    applyScenario({
+      slotConfig: { cta: { kind: 'arms', edits: { edits: { nodes: { '0': { text: 'X' } } }, fp: 'deadbeefdeadbeef', leafToNode: [0, 1] } } },
+      slots: { cta: 'unknown_v1' },
+    });
+    const el = <AdaptiveSlot id="cta">{CTA}</AdaptiveSlot>;
+    const Wrapper = wrapperWith();
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    expect(reportDrift).not.toHaveBeenCalled();
+    resetScenario();
+  });
+});
+
+describe('Refresh from page (trusted skeleton overwrite)', () => {
+  it('forces the original, captures the region inside the slot, and posts it with the editor token', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchSpy);
+    // The editor session is exchanged from a fragment code (E1); here the
+    // tab already holds the exchanged token.
+    (await import('./editor-session.js')).resetEditorSessionForTests();
+    sessionStorage.setItem('__snt_editor_token', 'tok123');
+    window.history.replaceState(null, '', '/?sentient_refresh_region=cta');
+    const { maybeStartCellPreview } = await import('./cell-preview.js');
+    maybeStartCellPreview('https://api.example.com/v1');
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({
+      // A served version that must NOT be what gets captured.
+      initialSlotConfig: { cta: { kind: 'arms', content: 'Served copy' } },
+      initialSlots: { cta: 'unknown_v1' },
+    });
+    const el = (
+      <AdaptiveSlot id="cta">
+        <div className="flex">
+          <a href="/contact">Get in touch</a>
+          <a href="https://api.whatsapp.com/send">WhatsApp photos</a>
+        </div>
+      </AdaptiveSlot>
+    );
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    // The post waits on the (async) editor session.
+    await vi.waitFor(() =>
+      expect(fetchSpy.mock.calls.find(([u]) => String(u).endsWith('/editor/region-skeleton'))).toBeDefined());
+    const post = fetchSpy.mock.calls.find(([u]) => String(u).endsWith('/editor/region-skeleton'));
+    sessionStorage.clear();
+    expect((post![1] as RequestInit).headers).toMatchObject({ authorization: 'Bearer tok123' });
+    const body = JSON.parse(String((post![1] as RequestInit).body));
+    expect(body.slotId).toBe('cta');
+    expect(body.skeleton.leaves).toEqual(['Get in touch', 'WhatsApp photos']);
+    window.history.replaceState(null, '', '/');
+    resetScenario();
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('hybrid <Adaptive> (authored arms)', () => {
+  it('renders the served authored arm from variants, including server-side', () => {
+    const Wrapper = wrapperWith({ initialSlotConfig: { hero: { kind: 'arms' } }, initialSlots: { hero: 'authored.quote' } });
+    const el = (
+      <AdaptiveSlot id="hero" variants={{ quote: <a className="q">Get a quote</a> }}>
+        <a className="b">Get in touch</a>
+      </AdaptiveSlot>
+    );
+    const { container } = render(createElement(Wrapper, null, el));
+    expect(container.querySelector('a.q')!.textContent).toBe('Get a quote');
+    expect(container.querySelector('a.b')).toBeNull();
+    expect(renderToString(createElement(Wrapper, null, el))).toContain('Get a quote');
+  });
+
+  it('renders children and records nothing while the server blocks a legacy id', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({ initialSlotConfig: { hero: { kind: 'arms', blocked: 'variant_history' } } });
+    const el = (
+      <AdaptiveSlot id="hero" variants={{ quote: <b>q</b> }}>
+        <b className="base">base</b>
+      </AdaptiveSlot>
+    );
+    const { container, rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    expect(container.querySelector('b.base')).not.toBeNull();
+    const exposures = client.track.mock.calls.filter((c) => (c[0] as { eventType?: string })?.eventType === 'variant_assigned');
+    expect(exposures).toHaveLength(0);
+  });
+
+  it('reports what a served authored arm rendered', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({ initialSlotConfig: { hero: { kind: 'arms' } }, initialSlots: { hero: 'authored.quote' } });
+    const el = (
+      <AdaptiveSlot id="hero" variants={{ quote: <a href="/q">Get a quote</a> }}>
+        <a href="/c">Get in touch</a>
+      </AdaptiveSlot>
+    );
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    const call = vi.mocked(client.reportSlots).mock.calls.find((c) => c[3] !== undefined);
+    expect(call![3]).toMatchObject({ hero: [{ key: 'quote', text: 'Get a quote' }] });
+  });
+});
+
+describe('Redesign (compose) arms', () => {
+  const vocabulary = {
+    rev: 'r',
+    images: [],
+    entries: [
+      { id: 'section-dark', role: 'section', classes: 'bg-slate-900 py-24', computed: {}, seen: { url: '/', count: 1, at: '' }, source: 'editor' },
+      { id: 'heading-1', role: 'heading-1', classes: 'text-4xl font-bold', computed: {}, seen: { url: '/', count: 1, at: '' }, source: 'editor' },
+    ],
+  };
+  const slotConfig = {
+    hero: { kind: 'arms', compose: { unknown_v3: { surface: { like: 'section-dark' }, tree: { type: 'heading', level: 1, like: 'heading-1', value: 'Insurance repairs, done properly' } } } },
+  };
+
+  it('renders the composed section on the site surface, instead of children, with one exposure — and SSR agrees', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({ initialSlotConfig: slotConfig, initialSlots: { hero: 'unknown_v3' }, initialVocabulary: vocabulary });
+    const el = (
+      <AdaptiveSlot id="hero">
+        <h1 className="orig">Bodyshop Manchester</h1>
+      </AdaptiveSlot>
+    );
+    const { container, rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    expect(container.querySelector('div.bg-slate-900 > h1.text-4xl')!.textContent).toBe('Insurance repairs, done properly');
+    expect(container.querySelector('h1.orig')).toBeNull();
+    const exposures = client.track.mock.calls.filter((c) => (c[0] as { eventType?: string })?.eventType === 'variant_assigned');
+    expect(exposures).toHaveLength(1);
+    const ssr = renderToString(createElement(Wrapper, null, el));
+    expect(ssr).toContain('<div class="bg-slate-900 py-24"><h1 class="text-4xl font-bold">Insurance repairs, done properly</h1></div>');
+  });
+});
+
+// Native generation phase 2: "Preview on your site" for a redesigned section
+// renders it with the site's own class lists, served with the preview.
+describe('on-site preview of a redesigned section', () => {
+  it('renders the composed section with the borrowed site classes', async () => {
+    document.getElementById('sentient-cell-preview-bar')?.remove();
+    const at = '2026-09-20T00:00:00.000Z';
+    const entry = (id: string, role: string, classes: string) => ({ id, role, classes, computed: {}, seen: { url: '/', count: 1, at }, source: 'editor' });
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: 'review', slotName: 'Hero', personaDisplay: 'everyone', content: null, blocks: null,
+        compose: { surface: { like: 'section' }, tree: { type: 'button', label: 'Get a quote', href: '/quote', like: 'button-primary' } },
+        vocabulary: { rev: 'r', images: [], entries: [entry('section', 'section', 'bg-slate-900 py-24'), entry('button-primary', 'button-primary', 'btn btn-blue')] },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    (await import('./editor-session.js')).resetEditorSessionForTests();
+    sessionStorage.setItem('__snt_editor_token', 'tok');
+    window.history.replaceState(null, '', '/?sentient_preview_cell=hero~unknown');
+    const { maybeStartCellPreview } = await import('./cell-preview.js');
+    maybeStartCellPreview('https://api.example.com/v1');
+    await vi.waitFor(() => expect((window as unknown as Record<string, unknown>).__sentient_vocabulary_override).toBeDefined());
+    await new Promise((r) => setTimeout(r, 0));
+    sessionStorage.clear();
+    mockedInit.mockReturnValue(makeClient() as never);
+    const Wrapper = wrapperWith();
+    const { container } = render(createElement(Wrapper, null, <AdaptiveSlot id="hero"><p>Original hero</p></AdaptiveSlot>));
+    expect(container.querySelector('.btn-blue')?.textContent).toBe('Get a quote');
+    expect(container.querySelector('.bg-slate-900')).not.toBeNull();
+    expect(container.textContent).not.toContain('Original hero');
+    window.history.replaceState(null, '', '/');
+    delete (window as unknown as Record<string, unknown>).__sentient_slot_config_overrides;
+    delete (window as unknown as Record<string, unknown>).__sentient_slot_overrides;
+    delete (window as unknown as Record<string, unknown>).__sentient_vocabulary_override;
+    document.getElementById('sentient-cell-preview-bar')?.remove();
+    resetScenario();
+    vi.unstubAllGlobals();
   });
 });

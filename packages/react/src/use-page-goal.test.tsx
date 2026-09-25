@@ -140,3 +140,24 @@ describe('usePageGoal', () => {
     delete window.__sentient_overrides;
   });
 });
+
+describe('usePageGoal — consent-gated client (grader NEW-1)', () => {
+  it('waits for the tracking client instead of spending its latch on the gated one', async () => {
+    const gated = makeClient({ gated: true });
+    const tracking = makeClient();
+    mockedInit.mockImplementation(((c: { consent?: boolean }) => (c.consent === false ? gated : tracking)) as never);
+    let setConsent!: (v: boolean) => void;
+    const { useState } = await import('react');
+    function W({ children }: { children: ReactNode }) {
+      const [consent, set] = useState(false);
+      setConsent = set;
+      return createElement(AdaptiveProvider, { enableGraph: false, apiKey: 'pk_test_key_1234', consent, preConsentBehavior: 'statistical_winner', children });
+    }
+    const { act } = await import('@testing-library/react');
+    renderHook(() => usePageGoal('pricing_view'), { wrapper: W });
+    expect(gated.goal).not.toHaveBeenCalled();
+    act(() => setConsent(true));
+    expect(tracking.goal).toHaveBeenCalledTimes(1);
+    expect(tracking.goal.mock.calls[0]![0]).toBe('pricing_view');
+  });
+});

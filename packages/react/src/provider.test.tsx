@@ -448,3 +448,99 @@ describe('AdaptiveProvider — frozen config dev warning (#6)', () => {
     warnSpy.mockRestore();
   });
 });
+
+describe('AdaptiveProvider — consent with preConsentBehavior (audit P0-4, P0-5)', () => {
+  function wrapperWith(initial: boolean) {
+    let set: ((v: boolean) => void) | null = null;
+    function W({ children }: { children: ReactNode }) {
+      const [consent, setConsent] = useState(initial);
+      set = setConsent;
+      return createElement(AdaptiveProvider, {
+        apiKey: 'pk_test_key_1234',
+        consent,
+        preConsentBehavior: 'statistical_winner',
+        enableGraph: false,
+        children,
+      });
+    }
+    return { W, setConsent: (v: boolean) => set?.(v) };
+  }
+
+  it('withdrawal in statistical_winner mode destroys (forgets) the tracking client, then serves the pre-consent client', async () => {
+    const tracking = makeClient();
+    const gated = makeClient();
+    mockedInit.mockImplementation(((c: { consent?: boolean }) => (c.consent === false ? gated : tracking)) as never);
+
+    const { W, setConsent } = wrapperWith(true);
+    const { result } = renderHook(() => useSentient(), { wrapper: W });
+    await waitFor(() => expect(result.current).toBe(tracking));
+
+    act(() => setConsent(false));
+
+    // dispose() alone kept the _snt_uid cookie, assignment cache and snapshot.
+    expect(tracking.destroy).toHaveBeenCalledOnce();
+    await waitFor(() => expect(result.current).toBe(gated));
+    expect(gated.destroy).not.toHaveBeenCalled();
+  });
+
+  it('a gated statistical_winner client never starts engagement capture', async () => {
+    const gated = makeClient();
+    mockedInit.mockReturnValue(gated as ReturnType<typeof init>);
+    mockedStartEngagement.mockReturnValue(vi.fn());
+
+    const { result } = renderHook(() => useSentient(), { wrapper: wrapperWith(false).W });
+    await waitFor(() => expect(result.current).toBe(gated));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockedStartEngagement).not.toHaveBeenCalled();
+  });
+
+  it('engagement starts once consent is granted', async () => {
+    const tracking = makeClient();
+    const gated = makeClient();
+    mockedInit.mockImplementation(((c: { consent?: boolean }) => (c.consent === false ? gated : tracking)) as never);
+    mockedStartEngagement.mockReturnValue(vi.fn());
+
+    const { W, setConsent } = wrapperWith(false);
+    const { result } = renderHook(() => useSentient(), { wrapper: W });
+    await waitFor(() => expect(result.current).toBe(gated));
+    act(() => setConsent(true));
+    await waitFor(() => expect(mockedStartEngagement).toHaveBeenCalledWith(tracking, expect.anything()));
+    expect(mockedStartEngagement).toHaveBeenCalledOnce();
+  });
+
+  it('a pre-consent client being replaced by a grant is not destroyed', async () => {
+    const tracking = makeClient();
+    const gated = makeClient();
+    mockedInit.mockImplementation(((c: { consent?: boolean }) => (c.consent === false ? gated : tracking)) as never);
+
+    const { W, setConsent } = wrapperWith(false);
+    const { result } = renderHook(() => useSentient(), { wrapper: W });
+    await waitFor(() => expect(result.current).toBe(gated));
+    act(() => setConsent(true));
+    await waitFor(() => expect(result.current).toBe(tracking));
+    expect(gated.destroy).not.toHaveBeenCalled();
+    expect(tracking.destroy).not.toHaveBeenCalled();
+  });
+});
+
+describe('AdaptiveProvider — held conversions survive the re-init on grant (grader F2)', () => {
+  it('hands the gated client\'s held goals to the tracking client', async () => {
+    const tracking = makeClient();
+    const held = vi.fn((c: { goal: (n: string) => void }) => c.goal('purchase'));
+    const gated = { ...makeClient(), gated: true, takeHeld: vi.fn(() => [held]) };
+    mockedInit.mockImplementation(((c: { consent?: boolean }) => (c.consent === false ? gated : tracking)) as never);
+    let set!: (v: boolean) => void;
+    function W({ children }: { children: ReactNode }) {
+      const [consent, setConsent] = useState(false);
+      set = setConsent;
+      return createElement(AdaptiveProvider, { apiKey: 'pk_test_key_1234', consent, preConsentBehavior: 'statistical_winner', enableGraph: false, children });
+    }
+    const { result } = renderHook(() => useSentient(), { wrapper: W });
+    await waitFor(() => expect(result.current).toBe(gated));
+    act(() => set(true));
+    await waitFor(() => expect(result.current).toBe(tracking));
+    expect(tracking.goal).toHaveBeenCalledWith('purchase');
+  });
+
+});

@@ -1,8 +1,11 @@
 {
   "name": "@sentientui/core",
-  "version": "0.33.0",
+  "version": "0.36.0",
   "private": false,
   "license": "MIT",
+  "engines": {
+    "node": ">=18.18"
+  },
   "sideEffects": false,
   "description": "SentientUI core SDK — the framework-agnostic client that powers adaptive UI personalization: session tracking, bandit variant assignment, adaptive slots, and persona decisions. SSR-safe.",
   "homepage": "https://sentient-ui.com",
@@ -36,6 +39,21 @@
       "types": "./dist/index-graph.d.ts",
       "import": "./dist/index-graph.mjs",
       "require": "./dist/index-graph.js"
+    },
+    "./style-sample": {
+      "types": "./dist/index-style-sample.d.ts",
+      "import": "./dist/index-style-sample.mjs",
+      "require": "./dist/index-style-sample.js"
+    },
+    "./consent": {
+      "types": "./dist/index-consent.d.ts",
+      "import": "./dist/index-consent.mjs",
+      "require": "./dist/index-consent.js"
+    },
+    "./region": {
+      "types": "./dist/index-region.d.ts",
+      "import": "./dist/index-region.mjs",
+      "require": "./dist/index-region.js"
     },
     "./engagement": {
       "types": "./dist/index-engagement.d.ts",
@@ -82,6 +100,7 @@
     "lint": "eslint src"
   },
   "devDependencies": {
+    "@iabtechlabtcf/core": "1.5.22",
     "@types/node": "^22.10.2",
     "esbuild": "^0.24.0",
     "jsdom": "^25.0.1",

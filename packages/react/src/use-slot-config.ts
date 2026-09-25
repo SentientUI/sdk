@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
-import { armOfResult, type SitePalette, type SlotConfigEntry, type SlotResult } from '@sentientui/core';
-import { useInitialPalette, useInitialSlotConfig, useInitialSlots, useSentient } from './provider.js';
+import { armOfResult, type RenderCaps, type SitePalette, type SkeletonReport, type SlotConfigEntry, type SlotResult, type StyleVocabulary } from '@sentientui/core';
+import { useInitialPalette, useInitialSlotConfig, useInitialSlots, useInitialVocabulary, useSentient } from './provider.js';
 import { subscribeOverridesChanged } from './override-events.js';
+import { getVocabularyOverride } from './devtools-slot-config-overrides.js';
 import { isDevBuild } from './adaptive-shared.js';
 
 // Warn once per slot id per page lifetime, not per render.
@@ -19,6 +20,8 @@ export type SlotConfigResolution = {
   /** Served arm for the slot ('' when unknown). */
   arm: string;
   palette: SitePalette | null;
+  /** Site styles served Redesign arms borrow (SSR seed, else the client's). */
+  vocabulary: StyleVocabulary | null;
   /**
    * `client` = decided for this session; `seeded` = the core holds config
    * from an earlier visit's snapshot that this session has not decided yet.
@@ -41,14 +44,25 @@ export function useSlotConfig(
      *  called when the slot is unserved and about to self-register). Kept in
      *  a ref so an inline arrow never re-fires the effect. */
     baselineText?: () => string | null;
+    /** What this mounted slot can render (CONTRACTS §2) — sent with the
+     *  scoped decide so the server never draws an arm the page would refuse. */
+    render?: () => RenderCaps;
+    /** Capture the region's skeleton. Only called while the wrapper shows the
+     *  developer's children — never an arm's rendering of them. */
+    skeleton?: () => SkeletonReport | null;
   },
 ): SlotConfigResolution {
   const client = useSentient();
   const baselineTextRef = useRef(opts?.baselineText);
   baselineTextRef.current = opts?.baselineText;
+  const renderRef = useRef(opts?.render);
+  renderRef.current = opts?.render;
+  const skeletonRef = useRef(opts?.skeleton);
+  skeletonRef.current = opts?.skeleton;
   const initialSlots = useInitialSlots();
   const initialSlotConfig = useInitialSlotConfig();
   const initialPalette = useInitialPalette();
+  const initialVocabulary = useInitialVocabulary();
 
   // Same useSyncExternalStore discipline as useSlotResult: the server snapshot
   // returns undefined so SSR HTML and the pre-hydration client render agree
@@ -84,6 +98,7 @@ export function useSlotConfig(
     overrideConfig === undefined && preloaded === undefined && client ? client.getSlotConfig(slotId) : null;
 
   const palette = initialPalette ?? client?.getSitePalette() ?? null;
+  const vocabulary = initialVocabulary ?? client?.getStyleVocabulary?.() ?? null;
 
   // No local-mode decide here, deliberately: the local engine has no registry
   // concept — decide({ slotsFrom: 'registry' }) ran the whole engine once per
@@ -94,10 +109,10 @@ export function useSlotConfig(
 
   const resolution: SlotConfigResolution = (() => {
     if (overrideConfig !== undefined) {
-      return { config: overrideConfig, arm: armOf(overrideResult), palette, source: 'override' };
+      return { config: overrideConfig, arm: armOf(overrideResult), palette, vocabulary: getVocabularyOverride() ?? vocabulary, source: 'override' };
     }
     if (preloaded !== undefined) {
-      return { config: preloaded, arm: armOf(initialSlots[slotId] ?? client?.getSlotResult(slotId)), palette, source: 'preloaded' };
+      return { config: preloaded, arm: armOf(initialSlots[slotId] ?? client?.getSlotResult(slotId)), palette, vocabulary, source: 'preloaded' };
     }
     if (fromClient !== null) {
       const decided = client?.isSlotDecided ? client.isSlotDecided(slotId) : true;
@@ -105,10 +120,11 @@ export function useSlotConfig(
         config: fromClient,
         arm: armOf(client?.getSlotResult(slotId) ?? initialSlots[slotId]),
         palette,
+        vocabulary,
         source: decided ? 'client' : 'seeded',
       };
     }
-    return { config: null, arm: '', palette, source: 'none' };
+    return { config: null, arm: '', palette, vocabulary, source: 'none' };
   })();
 
   // Keyed clients ask the server for THIS mounted slot: one decide scoped to
@@ -125,10 +141,27 @@ export function useSlotConfig(
     if (!client || client.isLocal === true || settled) return;
     // Children are on screen only while unserved — that is the only moment the
     // wrapper's text is the baseline generation should be grounded in.
-    const text = resolution.source === 'none' ? baselineTextRef.current?.() ?? null : null;
-    const args: [string[], Record<string, string>?] = text != null && text !== '' ? [[slotId], { [slotId]: text }] : [[slotId]];
-    if (client.requestSlots) client.requestSlots(...args);
-    else if (resolution.source === 'none') client.reportSlots(...args);
+    const unserved = resolution.source === 'none';
+    const text = unserved ? baselineTextRef.current?.() ?? null : null;
+    const texts = text != null && text !== '' ? { [slotId]: text } : undefined;
+    const caps = renderRef.current?.();
+    const skeleton = unserved ? skeletonRef.current?.() ?? null : null;
+    // Trailing arguments only when there is something to send: hand-rolled
+    // clients and older cores see exactly the call they always did.
+    const extras = {
+      ...(caps ? { render: { [slotId]: caps } } : {}),
+      ...(skeleton ? { skeletons: { [slotId]: skeleton } } : {}),
+    };
+    const hasExtras = Object.keys(extras).length > 0;
+    if (client.requestSlots) {
+      if (hasExtras) client.requestSlots([slotId], texts, extras);
+      else if (texts) client.requestSlots([slotId], texts);
+      else client.requestSlots([slotId]);
+    } else if (unserved) {
+      if (skeleton) client.reportSlots([slotId], texts ?? {}, { [slotId]: skeleton });
+      else if (texts) client.reportSlots([slotId], texts);
+      else client.reportSlots([slotId]);
+    }
     // Unmounted before the batch was sent (redirecting route, StrictMode
     // probe): withdraw it — a slot that is not on the page is not a trial.
     return () => client.cancelSlots?.([slotId]);

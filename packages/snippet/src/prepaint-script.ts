@@ -73,10 +73,18 @@ export function renderSnippetPrePaintScript(): string {
     // run(), so the inline script can never apply where the bundle would not.
     'var W=window,D=document,N=navigator,L=W.location,c=W.sentient,n=Date.now();' +
     // Config shape + consent + the double-embed guard (GTM plus a hardcoded tag).
-    'if(!c||typeof c.apiKey!="string"||c.consent===!1||W.__sntPP)return;' +
+    // Consent: only an explicit `consent: true`, or no gate at all. A consent
+    // platform (`consentFrom`) can't be read this early, and a malformed
+    // `consent` fails closed in the bundle — reading the stored decision from
+    // the device before consent is what the gate prevents (grader F3/N-E). A
+    // Shopify storefront with no consent config counts as `consentFrom`: the
+    // bundle defaults to Shopify's Customer Privacy API there (review #4).
+    // Any declared consentFrom steps aside — even a malformed one (null, "")
+    // that the bundle fails closed on (review #6).
+    'if(!c||typeof c.apiKey!="string"||c.consentFrom!==void 0||(c.consent!==void 0?c.consent!==!0:W.Shopify&&W.Shopify.shop)||W.__sntPP)return;' +
     // Same predicate as isDoNotTrackEnabled, plus automation: the bundle already
     // withholds structural changes from crawlers, and this has nothing to gain.
-    'if(N.doNotTrack=="1"||N.globalPrivacyControl||N.webdriver)return;' +
+    'if(N.doNotTrack=="1"||N.doNotTrack=="yes"||W.doNotTrack=="1"||N.msDoNotTrack=="1"||N.globalPrivacyControl||N.webdriver)return;' +
     // Editor / preview / persona-preview must never show a stale state first.
     'if(/[?&]sentient_(editor|preview|persona)=/.test(L.search))return;' +
     // JSON.parse(null) is null, so a missing snapshot throws into the catch.

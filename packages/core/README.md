@@ -32,7 +32,9 @@ client.componentGoal('hero_headline', 'trial_started');
 client.goal('trial_started', { plan: 'pro' });
 ```
 
-`init()` returns a no-op client during SSR (`typeof window === 'undefined'`) or when `consent` is `false`. When `apiKey` does not start with `pk_`, it returns a no-op client in production builds, or the keyless local-mode client in development builds (see "Keyless local mode" below). The hosted ingest URL (`https://api.sentient-ui.com/v1/events`) is built in — no URL configuration required.
+`init()` returns a no-op client during SSR (`typeof window === 'undefined'`). With `consent: false` it returns a **consent-gated client** that stores and sends nothing. `client.gated` is `true` until the client is upgraded (it is `false` under DNT/GPC, which consent can't override); `client.released` is `true` once a gated client was disposed or destroyed, after which it can't be upgraded (it still reads `gated: true`, so check `released`). Goals fired on a released client are dropped (logged with `debug: true`). `goal()` calls are held in memory and sent if `grantConsent()` upgrades it in this page view. `decide()` resolves when consent is granted — with the decision, or `null` if the page changed in the meantime — or `null` at once under DNT/GPC or after `dispose()`/`destroy()`. `destroy()` on it deletes anything an earlier consented visit stored, and after it the client holds nothing more. A gated client that was disposed or destroyed can't be upgraded any more: to start tracking after that (a visitor who refused, then accepted), call `init()` again, then `grantConsent()`.
+
+Reading a consent platform yourself: `import { consentWatcher } from '@sentientui/core/consent'` — the same presets as the React and snippet `consentFrom` (`'cookiebot'`, `'onetrust'`, `'cookieyes'`, `'tcf'`, `'google-consent-mode'` with an optional `region`, `'shopify'`, or `{ cookie }` / `{ check, refused? }`), with `read()`, `refused()` and `subscribe()`. Pass `nonce` to `init` (or call `setCspNonce`) for a nonce-based CSP. When `apiKey` does not start with `pk_`, it returns a no-op client in production builds, or the keyless local-mode client in development builds (see "Keyless local mode" below). The hosted ingest URL (`https://api.sentient-ui.com/v1/events`) is built in — no URL configuration required.
 
 ## API
 
@@ -42,7 +44,7 @@ client.goal('trial_started', { plan: 'pro' });
 |--------|------|-------------|
 | `apiKey` | `string` | Public API key (`pk_…`) from the SentientUI dashboard. |
 | `context` | `'landing' \| 'ecommerce' \| 'saas' \| 'marketplace'` *(optional, deprecated)* | Unused — the project's type is set in the dashboard. Safe to omit. |
-| `consent` | `boolean` *(default `true`)* | When `false`, returns a no-op client (no cookies, no events). **The default is `true`** — for GDPR-style opt-in, pass `false` until your banner is accepted (see `preConsentBehavior`). |
+| `consent` | `boolean` *(default `true`)* | When `false`, returns a consent-gated client (no cookies, no events; see above). **The default is `true`** — for GDPR-style opt-in, pass `false` until your banner is accepted (see `preConsentBehavior`). |
 | `preConsentBehavior` | `'control' \| 'statistical_winner'` | What to render while `consent` is `false`: `'control'` (the default — shows `variantIds[0]`), or the read-only statistical winner via `/v1/winner` (no session, no events). |
 | `respectDoNotTrack` | `boolean` *(default `true`)* | Honors the browser DNT signal — overrides `consent: true` and blocks `grantConsent()`. |
 | `initialAssignments` | `Record<string, string>` | SSR-preloaded assignments. Seeds the cache so `assign()` returns without a network call for listed code variants. (Managed-text components still fetch once when the seed carries no content.) |
@@ -72,12 +74,21 @@ type AssignResult = {
 
 Queues an event for batched ingest. Events flush every 5 s and on `visibilitychange` / page unload (via `fetch` with `keepalive: true`).
 
-### `client.goal(name, metadata?, weight?, stepIndex?)`
+### `client.goal(name, options?)`
 
 Fires a named goal for the current session. Used for cross-component conversions (e.g. `'trial_started'`, `'purchase_completed'`) where you cannot scope the reward to a single `<Adaptive>`.
 
-- `weight` (0–1, default `1.0`) — partial reward value. Use values < 1 for funnel steps that precede the final conversion. Step weights are summed (capped at 1.0 per session) and credited when the visit is finalized, about 30 minutes after the visitor goes inactive — not instantly.
+```ts
+client.goal('purchase_completed', { value: 49.9, currency: 'EUR', externalId: order.id });
+```
+
+- `value` — revenue of this conversion, in the project currency; `currency` (ISO 4217) only when it differs.
+- `externalId` — your order/transaction id: dedupes retries and makes later refunds possible.
+- `metadata` — extra fields stored with the goal.
+- `weight` (0–1, default `1.0`) — partial reward value for funnel steps before the final conversion. Step weights are summed (capped at 1.0 per session) and credited when the visit is finalized, about 30 minutes after the visitor goes inactive — not instantly.
 - `stepIndex` (default `0`) — position in the funnel for analytics grouping.
+
+The positional form `goal(name, metadata, weight, stepIndex)` still works and is deprecated.
 
 > **Which goal method?** `goal()` is **session-level** — it POSTs to `/v1/goals` with no component/variant, so it appears in funnel charts but **not** the per-variant CVR breakdown. For variant experiments, prefer **`componentGoal()`** (below) or the declarative `<Adaptive goal={…}>` prop, both of which attribute the conversion to the served variant.
 
@@ -112,7 +123,26 @@ Routine cleanup: stops the flush timer and unload listeners (with a final flush)
 
 ### `client.destroy()`
 
-Everything `dispose()` does, plus **deletion of the visitor identity** — the 365-day `_snt_uid` cookie, local/session storage keys, the decision snapshot, and the persisted retry bucket. This is a consent-revocation/forget-me teardown, not a page-unload cleanup: calling it on every unload makes each visit a brand-new visitor and defeats "Visit 1 learns, Visit 2 converts". For unload, do nothing — the SDK already flushes on `visibilitychange`/`beforeunload` automatically.
+Everything `dispose()` does, plus **deletion of the visitor identity** — the 365-day `_snt_uid_<key>` cookie, local/session storage keys, the decision snapshot, the assignment cache and the persisted retry buckets. A decide or assign still in flight never writes any of it back. This is a consent-revocation/forget-me teardown, not a page-unload cleanup: calling it on every unload makes each visit a brand-new visitor and defeats return-visit adaptation. For unload, do nothing — the SDK already flushes on `visibilitychange`/`pagehide` automatically.
+
+## Public API
+
+What applications may rely on across minor versions:
+
+- `init(config)` → `SentientClient`, and every `SentientClient` method documented above
+- `grantConsent(apiKey?)` — upgrade a client created with `consent: false`
+- `isDoNotTrackEnabled()` — whether DNT/GPC gates tracking in this browser
+- `deriveSessionSegment({ userAgent, referer, appOrigin })` — the `device:source` segment key
+- `setCspNonce(nonce)` — CSP nonce for injected `<style>` (or pass `nonce` to `init`)
+- `renderPrePaintScript(apiKey)` — the inline pre-paint script (see "Decision snapshot"); render it only once consent is known
+- `forgetVisitor(apiKey)` — delete everything the SDK stores for this visitor, with or without a
+  live client (a refusal recorded before any grant; `client.destroy()` does the same for a client)
+- the subpath entries `/server`, `/graph`, `/consent`, and every exported **type**
+
+Everything else the root entry exports (block vocabularies, snapshot I/O, agent-UA tables,
+`reveal`, `toWireSlot`, …) is plumbing shared with `@sentientui/react` and
+`@sentientui/snippet`. It carries no semver promise and leaves the root entry at 1.0.
+`src/public-surface.test.ts` classifies every export, so the list can't grow silently.
 
 ## SSR helpers
 
@@ -136,9 +166,12 @@ const initialAssignments = await preloadAssignments(
     origin:  process.env.APP_ORIGIN,           // must be in the project's allowed origins
     userAgent,                                 // from request headers, aligns segment with the client
     referer,
+    serverKey: process.env.SENTIENT_SECRET_KEY, // optional, server-only — see below
   },
 );
 ```
+
+`serverKey` (optional) is the project's secret key, read from a server-only env var. With it, SSR calls carry `X-Sentient-Server-Key` and the API holds them to your plan's per-key limit; without it, every SSR request from one server address shares the 100 requests/min per-IP cap meant for browsers. It is never sent when `window` exists, but keep it out of `NEXT_PUBLIC_*` / client bundles regardless.
 
 Pass `initialAssignments` and the same `sessionSegment` to `init()` on the client to prevent hydration mismatches.
 
@@ -174,7 +207,9 @@ whose versions are written in the dashboard rather than in code. `requestSlots` 
 config of the regions actually mounted: calls made in the same tick are batched into one request
 scoped to exactly those ids, and each id is requested at most once per client. Ids with nothing
 published register as drafts; `baselineTexts` maps an id to the text the region shows today, sent
-with that first registration. `onSlotsChanged` subscribes to the answer landing and returns the
+with that first registration (with the session id: the server stores a reported text only once
+visitors from several networks, on sessions later scored human, agree on it — or when the owner
+confirms it in the dashboard). `onSlotsChanged` subscribes to the answer landing and returns the
 unsubscribe.
 
 ```ts
@@ -190,14 +225,18 @@ Every decide writes a snapshot (persona, confidence band, slot results, layout o
 localStorage under `_snt_snap:<apiKey>`. On the next visit, apply it before paint:
 
 ```ts
-import { readSnapshot, writeSnapshot, renderPrePaintScript } from '@sentientui/core';
+import { renderPrePaintScript } from '@sentientui/core';
 
-// In your HTML head (server-rendered), inline this script to apply the snapshot pre-paint:
-const inline = renderPrePaintScript('pk_your_key');
+// In your HTML head (server-rendered), inline this script to apply the snapshot pre-paint —
+// ONLY when the visitor's consent is known to be granted (or your site has no consent gate):
+// it reads what the SDK stored on their device. It skips DNT/GPC browsers and snapshots
+// older than 30 days itself. React apps: <SentientPersonaScript> takes the consent props.
+const inline = consented ? renderPrePaintScript('pk_your_key') : '';
 ```
 
-First visit renders your baseline; the return visit adapts with zero flicker — Visit 1 learns,
-Visit 2 converts.
+(`readSnapshot` / `writeSnapshot` are internal helpers the SDK uses; see "Public API".)
+
+First visit renders your baseline; the return visit adapts with zero flicker.
 
 ## Keyless local mode
 
@@ -225,7 +264,7 @@ import { init } from '@sentientui/core/graph';
 const client = init({ apiKey: 'pk_…', graph: true });
 ```
 
-A client created by the lean `init` can never activate graph mode later (`getGraph()` stays empty). The lean bundle is ~8 KB gzip (CI budget: 10 KB); graph adds ~3–4 KB gzip on top of the lean bundle (combined CI budget: 16 KB).
+A client created by the lean `init` can never activate graph mode later (`getGraph()` stays empty). The lean client is ~17 KB gzip; the graph entry, with the chunks it shares with the lean client, ~22 KB. Both have CI budgets (`scripts/size-check.ts`).
 
 > **Using `@sentientui/react`?** Don't import this entry yourself — the provider
 > enables graph scanning by default (opt out with `enableGraph={false}` on

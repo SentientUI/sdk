@@ -2,6 +2,8 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import db from "../db.server";
 import { isStaleUninstall } from "../lib/drop-visibility";
 import { authenticateWebhookAllowingExpiredToken } from "../lib/webhook-auth.server";
+import { decryptSecret } from "../lib/secret-box";
+import { revokeConnectPair } from "../lib/settings.server";
 
 // GDPR compliance webhook — mandatory for every App Store listing. Delivered
 // 48h after an uninstall, and it is the obligation the uninstall handler cannot
@@ -49,9 +51,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response();
   }
 
+  // Revoke zero-key pairs before their only holder is erased (review R3 N4).
+  for (const row of [settings, await db.pendingConnect.findUnique({ where: { shop } })]) {
+    if (row?.secretKey) {
+      try {
+        await revokeConnectPair(decryptSecret(row.secretKey));
+      } catch {
+        /* unreadable envelope */
+      }
+    }
+  }
   const [erasedSessions, erasedSettings] = await Promise.all([
     db.session.deleteMany({ where: { shop } }),
     db.sentientSettings.deleteMany({ where: { shop } }),
+    // A connection still waiting for confirmation holds an sk_ too (H11).
+    db.pendingConnect.deleteMany({ where: { shop } }),
   ]);
 
   console.log(

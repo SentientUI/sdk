@@ -1,4 +1,4 @@
-export { AdaptiveProvider, useSentient, useInitialAssignments, useLayoutOrder, useAdaptiveApiBaseUrl } from './provider.js';
+export { AdaptiveProvider, useSentient, useInitialAssignments, useLayoutOrder, useAdaptiveApiBaseUrl, useSessionSegment } from './provider.js';
 export type { AdaptiveProviderProps, SsrFallback } from './provider.js';
 // The vocabulary `sectionTypes` accepts, so a typed app can build the map
 // without a direct @sentientui/core dependency.
@@ -9,6 +9,7 @@ export type {
   AdaptiveProps,
   AdaptiveVariantsProps,
   AdaptiveGeneratedProps,
+  AdaptiveElement,
   GoalConfig,
   ClickGoal,
   ScrollDepthGoal,
@@ -87,6 +88,11 @@ export { grantConsent } from '@sentientui/core';
 // review preview renders a pending arm exactly as AdaptiveSlot would, with the
 // same palette). Not needed for normal SDK integration — AdaptiveSlot renders
 // served arms itself.
-export { renderBlocks } from './blocks-render.js';
+export { renderBlocks, renderCompose } from './blocks-render.js';
 export type { RenderBlocksOptions } from './blocks-render.js';
 export type { SitePalette } from '@sentientui/core';
+// Consent platforms (Cookiebot, OneTrust, CookieYes, IAB TCF, Google Consent
+// Mode): the same watcher `consentFrom` uses, for gating a site's OTHER
+// consent-bound scripts (an ad pixel) on the same platform, from one package.
+export { consentWatcher } from '@sentientui/core/consent';
+export type { ConsentSource, ConsentPreset, ConsentWatcher } from '@sentientui/core';

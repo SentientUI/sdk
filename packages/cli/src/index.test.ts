@@ -142,3 +142,12 @@ describe('main', () => {
     expect(err.join('\n')).toContain('--key requires a value');
   });
 });
+
+describe('parseArgs --consent', () => {
+  it('accepts a preset in both forms and rejects anything else', () => {
+    expect(parseArgs(['init', '--consent', 'tcf']).consent).toBe('tcf');
+    expect(parseArgs(['init', '--consent=shopify']).consent).toBe('shopify');
+    expect(parseArgs(['init', '--consent', 'nope']).error).toMatch(/--consent must be one of/);
+    expect(parseArgs(['init', '--consent']).error).toMatch(/--consent must be one of/);
+  });
+});

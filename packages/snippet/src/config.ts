@@ -1,5 +1,9 @@
 export type SnippetSlotDecl = { dims: Record<string, string[]>; target?: string; arms?: string[] };
 
+import type { ConsentSource } from '@sentientui/core';
+
+const CONSENT_PRESETS = ['cookiebot', 'onetrust', 'cookieyes', 'tcf', 'google-consent-mode', 'shopify'];
+
 export type SnippetConfig = {
   apiKey: string;
   /**
@@ -10,6 +14,13 @@ export type SnippetConfig = {
   personaAttributes: boolean;
   /** Consent gate passthrough to core. Omitted when not declared (core defaults to true). */
   consent?: boolean;
+  /** Read consent from the site's consent platform instead of `consent`:
+   *  'cookiebot' | 'onetrust' | 'cookieyes' | 'tcf' | 'google-consent-mode' |
+   *  'shopify', `{ cmp, … }` options, or `{ cookie, value, check, event }`.
+   *  The snippet grants and revokes itself as the platform's decision changes.
+   *  On a Shopify storefront with neither this nor `consent` set, 'shopify'
+   *  (the Customer Privacy API) is used. */
+  consentFrom?: ConsentSource;
   /** Behavior before consent — passthrough to core. */
   preConsentBehavior?: 'statistical_winner' | 'control';
   /** Verbose install-time diagnostics. Omitted (falsey) unless explicitly enabled. */
@@ -17,6 +28,14 @@ export type SnippetConfig = {
   /** Serve the project's published dashboard slots. Defaults to on when no slots
    *  are declared (bare `{ apiKey }` install); set explicitly to override. */
   registry?: boolean;
+  /** CSP nonce for the <style>/<script> elements the snippet injects. Defaults
+   *  to the nonce of a script already on the page (e.g. the snippet's own tag),
+   *  so a nonce-based CSP needs no `'unsafe-inline'`. */
+  nonce?: string;
+  /** Override the consent-presets bundle URL (defaults to consent.global.js
+   *  beside the snippet's own script src). Loaded only when a consent source
+   *  is configured. */
+  consentSrc?: string;
   /** Override the on-site editor bundle URL (defaults to deriving from the
    *  snippet's own script src). */
   editorSrc?: string;
@@ -49,6 +68,11 @@ function parseDims(raw: unknown): Record<string, string[]> | null {
   for (const [dim, values] of entries) {
     if (!Array.isArray(values) || values.length < 2 || values.length > 6) return null;
     if (!values.every((v) => typeof v === 'string')) return null;
+    // '=' and '|' delimit the dims encoding (`tone=calm|size=lg`); the server
+    // rejects them (validateSlotDecl) because a value like 'a=b' makes the arm
+    // unparseable and the slot never learns. Drop it here too rather than send
+    // a declaration that is refused.
+    if (/[=|]/.test(dim) || (values as string[]).some((v) => /[=|]/.test(v))) return null;
     dims[dim] = values as string[];
   }
   return dims;
@@ -98,13 +122,34 @@ export function parseSnippetConfig(raw: unknown): SnippetConfig | null {
   };
   // Additive fields — only present when declared, so callers/tests that omit them
   // still deep-equal the base shape.
+  // Consent config fails CLOSED (audit N4): a declared-but-unusable value —
+  // `consentFrom: 'onetrsut'`, `{ cmp: 'Cookiebot' }`, `consent: 'false'` —
+  // used to be dropped, leaving no gate, so every visitor was tracked from
+  // first paint because of a typo. It now gates, and says why.
   if (typeof r.consent === 'boolean') cfg.consent = r.consent;
+  else if (r.consent !== undefined) failClosed('consent');
+  const cf = r.consentFrom as unknown;
+  if (typeof cf === 'string' && CONSENT_PRESETS.includes(cf)) cfg.consentFrom = cf as ConsentSource;
+  else if (cf && typeof cf === 'object' && !Array.isArray(cf)) {
+    const o = cf as Record<string, unknown>;
+    const ok =
+      (typeof o.cmp === 'string' && CONSENT_PRESETS.includes(o.cmp)) ||
+      (o.cmp === undefined && (typeof o.cookie === 'string' || typeof o.check === 'function'));
+    if (ok) cfg.consentFrom = o as ConsentSource;
+    else failClosed('consentFrom');
+  } else if (cf !== undefined) failClosed('consentFrom');
+  function failClosed(key: string): void {
+    cfg.consent = false;
+    console.warn(`[sentient] invalid ${key} — tracking stays OFF until it is fixed (sentient-ui.com/docs#consent).`);
+  }
   if (r.preConsentBehavior === 'statistical_winner' || r.preConsentBehavior === 'control') {
     cfg.preConsentBehavior = r.preConsentBehavior;
   }
   if (r.debug === true) cfg.debug = true;
   if (typeof r.registry === 'boolean') cfg.registry = r.registry;
   if (typeof r.editorSrc === 'string') cfg.editorSrc = r.editorSrc;
+  if (typeof r.consentSrc === 'string') cfg.consentSrc = r.consentSrc;
+  if (typeof r.nonce === 'string' && r.nonce !== '') cfg.nonce = r.nonce;
   if (typeof r.apiBase === 'string') cfg.apiBase = r.apiBase;
   if (typeof r.sectionCapture === 'boolean') cfg.sectionCapture = r.sectionCapture;
   // Function form is evaluated ONCE here (fail-safe: a throwing or non-string

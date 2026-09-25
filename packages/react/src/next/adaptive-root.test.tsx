@@ -318,6 +318,7 @@ describe('AdaptiveRoot — persona script + slots (adaptive ladder)', () => {
       slots: {},
       slotConfig: { 'hero-headline': { target: 'text', kind: 'text', content: 'Hi' } },
       palette: { primary: '#000' },
+      vocabulary: { rev: 'r1', entries: [{ id: 'button-primary', role: 'button-primary', classes: 'btn btn-blue', computed: {}, seen: { url: '/', count: 1, at: '2026-09-24T00:00:00.000Z' }, source: 'editor' }], images: [] },
       persona: 'admin',
       confidence: 0.8,
       sessionId: 'sess-1',
@@ -332,6 +333,9 @@ describe('AdaptiveRoot — persona script + slots (adaptive ladder)', () => {
     const client = clientEl(el as never);
     expect(client.props.initialSlotConfig).toEqual({ 'hero-headline': { target: 'text', kind: 'text', content: 'Hi' } });
     expect(client.props.initialPalette).toEqual({ primary: '#000' });
+    // The site styles served Redesign trees borrow must reach the page, or an
+    // SSR site renders a redesign with no site classes (Bodyshop, 2026-09-24).
+    expect(client.props.initialVocabulary).toMatchObject({ rev: 'r1', entries: [{ id: 'button-primary', classes: 'btn btn-blue' }] });
   });
 
   it('never sends slotsFrom: registry without ids (an unscoped decide trials every published slot)', async () => {
@@ -423,6 +427,14 @@ describe('AdaptiveRoot — consentFrom', () => {
 
   // The app resolved the cookie server-side, so a returning visitor still gets
   // SSR personalization and zero layout shift.
+  it('a gated request gets no pre-paint snapshot script — it would read device storage before consent', async () => {
+    const hasScript = (el: never) =>
+      childrenOf(el).some((c) => (c as { type?: unknown }).type === 'script' && 'data-sentient-persona-script' in ((c as { props?: object }).props ?? {}));
+    expect(hasScript((await AdaptiveRoot(baseProps({ consentFrom: { cookie: 'c', event: 'e' } }))) as never)).toBe(false);
+    expect(hasScript((await AdaptiveRoot(baseProps({ consent: false }))) as never)).toBe(false);
+    expect(hasScript((await AdaptiveRoot(baseProps({ consentFrom: { cookie: 'c', event: 'e' }, consent: true }))) as never)).toBe(true);
+  });
+
   it('runs the SSR call when the app resolved consent server-side', async () => {
     await AdaptiveRoot(
       baseProps({ consentFrom: { cookie: 'c', event: 'e' }, consent: true, sections: ['hero'] }),
@@ -432,25 +444,43 @@ describe('AdaptiveRoot — consentFrom', () => {
 });
 
 describe('AdaptiveRoot — server-resolved consentFrom', () => {
-  function cookieStore(map: Record<string, string>) {
-    return {
-      get: (k: string) => (k in map ? { name: k, value: map[k] } : undefined),
-    } as unknown as Awaited<ReturnType<typeof cookies>>;
+  // Like a real request: the Cookie header carries the raw values, and Next's
+  // cookies() store hands them out already decodeURIComponent'd.
+  function setCookies(map: Record<string, string>) {
+    mockedCookies.mockResolvedValue({
+      get: (k: string) => (k in map ? { name: k, value: decodeURIComponent(map[k]) } : undefined),
+    } as unknown as Awaited<ReturnType<typeof cookies>>);
+    const cookie = Object.entries(map).map(([k, v]) => `${k}=${v}`).join('; ');
+    mockedHeaders.mockResolvedValue(headerStore({ host: 'shop.example.com', 'user-agent': 'UA', cookie: cookie || undefined }));
   }
 
   // AdaptiveRoot is a Server Component and already reads cookies(), so making
   // the app read the same cookie again just to pass `consent` was duplicated
   // knowledge — and naming the cookie twice invites them to drift.
   it('resolves consent from the consentFrom cookie without an explicit consent prop', async () => {
-    mockedCookies.mockResolvedValue(cookieStore({ cookie_consent: 'accepted' }));
+    setCookies({ cookie_consent: 'accepted' });
     await AdaptiveRoot(
       baseProps({ consentFrom: { cookie: 'cookie_consent', event: 'e' }, sections: ['hero'] }),
     );
     expect(mockedDecision).toHaveBeenCalledTimes(1);
   });
 
+  it("reads a consent platform's own cookie: Cookiebot, OneTrust, TCF", async () => {
+    setCookies({ CookieConsent: encodeURIComponent("{stamp:'x',necessary:true,preferences:false,statistics:true,marketing:false,ver:1}") });
+    await AdaptiveRoot(baseProps({ consentFrom: 'cookiebot', sections: ['hero'] }));
+    expect(mockedDecision).toHaveBeenCalledTimes(1);
+
+    setCookies({ OptanonConsent: 'isGpcEnabled=0&groups=C0001%3A1%2CC0002%3A0' });
+    await AdaptiveRoot(baseProps({ consentFrom: 'onetrust', sections: ['hero'] }));
+    expect(mockedDecision).toHaveBeenCalledTimes(1); // Performance off → gated, no SSR decide
+
+    setCookies({});
+    await AdaptiveRoot(baseProps({ consentFrom: 'google-consent-mode', sections: ['hero'] }));
+    expect(mockedDecision).toHaveBeenCalledTimes(1); // JS-only source → unknown on the server → gated
+  });
+
   it('honours a custom accepted value', async () => {
-    mockedCookies.mockResolvedValue(cookieStore({ cc: 'yes' }));
+    setCookies({ cc: 'yes' });
     await AdaptiveRoot(
       baseProps({ consentFrom: { cookie: 'cc', value: 'yes', event: 'e' }, sections: ['hero'] }),
     );
@@ -458,7 +488,7 @@ describe('AdaptiveRoot — server-resolved consentFrom', () => {
   });
 
   it('stays gated when the cookie holds a different value', async () => {
-    mockedCookies.mockResolvedValue(cookieStore({ cookie_consent: 'declined' }));
+    setCookies({ cookie_consent: 'declined' });
     await AdaptiveRoot(
       baseProps({ consentFrom: { cookie: 'cookie_consent', event: 'e' }, sections: ['hero'] }),
     );
@@ -466,7 +496,7 @@ describe('AdaptiveRoot — server-resolved consentFrom', () => {
   });
 
   it('stays gated when the cookie is absent', async () => {
-    mockedCookies.mockResolvedValue(cookieStore({}));
+    setCookies({});
     await AdaptiveRoot(
       baseProps({ consentFrom: { cookie: 'cookie_consent', event: 'e' }, sections: ['hero'] }),
     );
@@ -485,7 +515,7 @@ describe('AdaptiveRoot — server-resolved consentFrom', () => {
   });
 
   it('lets an explicit consent prop win over the cookie', async () => {
-    mockedCookies.mockResolvedValue(cookieStore({ cookie_consent: 'accepted' }));
+    setCookies({ cookie_consent: 'accepted' });
     await AdaptiveRoot(
       baseProps({ consentFrom: { cookie: 'cookie_consent', event: 'e' }, consent: false, sections: ['hero'] }),
     );
@@ -493,9 +523,24 @@ describe('AdaptiveRoot — server-resolved consentFrom', () => {
   });
 
   it('forwards the resolved consent to the client so it does not start gated', async () => {
-    mockedCookies.mockResolvedValue(cookieStore({ cookie_consent: 'accepted' }));
+    setCookies({ cookie_consent: 'accepted' });
     const el = await AdaptiveRoot(baseProps({ consentFrom: { cookie: 'cookie_consent', event: 'e' } }));
     expect((clientEl(el as never).props as Record<string, unknown>).consent).toBe(true);
+  });
+  // Next's cookies() decodes values, so an encoded `&groups=C0002:1` inside
+  // OneTrust's landingPath (a crafted link, before any answer) became a real
+  // field and the server read consent (grader R8 NEW-1).
+  it('does not read an injected OneTrust groups field as consent', async () => {
+    setCookies({
+      OptanonConsent: `isGpcEnabled=0&landingPath=${encodeURIComponent('https://shop.example/?x=1&groups=C0002:1')}&groups=C0001%3A1%2CC0002%3A0`,
+    });
+    const el = await AdaptiveRoot(baseProps({ consentFrom: 'onetrust', sections: ['hero'] }));
+    expect(mockedDecision).not.toHaveBeenCalled();
+    expect((clientEl(el as never).props as Record<string, unknown>).consent).not.toBe(true);
+
+    setCookies({ OptanonConsent: `landingPath=${encodeURIComponent('https://shop.example/?groups=C0002:1')}` });
+    await AdaptiveRoot(baseProps({ consentFrom: 'onetrust', sections: ['hero'] }));
+    expect(mockedDecision).not.toHaveBeenCalled();
   });
 });
 

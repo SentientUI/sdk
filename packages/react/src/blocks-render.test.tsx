@@ -182,3 +182,18 @@ describe('renderBlocks', () => {
     expect(onFormGoal).toHaveBeenCalledWith('lead_capture');
   });
 });
+
+describe('renderBlocks — URL schemes (audit S14)', () => {
+  it('renders https and site-relative targets, drops anything else', () => {
+    const href = (h: string) => {
+      const { container } = render(<>{renderBlocks({ type: 'link', label: 'x', href: h } as BlockNode, { palette: null })}</>);
+      return container.querySelector('a')!.getAttribute('href');
+    };
+    expect(href('https://example.com/p')).toBe('https://example.com/p');
+    expect(href('/pricing')).toBe('/pricing');
+    expect(href('javascript:alert(1)')).toBeNull();
+    expect(href('//evil.example')).toBeNull();
+    const { container } = render(<>{renderBlocks({ type: 'image', src: 'javascript:1', alt: 'a' } as BlockNode, { palette: null })}</>);
+    expect(container.querySelector('img')!.getAttribute('src')).toBeNull();
+  });
+});

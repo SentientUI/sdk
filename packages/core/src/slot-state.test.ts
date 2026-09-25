@@ -325,7 +325,7 @@ describe('reportSlots (first-seen registration)', () => {
 
     const reports = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'));
     expect(reports).toHaveLength(1);
-    expect(JSON.parse(String(reports[0]![1]?.body))).toEqual({ slotIds: ['hero-headline', 'pricing-cta'] });
+    expect(JSON.parse(String(reports[0]![1]?.body))).toEqual({ slotIds: ['hero-headline', 'pricing-cta'], pagePaths: { 'hero-headline': '/', 'pricing-cta': '/' } });
 
     client.reportSlots(['hero-headline']); // already reported — must not re-fire
     await vi.advanceTimersByTimeAsync(1100);
@@ -352,7 +352,7 @@ describe('reportSlots (first-seen registration)', () => {
 
     const reports = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'));
     expect(reports).toHaveLength(1);
-    expect(JSON.parse(String(reports[0]![1]?.body))).toEqual({ slotIds: ['valid-slot'] });
+    expect(JSON.parse(String(reports[0]![1]?.body))).toEqual({ slotIds: ['valid-slot'], pagePaths: { 'valid-slot': '/' } });
 
     // One dev warning per invalid id, naming the id and the allowed shape.
     const invalidWarns = warn.mock.calls.filter((c) => String(c[0]).includes('will not register'));
@@ -384,6 +384,9 @@ describe('reportSlots (first-seen registration)', () => {
     expect(JSON.parse(String(reports[0]![1]?.body))).toEqual({
       slotIds: ['hero-cta', 'pricing-cta'],
       baselineTexts: { 'hero-cta': 'Start your free trial' },
+      pagePaths: { 'hero-cta': '/', 'pricing-cta': '/' }, // the page each region lives on (Redesign page context)
+      // A baseline-text vote only counts once this session is scored human (server C8).
+      sessionId: expect.any(String),
     });
 
     // Re-reporting with a (different) text must not re-fire or resend text.
@@ -491,6 +494,8 @@ describe('requestSlots (mounted-slot registry decide)', () => {
     expect(JSON.parse(String((reports[0]![1] as RequestInit).body))).toEqual({
       slotIds: ['hero'],
       baselineTexts: { hero: 'Start free trial' },
+      pagePaths: { hero: '/' },
+      sessionId: expect.any(String),
     });
     client.destroy();
     vi.useRealTimers();
@@ -675,6 +680,133 @@ describe('decideSlots (mounted request-declared slots)', () => {
     expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/decide'))).toHaveLength(2);
     expect(client.getSlotResult('hero')).toEqual({ tone: 'urgent' });
     expect(client.isSlotDecided!('hero')).toBe(true);
+    client.destroy();
+    vi.useRealTimers();
+  });
+});
+
+describe('native generation: render caps, skeletons, drift', () => {
+  const SKELETON = {
+    v: 1 as const,
+    root: { tag: 'div', classes: '', ambientBg: null, ambientText: '' },
+    nodes: [{ tag: 'a', role: 'action' as const, text: 'Book', classes: 'btn', color: '', group: 0, restylable: true }],
+    leaves: ['Book'],
+    leafToNode: [0],
+    fp: '0123456789abcdef',
+  };
+  const bodiesTo = (m: ReturnType<typeof vi.fn>, path: string) =>
+    m.mock.calls.filter((c) => String(c[0]).endsWith(path)).map((c) => JSON.parse(String((c[1] as RequestInit).body)));
+
+  it('requestSlots sends the page\'s render caps with the scoped decide', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ slots: {}, slotConfig: {} }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    client.requestSlots!(['hero'], undefined, { render: { hero: { fp: 'a'.repeat(16), forms: false, compose: false } } });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(bodiesTo(fetchMock, '/decide')[0]).toMatchObject({ render: { hero: { fp: 'aaaaaaaaaaaaaaaa', forms: false, compose: false } } });
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('reportSlots carries the skeleton with the first report of an id', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    client.reportSlots(['x'], { x: 'Book' }, { x: SKELETON });
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(bodiesTo(fetchMock, '/slots/observed')[0]).toMatchObject({ slotIds: ['x'], baselineSkeletons: { x: SKELETON } });
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('a published slot flagged needsSkeleton gets one reported', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve({
+        ok: true,
+        json: async () => (String(input).endsWith('/decide') ? { slots: { hero: 'b' }, slotConfig: { hero: { kind: 'arms', needsSkeleton: true } } } : {}),
+      } as Response),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    client.requestSlots!(['hero'], undefined, { skeletons: { hero: SKELETON } });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(bodiesTo(fetchMock, '/slots/observed')).toEqual([{ slotIds: ['hero'], baselineSkeletons: { hero: SKELETON } }]);
+    client.destroy();
+    vi.useRealTimers();
+  });
+
+  it('reportDrift sends once per (slot, fingerprint)', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    await vi.advanceTimersByTimeAsync(10); // let the session start
+    client.reportDrift!('hero', 'a'.repeat(16), 'b'.repeat(16), 'fp_mismatch');
+    client.reportDrift!('hero', 'a'.repeat(16), 'b'.repeat(16), 'fp_mismatch');
+    await vi.advanceTimersByTimeAsync(10);
+    const sent = bodiesTo(fetchMock, '/slots/drift');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].reports).toEqual([{ slotId: 'hero', expectedFp: 'a'.repeat(16), observedFp: 'b'.repeat(16), reason: 'fp_mismatch' }]);
+    client.destroy();
+    vi.useRealTimers();
+  });
+});
+
+describe('hybrid <Adaptive>: authored arms and blocked slots', () => {
+  it('reports each authored arm once per (slot, key), with its text', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    fetchMock.mockClear();
+    client.reportSlots([], undefined, undefined, { hero: [{ key: 'quote', text: 'Get a quote' }] });
+    client.reportSlots([], undefined, undefined, { hero: [{ key: 'quote', text: 'again' }] });
+    const sent = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed')).map((c) => JSON.parse(String((c[1] as RequestInit).body)));
+    expect(sent).toEqual([{ slotIds: ['hero'], authoredArms: { hero: [{ key: 'quote', text: 'Get a quote' }] } }]);
+    client.destroy();
+  });
+
+  it('keeps a blocked slot\'s reason and does not re-register it as unpublished', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve({
+        ok: true,
+        json: async () => (String(input).endsWith('/decide') ? { slots: {}, slotConfig: { hero: { kind: 'arms', blocked: 'variant_history' } } } : {}),
+      } as Response),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    client.requestSlots!(['hero'], { hero: 'Hi' });
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(client.getSlotConfig('hero')?.blocked).toBe('variant_history');
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/slots/observed'))).toBe(false);
+    client.destroy();
+    vi.useRealTimers();
+  });
+});
+
+describe('Redesign: served compose + style vocabulary', () => {
+  it('keeps the served vocabulary, exposes it, and snapshots it for the next pre-paint', async () => {
+    vi.useFakeTimers();
+    const vocabulary = { rev: 'r1', entries: [{ id: 'heading-1', role: 'heading-1', classes: 'text-4xl', computed: {}, seen: { url: '/', count: 1, at: '2026-09-23T00:00:00Z' }, source: 'editor' }], images: [] };
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve({
+        ok: true,
+        json: async () =>
+          String(input).endsWith('/decide')
+            ? { slots: { hero: 'unknown_v3' }, slotConfig: { hero: { kind: 'arms', compose: { unknown_v3: { tree: { type: 'heading', level: 2, like: 'heading-1', value: 'Hi' } } } } }, vocabulary }
+            : {},
+      } as Response),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    client.requestSlots!(['hero']);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(client.getSlotConfig('hero')?.compose?.unknown_v3?.tree).toBeDefined();
+    expect(client.getStyleVocabulary!()).toEqual(vocabulary);
+    expect(readSnapshot(BASE_CONFIG.apiKey)?.vocabulary).toEqual(vocabulary);
     client.destroy();
     vi.useRealTimers();
   });

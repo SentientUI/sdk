@@ -1,3 +1,4 @@
+import { applyEdits } from './edits';
 import { containsFormBlock, reveal, type SlotConfigEntry } from '@sentientui/core';
 import type { SnippetSlotDecl } from './config';
 import { isLocatorMiss, isUrlScopedOut, resolveLocatorOne } from './locator';
@@ -89,10 +90,40 @@ export function applySlotArms(
 }
 
 /**
+ * Put a content arm's copy into `el` without flattening its markup.
+ * `el.textContent = copy` destroyed every child element: a target wrapping an
+ * icon + label lost the icon, and a target that WRAPS the site's <button> lost
+ * the button itself — the styled control became bare text. When the target has
+ * exactly one visible text node, only that node's value changes, so every
+ * element and class around it survives. Otherwise (several texts, or none)
+ * there is no single place the copy belongs, and textContent — the target
+ * element keeps its own styling — is still the honest fallback. Idempotent:
+ * after either path the target holds one text node with the copy.
+ * Same rule as @sentientui/react's slot-text.ts.
+ */
+export function applyContentText(el: Element, text: string): void {
+  // 4 = NodeFilter.SHOW_TEXT; the global isn't guaranteed outside browsers.
+  const walker = el.ownerDocument.createTreeWalker(el, 4);
+  let only: Node | null = null;
+  for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+    if ((n.nodeValue ?? '').trim() === '') continue;
+    const parent = n.parentElement?.tagName;
+    if (parent === 'SCRIPT' || parent === 'STYLE' || parent === 'TEMPLATE') continue;
+    if (only !== null) {
+      el.textContent = text;
+      return;
+    }
+    only = n;
+  }
+  if (only !== null) only.nodeValue = text;
+  else el.textContent = text;
+}
+
+/**
  * Registry-mode apply: the server owns the declared space, so we trust the
  * per-slot `slotConfig` (target/kind/content) that came back with the decision.
  * dims result → data-<dim>; enumerated arm → data-sentient-arm; a content arm's
- * copy → `textContent` (NEVER innerHTML — no markup is ever injected). Applies
+ * copy → applyContentText (NEVER innerHTML — no markup is ever injected). Applies
  * to the config's target, or <html> when none is given. Fail-safe per element.
  */
 export function applyRegistrySlots(
@@ -110,6 +141,9 @@ export function applyRegistrySlots(
     /** Resolved persona, recorded on revealed elements as provenance for
      *  devtools and the editor. Never rendered to a visitor. */
     persona?: string;
+    /** A served Rewrite arm didn't match the element's markup and was not
+     *  applied — the caller reports drift (spec 2026-09-23 §4.6). */
+    onDrift?: (slotId: string, expectedFp: string) => void;
   },
 ): string[] {
   const blockContainers = new Set<Element>();
@@ -169,16 +203,19 @@ export function applyRegistrySlots(
       // (or an SSR/snapshot path) could still reach here. Option B hides the
       // merchant's own content behind hidden arms, which is a cloaking signal —
       // so when the client can see it is automation, leave the page alone.
-      if (cfg.blocks && !isLikelyAutomation(doc)) {
+      if ((cfg.blocks || cfg.compose) && !isLikelyAutomation(doc)) {
         // The snippet cannot render forms yet. Dropping just the form node
         // (renderBlock's unknown-type skip) would reveal a section minus its
         // call-to-action — looks live, converts nothing — so a tree containing
         // a form is refused WHOLE: filtered out BEFORE applySlotBlocks, which
         // means no wrapper is created AND the reveal check cannot hide the
         // originals with nothing to show for the served arm.
-        const renderable = Object.fromEntries(
-          Object.entries(cfg.blocks).filter(([, tree]) => !containsFormBlock(tree)),
-        );
+        // Redesign (compose) arms ride the same Option-B pipeline: every arm
+        // pre-rendered hidden, the served one revealed on its site surface.
+        const renderable = Object.fromEntries([
+          ...Object.entries(cfg.blocks ?? {}).filter(([, tree]) => !containsFormBlock(tree)),
+          ...Object.entries(cfg.compose ?? {}).filter(([, c]) => !containsFormBlock(c.tree)),
+        ]);
         if (Object.keys(renderable).length > 0) {
           applySlotBlocks(el, renderable, typeof result === 'string' ? result : undefined, doc);
           blockContainers.add(el);
@@ -191,8 +228,15 @@ export function applyRegistrySlots(
       // put the same copy there from the snapshot, in which case nothing
       // visibly changes and nothing should animate.
       const before = el.textContent;
-      // Phase-2 content, then Phase-3 ops (ops.text wins if both set).
-      if (typeof cfg.content === 'string') el.textContent = cfg.content;
+      // A Rewrite arm replaces content: its edits land on the site's own
+      // elements, bound to the skeleton they were written for. A mismatch
+      // touches nothing and is reported, never applied to the wrong element.
+      if (cfg.edits) {
+        if (applyEdits(el, cfg.edits.edits, cfg.edits) === 'mismatch') opts?.onDrift?.(slotId, cfg.edits.fp);
+      } else if (typeof cfg.content === 'string') {
+        // Phase-2 content, then Phase-3 ops (ops.text wins if both set).
+        applyContentText(el, cfg.content);
+      }
       if (cfg.ops) {
         const r = applyOps(el, cfg.ops, slotId, doc);
         if (r.anchorMiss && !missed.includes(slotId)) missed.push(slotId);

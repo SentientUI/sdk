@@ -18,10 +18,12 @@ import {
 import {
   deriveSessionSegment,
   init,
+  type ConsentSource,
   type SentientClient,
   type SentientConfig,
   type SitePalette,
   type SlotConfigEntry,
+  type StyleVocabulary,
   type SlotResult,
 } from '@sentientui/core';
 import type { SemanticType } from '@sentientui/core/engagement';
@@ -33,6 +35,7 @@ import { registerSections } from './devtools-registry.js';
 import { isDevBuild } from './adaptive-shared.js';
 import { SDK_IDENT } from './sdk-version.js';
 import { maybeStartCellPreview } from './cell-preview.js';
+import { maybeCaptureStyles } from './style-capture.js';
 
 /**
  * Feeds browser globals into core's `deriveSessionSegment` so the cache key
@@ -76,6 +79,7 @@ type AdaptiveContextValue = {
   initialSlots: Record<string, SlotResult>;
   initialSlotConfig: Record<string, SlotConfigEntry>;
   initialPalette: SitePalette | null;
+  initialVocabulary: StyleVocabulary | null;
   initialPersona: { persona: string; confidence: number } | null;
   apiBaseUrl: string;
   debug: boolean;
@@ -92,6 +96,7 @@ const AdaptiveContext = createContext<AdaptiveContextValue>({
   initialSlots: {},
   initialSlotConfig: {},
   initialPalette: null,
+  initialVocabulary: null,
   initialPersona: null,
   apiBaseUrl: DEFAULT_API_BASE_URL,
   debug: false,
@@ -151,23 +156,13 @@ export type AdaptiveProviderProps = {
    *
    * @example // cookie written by your own banner
    * consentFrom={{ cookie: 'cookie_consent', value: 'accepted', event: 'consent-decided' }}
-   * @example // a CMP that exposes an object rather than a cookie
-   * consentFrom={{ check: () => window.Cookiebot?.consent?.statistics === true,
-   *                event: 'CookiebotOnAccept' }}
+   * @example // a supported consent platform (reads its API, events and cookie)
+   * consentFrom="cookiebot"            // or 'onetrust' | 'cookieyes' | 'tcf' | 'google-consent-mode'
+   * consentFrom={{ cmp: 'onetrust', group: 'C0004' }}
+   * @example // any other CMP with a JS API
+   * consentFrom={{ check: () => window.myCmp?.analytics === true, event: 'mycmp:changed' }}
    */
-  consentFrom?: {
-    /** Cookie to read. Granted when its value equals `value`. */
-    cookie?: string;
-    /** Cookie value that means granted. @default 'accepted' */
-    value?: string;
-    /** Predicate for CMPs with a JS API. Takes precedence over `cookie`. */
-    check?: () => boolean;
-    /**
-     * `window` event that signals a decision. The source is re-read when it
-     * fires — the event's payload is never trusted — so any CMP's event works.
-     */
-    event?: string;
-  };
+  consentFrom?: ConsentSource;
   /**
    * Behavior before consent is granted. Pass `'statistical_winner'` to serve the
    * best-performing variant via `GET /v1/winner` with zero tracking while the
@@ -229,6 +224,9 @@ export type AdaptiveProviderProps = {
   /** SSR-preloaded site palette (`palette` field of `loadAdaptiveDecision()`'s
    *  registry-mode result) for block rendering. */
   initialPalette?: SitePalette;
+  /** SSR-preloaded site styles (`vocabulary` field of `loadAdaptiveDecision()`'s
+   *  registry-mode result) that served Redesign arms borrow. */
+  initialVocabulary?: StyleVocabulary;
   /**
    * Persona decided during SSR (`persona` + `confidence` fields of
    * `loadAdaptiveDecision()`'s result). Adopted by the core client;
@@ -291,57 +289,117 @@ export type AdaptiveProviderProps = {
    * Never runs for a DNT/GPC or consent-gated visitor (no client → no capture).
    */
   engagement?: boolean;
+  /**
+   * CSP nonce for the <style> the SDK injects (the adaptation reveal), so a
+   * nonce-based CSP needs no `style-src 'unsafe-inline'`. `AdaptiveRoot`
+   * forwards its own `nonce`. Defaults to the nonce of a script on the page.
+   */
+  nonce?: string;
   children: ReactNode;
 };
+
+/** Once per page load — StrictMode and route-level providers remount. */
+let warnedNoConsentGate = false;
+
+/** Projects whose consent source has answered (non-null) in this page load.
+ *  Module-level, not per mount: a remounted provider (route-level placement,
+ *  a cached RSC payload on Back) or a changed consentFrom started over and fell
+ *  back to AdaptiveRoot's stale request-time consent={true} (review R11 #1). */
+const answeredThisPage = new Set<string>();
 
 /**
  * Watches a {@link AdaptiveProviderProps.consentFrom} source and reports whether
  * it currently grants consent. Returns false (and subscribes to nothing) when no
  * source is configured.
  */
-function useConsentSource(source: AdaptiveProviderProps['consentFrom']): boolean {
-  const [granted, setGranted] = useState(false);
+function useConsentSource(
+  source: AdaptiveProviderProps['consentFrom'],
+  apiKey: string,
+  onRefused: () => void,
+): { granted: boolean | null; refused: boolean } {
+  const onRefusedRef = useRef(onRefused);
+  onRefusedRef.current = onRefused;
+  const [granted, setGranted] = useState<boolean | null>(null);
+  const [refused, setRefused] = useState(false);
 
   // The source is usually an inline object literal, so its identity changes
-  // every render. Read it through a ref and key the effect on its primitives,
+  // every render. Read it through a ref and key the effect on a stable string,
   // otherwise the listener would be torn down and re-added on every render.
   const sourceRef = useRef(source);
   sourceRef.current = source;
-
-  const { cookie, value, event } = source ?? {};
-  const hasCheck = typeof source?.check === 'function';
+  const key =
+    source === undefined
+      ? ''
+      : typeof source === 'string'
+        ? source
+        : JSON.stringify({
+            ...source,
+            check: typeof (source as { check?: unknown }).check,
+            refused: typeof (source as { refused?: unknown }).refused,
+          });
 
   useEffect(() => {
-    const read = (): boolean => {
-      const s = sourceRef.current;
-      if (!s) return false;
-      if (s.check) return s.check() === true;
-      if (!s.cookie || typeof document === 'undefined') return false;
-      const want = `${s.cookie}=${s.value ?? 'accepted'}`;
-      return document.cookie.split('; ').some((c) => c.trim() === want);
+    const s = sourceRef.current;
+    if (s === undefined || typeof window === 'undefined') return;
+    // Symmetric: every signal re-reads the source both ways, so a CMP
+    // "withdrawn" decision later in the visit re-gates the SDK (the old shape
+    // latched true and stopped listening). Payloads are never trusted.
+    // The watcher is its own core entry, loaded only by pages that configure
+    // a consent source; until it arrives the state stays "unknown" (gated,
+    // or the server's read).
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    void import('@sentientui/core/consent').then(({ consentWatcher, forgetVisitor }) => {
+      if (cancelled) return;
+      const watcher = consentWatcher(
+        // Both predicates through the ref: an inline `refused` closing over
+        // state was frozen at the first render, so a later "no" never
+        // forgot the visitor (review R7 #4).
+        typeof s === 'object' && s.cmp === undefined && s.check
+          ? {
+              ...s,
+              check: () => (sourceRef.current as { check: () => boolean }).check(),
+              ...(s.refused ? { refused: () => (sourceRef.current as { refused?: () => boolean }).refused?.() === true } : {}),
+            }
+          : s,
+      );
+      // A recorded refusal forgets the visitor even when no tracking client
+      // exists to destroy — a "no" given where the SDK wasn't watching (a CMP
+      // settings page, checkout) otherwise left the 365-day id and the
+      // decision snapshot in place for good (audit N2). refused() is false for
+      // "not loaded yet" and "banner up", so a consented visitor is never
+      // wiped by a slow CMP.
+      let wasRefused = false;
+      // Once the platform has answered in this page view, "no answer" again
+      // (a custom banner's reset deleting its cookie) reads false — a pause.
+      // As null it fell back to the server's request-time read, so a visitor
+      // who withdrew under AdaptiveRoot's consent={true} was tracked again
+      // under a fresh identity (grader N10-1). See answeredThisPage.
+      const update = (): void => {
+        // Never while the source reads granted (a custom `refused` that
+        // disagrees with its own `check`): that would wipe a tracked visitor.
+        const r = watcher.refused() && watcher.read() !== true;
+        // On a change only: Consent Mode calls back on every dataLayer push.
+        if (r && !wasRefused) {
+          forgetVisitor(apiKey);
+          onRefusedRef.current();
+        }
+        wasRefused = r;
+        setRefused(r);
+        const g = watcher.read();
+        if (g !== null) answeredThisPage.add(apiKey);
+        setGranted(g ?? (answeredThisPage.has(apiKey) ? false : null));
+      };
+      update();
+      stop = watcher.subscribe(update);
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
     };
+  }, [key, apiKey]);
 
-    // Symmetric, and never an early return on an initial grant: the old shape
-    // latched `granted` true and — when the mount-time read already granted —
-    // returned WITHOUT subscribing, so a CMP "withdrawn" decision later in the
-    // visit could never re-gate the SDK and tracking continued against the
-    // visitor's explicit revocation. Every decision event now re-reads the
-    // source both ways; a revocation sets granted back to false, which flows
-    // into `consent === false` below and tears the client down.
-    setGranted(read());
-    if (!event) return;
-
-    // Re-read rather than trusting the event payload, so this works with any
-    // CMP's event shape (CookiebotOnAccept, OneTrustGroupsUpdated, …) and a
-    // "declined" decision correctly leaves us gated.
-    const onDecision = (): void => {
-      setGranted(read());
-    };
-    window.addEventListener(event, onDecision);
-    return () => window.removeEventListener(event, onDecision);
-  }, [cookie, value, event, hasCheck]);
-
-  return granted;
+  return { granted, refused };
 }
 
 /**
@@ -362,6 +420,9 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
   // channel AdaptiveSlot already renders exposure-free.
   useEffect(() => {
     maybeStartCellPreview(props.apiBaseUrl);
+    // Any editor-token session also samples the site's styles for Redesign
+    // (React sites never load the snippet editor that does it elsewhere).
+    maybeCaptureStyles(props.apiBaseUrl);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -369,24 +430,90 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
   // open only once the source grants. An explicit consent={true} (e.g. resolved
   // from the cookie on the server by AdaptiveRoot) short-circuits it, so a
   // returning visitor isn't gated waiting for a client-side re-read.
-  const sourceGranted = useConsentSource(props.consentFrom);
-  const consent = props.consentFrom ? props.consent === true || sourceGranted : props.consent;
+  // The browser source decides as soon as it knows (true OR false). Until then
+  // (null: CMP not loaded yet) the server's read stands. The old
+  // `props.consent === true || sourceGranted` let a server-side grant override
+  // a mid-visit revocation for the rest of the page view.
+  // Declared ahead of useConsentSource (which must call it): the refs it
+  // clears are created further down.
+  const dropHeldRef = useRef<() => void>(() => undefined);
+  const source = useConsentSource(props.consentFrom, props.apiKey, () => dropHeldRef.current());
+  // The server's read stands only until the browser source has answered in
+  // this page load — also across remounts, before the watcher reloads.
+  const consent = props.consentFrom
+    ? (source.granted ?? (answeredThisPage.has(props.apiKey) ? false : props.consent === true))
+    : props.consent;
+  // Whether a `false` means "forget the visitor" or only "stop for now". An
+  // explicit consent={false} is the site's own revocation; from a platform,
+  // only a recorded refusal forgets — a consented visitor reopening the TCF
+  // banner reads false too and was fully forgotten (review M2).
+  const forgetOnFalse = props.consentFrom ? source.refused : true;
+  const forgetRef = useRef(forgetOnFalse);
+  forgetRef.current = forgetOnFalse;
 
   // The live client mirrored outside React state, so teardown can reach it
   // without a side effect inside a setState updater: React double-invokes
   // updaters in StrictMode dev (they must be pure), so `prev?.destroy()` inside
   // setClient ran twice — and could run during a render that never commits.
   const clientRef = useRef<SentientClient | null>(null);
+  // Whether clientRef holds a TRACKING client (created with consent not false).
+  // A revocation must forget that client's visitor; a pre-consent proxy has
+  // nothing to forget.
+  const trackingRef = useRef(false);
+  // Conversions a gated client held (goal() before the consent source
+  // answered), taken from it on teardown and handed to the next client: React
+  // replaces the gated client on a grant instead of upgrading it in place, so
+  // they were discarded with it (grader F2).
+  const heldRef = useRef<Array<(c: SentientClient) => void>>([]);
+  // A recorded refusal drops held conversions — ours and the gated client's —
+  // so a later accept in the same page view can't send them (grader F-R1:
+  // the effect is keyed on `consent`, which stays false from "unknown" to
+  // "refused", so nothing else runs on the refusal).
+  // The gated client is RELEASED, not just drained: draining left it holding,
+  // so a goal fired after the refusal was held again and sent on a later
+  // accept (grader R8 NEW-2). dispose() on a gated proxy drops its held calls,
+  // answers its decides with null and holds nothing more; its read-only
+  // winner (preConsentBehavior) keeps serving until the next consent change.
+  // Latched too, until the next grant: a gated client created AFTER the
+  // refusal — the re-init when a tracked visitor refuses, or the /graph
+  // client landing after a boot-time refusal — was never released, so its
+  // held goals reached the tracking client on a later accept (grader R9-1).
+  const refusedRef = useRef(false);
+  dropHeldRef.current = () => {
+    heldRef.current = [];
+    refusedRef.current = true;
+    const c = clientRef.current;
+    if (c?.gated) c.dispose();
+    else c?.takeHeld?.();
+  };
 
   useEffect(() => {
-    // When consent is explicitly false with no preConsentBehavior, tear down any
-    // existing client — via the ref, in the effect body (see clientRef above).
+    // Revocation (a tracking client → consent false): forget the visitor —
+    // identity cookie, assignment cache, decision snapshot, retry buckets —
+    // via the ref, in the effect body (see clientRef above). This used to run
+    // only without preConsentBehavior; with 'statistical_winner' the previous
+    // run's cleanup merely dispose()d, so a withdrawn visitor kept the 365-day
+    // cookie and their snapshot re-personalized the next page load.
+    // (Only a forgetting revocation destroys; a pause was already disposed by
+    // the previous run's cleanup, which keeps the identity.)
+    if (forgetRef.current && consent === false) heldRef.current = [];
+    if (consent === false && trackingRef.current) {
+      if (forgetRef.current) clientRef.current?.destroy();
+      clientRef.current = null;
+      trackingRef.current = false;
+    }
     if (consent === false && !props.preConsentBehavior) {
-      clientRef.current?.destroy();
+      if (forgetRef.current) clientRef.current?.destroy();
       clientRef.current = null;
       setClient(null);
       return;
     }
+    const tracking = consent !== false;
+    if (tracking) refusedRef.current = false;
+    // A gated client born after a refusal is released at once (see refusedRef).
+    const adopt = (c: SentientClient): void => {
+      if (!tracking && refusedRef.current && c.gated) c.dispose();
+    };
 
     const config = {
       apiKey: props.apiKey,
@@ -404,8 +531,10 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       initialSlots: props.initialSlots,
       initialSlotConfig: props.initialSlotConfig,
       initialPalette: props.initialPalette,
+      initialVocabulary: props.initialVocabulary,
       initialPersona: props.initialPersona,
       ingestUrl: props.apiBaseUrl ? `${props.apiBaseUrl.replace(/\/$/, '')}/events` : undefined,
+      nonce: props.nonce,
       // Declare which SDK (and which release) is driving this client, so the
       // dashboard can tell the project when it is running an old one. A React
       // install cannot self-update the way the snippet's CDN tag does, so this
@@ -421,11 +550,38 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
     let stopEngagement: (() => void) | null = null;
 
     // Engagement capture (default ON): per-section dwell/scroll + semantic
-    // section registration, lazy-loaded so the lean bundle stays lean. Only
-    // ever started for an initialised client, so consent/DNT gates are
-    // inherited (and the capture module re-checks DNT internally).
+    // section registration, lazy-loaded so the lean bundle stays lean. Only for
+    // a TRACKING client: with preConsentBehavior a gated visitor still gets a
+    // (pre-consent proxy) client, and capture used to start on it — POSTing
+    // /v1/section-map and attaching collectors while consent was false. The
+    // capture module re-checks DNT internally.
+    // Replay held conversions: sent by a tracking client, re-held by a gated one.
+    // Each in its own task, like core's replay: one task would put them in
+    // one latch window and collapse repeat conversions into one.
+    const handOff = (c: SentientClient): void => {
+      for (const call of heldRef.current.splice(0)) {
+        setTimeout(() => {
+          // Replaced before this task ran (unmount, another consent flip):
+          // back into the stash for the next client, never into a disposed
+          // one's dead queue (review R7 #6).
+          if (clientRef.current !== c) {
+            // …unless a refusal landed in between: it dropped the stash,
+            // and pushing back revived the goal for a later accept
+            // (review R10 #2).
+            if (!refusedRef.current) heldRef.current.push(call);
+            return;
+          }
+          try {
+            call(c);
+          } catch {
+            /* one bad call never blocks the rest */
+          }
+        }, 0);
+      }
+    };
+
     const startEngagement = (c: SentientClient): void => {
-      if (props.engagement === false) return;
+      if (props.engagement === false || !tracking) return;
       void import('@sentientui/core/engagement').then(({ startEngagementCapture }) => {
         if (cancelled) return;
         stopEngagement = startEngagementCapture(c, {
@@ -448,13 +604,19 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
           captureDomText: props.captureDomText === true,
           sectionTypes: props.sectionTypes,
         });
+        adopt(created);
         clientRef.current = created;
+        trackingRef.current = tracking;
+        handOff(created);
         setClient(created);
         startEngagement(created);
       });
     } else {
       created = init(config);
+      adopt(created);
       clientRef.current = created;
+      trackingRef.current = tracking;
+      handOff(created);
       setClient(created);
       startEngagement(created);
     }
@@ -462,6 +624,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
     return () => {
       cancelled = true;
       stopEngagement?.();
+      heldRef.current = heldRef.current.concat(created?.takeHeld?.() ?? []);
       // dispose, not destroy: effect cleanup runs on unmount, StrictMode's
       // dev double-invoke, and consent re-init — the visitor identity must
       // survive all of those. Full destroy() happens only on the explicit
@@ -575,6 +738,20 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
     }
   }, [props.initialLayoutOrder, props.declaredSections]);
 
+  // Dev-only: tracking is on by default, so an install that never wires a
+  // consent gate tracks EU visitors from the first paint without anyone
+  // having decided that (audit S6). Say so once, with the one-line fix.
+  useEffect(() => {
+    if (!isDevBuild() || props.consent !== undefined || props.consentFrom !== undefined) return;
+    if (warnedNoConsentGate) return;
+    warnedNoConsentGate = true;
+    console.warn(
+      '[SentientUI] No consent gate: every visitor is tracked from first paint. Pass consentFrom="<your CMP>" ' +
+        '(or consent={true} to silence). https://sentient-ui.com/docs#consent',
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Dev-only: a declared section with no `data-sentient-id="<id>"` element is
   // invisible to the DOM graph scanner, so the server never learns its semantic
   // type and every persona gets the identity order — the layout looks "on" but
@@ -623,6 +800,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       initialSlots: props.initialSlots ?? {},
       initialSlotConfig: props.initialSlotConfig ?? {},
       initialPalette: props.initialPalette ?? null,
+      initialVocabulary: props.initialVocabulary ?? null,
       initialPersona: props.initialPersona ?? null,
       apiBaseUrl,
       debug: props.debug ?? false,
@@ -638,6 +816,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       props.initialSlots,
       props.initialSlotConfig,
       props.initialPalette,
+      props.initialVocabulary,
       props.initialPersona,
       apiBaseUrl,
       props.debug,
@@ -669,7 +848,8 @@ export function useInitialAssignments(): Record<string, string> {
   return useContext(AdaptiveContext).initialAssignments;
 }
 
-/** Internal: bandit segment aligned with SSR session upsert. */
+/** The `device:source` segment this provider decides and caches under —
+ *  the SSR value when one was passed, else derived once per mount. */
 export function useSessionSegment(): string {
   return useContext(AdaptiveContext).sessionSegment;
 }
@@ -727,6 +907,11 @@ export function useInitialSlotConfig(): Record<string, SlotConfigEntry> {
 /** Internal: SSR-preloaded site palette for block rendering. */
 export function useInitialPalette(): SitePalette | null {
   return useContext(AdaptiveContext).initialPalette;
+}
+
+/** Internal: SSR-preloaded site styles for Redesign rendering. */
+export function useInitialVocabulary(): StyleVocabulary | null {
+  return useContext(AdaptiveContext).initialVocabulary;
 }
 
 /** Internal: configured API base URL (devtools fetches /v1/explain against this, never a relative URL). */

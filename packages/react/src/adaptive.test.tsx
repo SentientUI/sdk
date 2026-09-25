@@ -813,3 +813,82 @@ describe('Adaptive â€” microSignalGoals', () => {
     );
   });
 });
+
+// Native generation phase 3 (spec 2026-09-23 §7): variants + children is ONE
+// experiment on the slot ledger; variants alone keeps its variant experiment.
+describe('<Adaptive> hybrid routing', () => {
+  it('variants + children takes the slot path and never calls assign', async () => {
+    const requestSlots = vi.fn();
+    const client = makeClient({ requestSlots, onSlotsChanged: vi.fn(() => () => undefined) });
+    mockedInit.mockReturnValue(client as never);
+    const el = (
+      <Adaptive id="hero" goal="cta" variants={{ quote: <b>q</b> }}>
+        <b>base</b>
+      </Adaptive>
+    );
+    const { rerender } = render(el, { wrapper });
+    rerender(el);
+    expect(client.assign).not.toHaveBeenCalled();
+    expect(requestSlots).toHaveBeenCalled();
+    const extras = requestSlots.mock.calls[0]![2] as { render: Record<string, { authored?: string[]; children?: boolean }> };
+    expect(extras.render.hero).toMatchObject({ authored: ['quote'], children: true });
+  });
+
+  it('variants alone keeps the variant path (no silent ledger switch)', () => {
+    const requestSlots = vi.fn();
+    const client = makeClient({ requestSlots });
+    mockedInit.mockReturnValue(client as never);
+    const el = <Adaptive id="pricing" goal="cta" variants={{ a: <b>a</b>, b: <b>b</b> }} />;
+    const { rerender } = render(el, { wrapper });
+    rerender(el);
+    expect(requestSlots).not.toHaveBeenCalled();
+  });
+
+  it('warns once that variants-only props are ignored on a hybrid', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    render(
+      <Adaptive id="h2" goal="cta" funnel="checkout" variants={{ q: <b>q</b> }}>
+        <b>base</b>
+      </Adaptive>,
+      { wrapper },
+    );
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('funnel'))).toBe(true);
+    warn.mockRestore();
+  });
+});
+
+describe('Adaptive — wrapper element (audit S17)', () => {
+  it('renders the code-variant wrapper as the requested tag with a class', async () => {
+    mockedInit.mockReturnValue(makeClient() as ReturnType<typeof init>);
+    const { findByText } = render(
+      createElement('ul', null,
+        createElement(Adaptive, {
+          id: 'item',
+          as: 'li',
+          className: 'row',
+          variants: { a: createElement('span', null, 'Item A') },
+          goal: 'click',
+        }),
+      ),
+      { wrapper },
+    );
+    const el = (await findByText('Item A')).parentElement!;
+    expect(el.tagName).toBe('LI');
+    expect(el.className).toBe('row');
+    expect(el.getAttribute('data-sentient-id')).toBe('item');
+  });
+
+  it('renders the generated-mode wrapper as the requested tag', async () => {
+    mockedInit.mockReturnValue(makeClient() as ReturnType<typeof init>);
+    const { findByText } = render(createElement(Adaptive, { id: 'hero', as: 'section', children: 'Original' }), { wrapper });
+    const el = await findByText('Original');
+    expect(el.tagName).toBe('SECTION');
+    expect(el.getAttribute('data-sentient-slot')).toBe('hero');
+  });
+
+  it('defaults to a div', async () => {
+    mockedInit.mockReturnValue(makeClient() as ReturnType<typeof init>);
+    const { findByText } = render(createElement(Adaptive, { id: 'hero', children: 'Original' }), { wrapper });
+    expect((await findByText('Original')).tagName).toBe('DIV');
+  });
+});

@@ -1,8 +1,9 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import db from "../db.server";
 import { isStaleUninstall } from "../lib/drop-visibility";
-import { syncPlan } from "../lib/plan-sync.server";
+import { planSyncConfigured, syncPlan } from "../lib/plan-sync.server";
 import { decryptSecret } from "../lib/secret-box";
+import { revokeConnectPair } from "../lib/settings.server";
 import { authenticateWebhookAllowingExpiredToken } from "../lib/webhook-auth.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -70,24 +71,56 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           `(${err instanceof Error ? err.message : String(err)})`,
       );
     }
-    if (secret) {
-      const released = await syncPlan(secret, "free", shop, fetch, { disconnect: true });
+    if (secret && !planSyncConfigured()) {
+      // Same shape as the unreadable key above: permanent until the operator
+      // acts, so erase anyway instead of 500ing the uninstall for 48h.
+      console.error(`[sentient] SHOPIFY_CONNECTOR_SECRET is not set — cannot release the billing rail for ${shop}; erasing anyway`);
+    } else if (secret) {
+      const released = await syncPlan(secret, "free", shop, fetch, {
+        disconnect: true,
+        forbiddenIsTerminal: true,
+        ...(Number.isFinite(triggeredAt) ? { releasedAt: new Date(triggeredAt).toISOString() } : {}),
+      });
       // The keys are deleted below, after which this can never be retried — so
       // a failure strands the account on a rail with no plan page to buy from.
       // Unlike a bad envelope this IS transient (the API was unreachable), so
       // 500: Shopify retries for 48h, and the staleness guard above makes the
       // retry safe.
-      if (!released) {
+      if (released === false) {
         console.error(`[sentient] releasing the billing rail for ${shop} failed — retrying via webhook`);
         return new Response("plan release failed", { status: 500 });
       }
+      // Permanent (the key was revoked from the dashboard, and the shop is
+      // not bound): retrying can't succeed, so erase anyway instead of 500ing
+      // for 48 h with the shop's data kept (review R4 N1/M3).
+      if (released === "terminal") console.error(`[sentient] releasing the billing rail for ${shop} was refused permanently — erasing anyway`);
     }
   }
 
+  // A zero-key pair dies with the install — the app is the only holder, and
+  // the key is still valid here to authorize its own revoke (review R3 N4).
+  // Pasted keys are left alone by the API.
+  if (settings?.secretKey) {
+    try {
+      await revokeConnectPair(decryptSecret(settings.secretKey));
+    } catch {
+      /* unreadable envelope: nothing to revoke with */
+    }
+  }
+  const pending = await db.pendingConnect.findUnique({ where: { shop } });
+  if (pending) {
+    try {
+      await revokeConnectPair(decryptSecret(pending.secretKey));
+    } catch {
+      /* unreadable envelope */
+    }
+  }
   await db.session.deleteMany({ where: { shop } });
   // Data hygiene: the shop's stored SentientUI keys go with the install. The
   // merchant's SentientUI project itself is untouched — they own that account.
   await db.sentientSettings.deleteMany({ where: { shop } });
+  // A connection still waiting for confirmation holds an sk_ too.
+  await db.pendingConnect.deleteMany({ where: { shop } });
 
   return new Response();
 };

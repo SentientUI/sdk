@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readSnapshot, writeSnapshot } from '@sentientui/core';
-import { run, reapply, parsePreview, parseEditorToken, parsePersonaPreview } from './index';
+import { run, reapply } from './index';
+import * as previewChunk from './preview';
+const { parsePreview, parsePersonaPreview } = previewChunk;
+import { consentWatcher as realConsentWatcher } from '@sentientui/core/consent';
 
 vi.mock('@sentientui/core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@sentientui/core')>();
@@ -50,6 +53,11 @@ const fetchMock = vi.fn();
 beforeEach(() => {
   vi.resetAllMocks();
   resetDom();
+  // The consent presets are a lazy chunk in production (consent-lazy.ts);
+  // here it is already "loaded".
+  (window as unknown as Record<string, unknown>).__sentientConsent = { consentWatcher: realConsentWatcher };
+  (window as unknown as Record<string, unknown>).__sentientPreview = previewChunk;
+  (window as unknown as Record<string, unknown>).__sentientEngagement = { startEngagementCapture: mockCapture };
   (window as Window).sentient = CONFIG;
   publishedLocators = [{ id: 'hero', kind: 'arms', locator: null }];
   // Registry mode now fetches locators before deciding; never hit the network.
@@ -307,6 +315,22 @@ describe('run — registry decides only components on this page (phantom trials)
     expect(missCalls()).toEqual([]);
   });
 
+  it('declares what each resolved component can render, fingerprinted from the untouched page (CONTRACTS §2)', async () => {
+    document.body.innerHTML = '<section id="hero"><a href="/contact">Get in touch</a></section>';
+    publishedLocators = [
+      { id: 'hero', kind: 'arms', locator: { v: 1, id: 'hero', fingerprint: { tag: 'section' } } },
+      { id: 'site-tone', kind: 'tokens', locator: null },
+    ];
+    const decide = vi.fn().mockResolvedValue(EMPTY);
+    registryClient(decide);
+    await run();
+    const { skeletonFingerprint } = await import('@sentientui/core/region');
+    const render = decide.mock.calls[0]![0].render as Record<string, { fp?: string; forms: boolean }>;
+    expect(render.hero).toEqual({ fp: skeletonFingerprint(['Get in touch']), forms: false, compose: true, content: true });
+    // <html>-targeted components have no region to fingerprint.
+    expect(render['site-tone']).toEqual({ forms: false, compose: true, content: true });
+  });
+
   it('classifies misses when the watch window ends: scoped here and absent, or present but rejected; never scoped elsewhere', async () => {
     vi.useFakeTimers();
     try {
@@ -531,16 +555,13 @@ describe('run — registry decides only components on this page (phantom trials)
   });
 });
 
-describe('parseEditorToken', () => {
-  it('reads the editor token from the URL', () => {
-    expect(parseEditorToken('?sentient_editor=tok123')).toBe('tok123');
-    expect(parseEditorToken('?foo=bar')).toBeNull();
-  });
-});
-
 describe('run — editor mode', () => {
-  it('suppresses tracking and strips the token from the URL', async () => {
-    window.history.pushState({}, '', '/?sentient_editor=tok123&keep=1');
+  type EditorGlobal = { __sentientEditor?: { token?: string | null; code?: string | null } };
+
+  it('enters editor mode from the one-time #sentient_editor_code, strips it and leaves the site hash route intact', async () => {
+    // E1: the credential rides the fragment (never logged, never in a Referer).
+    // E2: a hash-routed site keeps its own #/route exactly.
+    window.history.pushState({}, '', '/?keep=1#/pricing?sentient_editor_code=c.sig');
     try {
       (window as Window).sentient = { apiKey: 'pk_test' };
       const decide = vi.fn();
@@ -548,42 +569,62 @@ describe('run — editor mode', () => {
       await run();
       expect(mockInit).not.toHaveBeenCalled();
       expect(decide).not.toHaveBeenCalled();
-      // The bearer token must not linger in the URL (Phase 3 §1.4)…
-      expect(window.location.search).not.toContain('sentient_editor');
-      // …but unrelated params are preserved.
-      expect(window.location.search).toContain('keep=1');
+      expect(window.location.href).not.toContain('sentient_editor_code');
+      expect(window.location.hash).toBe('#/pricing');
+      expect(window.location.search).toBe('?keep=1');
+      // The code goes to the editor bundle to exchange; nothing is cached yet —
+      // the code itself is single use, only the exchanged token is cacheable.
+      const g = (window as unknown as EditorGlobal).__sentientEditor;
+      expect(g?.code).toBe('c.sig');
+      expect(g?.token).toBeNull();
+      expect(sessionStorage.getItem('__snt_editor_token')).toBeNull();
     } finally {
-      window.history.pushState({}, '', '/'); // reset URL for other tests
+      window.history.pushState({}, '', '/');
     }
   });
 
-  it('caches the token in sessionStorage so a reload re-enters editor mode without the dashboard', async () => {
+  it('never reads a token from ?sentient_editor= (the leaking query form, E1)', async () => {
     window.history.pushState({}, '', '/?sentient_editor=tok123');
     try {
       (window as Window).sentient = { apiKey: 'pk_test' };
+      delete (window as unknown as EditorGlobal).__sentientEditor;
       mockInit.mockReturnValue({ decide: vi.fn(), getPersona: vi.fn() } as never);
-
-      // First load: token arrives in the URL → cached + stripped.
       await run();
-      expect(sessionStorage.getItem('__snt_editor_token')).toBe('tok123');
-      expect(window.location.search).not.toContain('sentient_editor');
+      expect((window as unknown as EditorGlobal).__sentientEditor).toBeUndefined();
+      expect(mockInit).toHaveBeenCalled();
+    } finally {
+      window.history.pushState({}, '', '/');
+    }
+  });
 
-      // Simulate a reload of the same tab: no URL token, but the cache still holds
-      // it, so editor mode re-enters (loadEditor hands the token to the overlay)
-      // and normal tracking never starts.
-      delete (window as unknown as { __sentientEditor?: unknown }).__sentientEditor;
+  it('a reload re-enters editor mode from the token the editor cached after exchanging', async () => {
+    sessionStorage.setItem('__snt_editor_token', 'tok123');
+    try {
+      (window as Window).sentient = { apiKey: 'pk_test' };
+      mockInit.mockReturnValue({ decide: vi.fn(), getPersona: vi.fn() } as never);
+      delete (window as unknown as EditorGlobal).__sentientEditor;
       await run();
       expect(mockInit).not.toHaveBeenCalled();
-      expect(
-        (window as unknown as { __sentientEditor?: { token?: string } }).__sentientEditor?.token,
-      ).toBe('tok123');
+      expect((window as unknown as EditorGlobal).__sentientEditor?.token).toBe('tok123');
+    } finally {
+      sessionStorage.clear();
+      window.history.pushState({}, '', '/');
+    }
+  });
+
+  it('adds no <meta name="referrer"> (nothing secret is in the URL to guard)', async () => {
+    window.history.pushState({}, '', '/#sentient_editor_code=c.sig');
+    try {
+      (window as Window).sentient = { apiKey: 'pk_test' };
+      await run();
+      expect(document.querySelector('meta[name="referrer"]')).toBeNull();
     } finally {
       window.history.pushState({}, '', '/');
     }
   });
 
   it('surfaces a load notice (never a blank page) when the editor bundle source cannot be resolved', async () => {
-    window.history.pushState({}, '', '/?sentient_editor=tok123');
+    window.history.pushState({}, '', '/#sentient_editor_code=c.sig');
     try {
       (window as Window).sentient = { apiKey: 'pk_test' };
       mockInit.mockReturnValue({ decide: vi.fn(), getPersona: vi.fn() } as never);
@@ -647,6 +688,60 @@ describe('run — forced preview (?sentient_preview=) on registry slots', () => 
       expect(readSnapshot('pk_test')).toBeNull();
       // The forced arm is on the page, not the server's suggestion.
       expect(document.getElementById('hero')!.textContent).toBe('Urgent copy');
+    } finally {
+      global.fetch = origFetch;
+      window.history.pushState({}, '', '/');
+    }
+  });
+
+  it('forwards #sentient_preview_token= as previewToken (drafts need it) and strips it from the URL', async () => {
+    // Fragment, not query (C13): a fragment never reaches the merchant's
+    // server logs or a subresource's Referer.
+    window.history.pushState({}, '', '/?sentient_preview=hero:urgent#sentient_preview_token=tok.sig');
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) });
+    const origFetch = global.fetch;
+    global.fetch = fetchMock as never;
+    try {
+      (window as Window).sentient = { apiKey: 'pk_test', context: 'landing', slots: {} };
+      await run();
+      const sent = JSON.parse(String((fetchMock.mock.calls[0]![1] as { body: string }).body));
+      expect(sent.includeDrafts).toBe(true);
+      expect(sent.previewToken).toBe('tok.sig');
+      expect(window.location.href).not.toContain('sentient_preview_token');
+      expect(window.location.search).toContain('sentient_preview=');
+    } finally {
+      global.fetch = origFetch;
+      window.history.pushState({}, '', '/');
+    }
+  });
+
+  it('keeps a hash-routed site on its route: #/route?sentient_preview_token= is taken and #/route restored (E2)', async () => {
+    window.history.pushState({}, '', '/?sentient_preview=hero:urgent#/shop/item?x=1&sentient_preview_token=tok.sig');
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) });
+    const origFetch = global.fetch;
+    global.fetch = fetchMock as never;
+    try {
+      (window as Window).sentient = { apiKey: 'pk_test', context: 'landing', slots: {} };
+      await run();
+      const sent = JSON.parse(String((fetchMock.mock.calls[0]![1] as { body: string }).body));
+      expect(sent.previewToken).toBe('tok.sig');
+      expect(window.location.hash).toBe('#/shop/item?x=1');
+    } finally {
+      global.fetch = origFetch;
+      window.history.pushState({}, '', '/');
+    }
+  });
+
+  it('does not take a preview token from the query string (it would already be in server logs)', async () => {
+    window.history.pushState({}, '', '/?sentient_preview=hero:urgent&sentient_preview_token=tok.sig');
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) });
+    const origFetch = global.fetch;
+    global.fetch = fetchMock as never;
+    try {
+      (window as Window).sentient = { apiKey: 'pk_test', context: 'landing', slots: {} };
+      await run();
+      const sent = JSON.parse(String((fetchMock.mock.calls[0]![1] as { body: string }).body));
+      expect(sent.previewToken).toBeUndefined();
     } finally {
       global.fetch = origFetch;
       window.history.pushState({}, '', '/');
@@ -1012,6 +1107,7 @@ describe('run — section capture across SPA navigation (audit: capture only cov
     mockCapture.mockReturnValueOnce(cleanup1).mockReturnValueOnce(cleanup2);
 
     await run();
+    await new Promise((r) => setTimeout(r, 0)); // capture starts after its chunk resolves
     expect(mockCapture).toHaveBeenCalledTimes(1); // first page
 
     // Same-path reapply must NOT restart capture.
@@ -1022,6 +1118,7 @@ describe('run — section capture across SPA navigation (audit: capture only cov
     window.history.pushState({}, '', '/about');
     try {
       reapply();
+      await new Promise((r) => setTimeout(r, 0)); // capture starts after its chunk resolves
       expect(cleanup1).toHaveBeenCalledTimes(1);
       expect(mockCapture).toHaveBeenCalledTimes(2);
       // The restart runs against the current document/route.
@@ -1043,6 +1140,7 @@ describe('run — section capture across SPA navigation (audit: capture only cov
     mockCapture.mockReturnValueOnce(captureCleanup);
 
     await run();
+    await new Promise((r) => setTimeout(r, 0)); // capture starts after its chunk resolves
     const api = (window as unknown as { SentientSnippet: { revokeConsent: () => void } }).SentientSnippet;
     api.revokeConsent();
 
@@ -1069,6 +1167,7 @@ describe('run — grantConsent starts capture for a consent-after-load visitor (
 
     const api = (window as unknown as { SentientSnippet: { grantConsent: () => void } }).SentientSnippet;
     api.grantConsent();
+    await new Promise((r) => setTimeout(r, 0)); // capture starts after its chunk resolves
     // Consent granted live now starts section engagement + per-option capture,
     // without waiting for a full page reload.
     expect(mockCapture).toHaveBeenCalledTimes(1);
@@ -1227,7 +1326,7 @@ describe('run — editor/preview modes still expose the page API (stranded globa
   // threw, and the pre-boot stub queue was never drained. The modes suppress
   // tracking, so the exposed API is a no-op surface — but it must EXIST.
   it('editor mode exposes a callable no-op SentientSnippet', async () => {
-    window.history.pushState({}, '', '/?sentient_editor=tok123');
+    window.history.pushState({}, '', '/#sentient_editor_code=c.sig');
     try {
       (window as Window).sentient = { apiKey: 'pk_test' };
       await run();
@@ -1487,5 +1586,177 @@ describe('run — inline pre-paint hand-off (spec 2026-09-07 §3.4)', () => {
     seedPrePaint();
     await run();
     expect(decide.mock.calls[0]![0]).toMatchObject({ pp: 1 });
+  });
+});
+
+// consentFrom: the snippet follows a consent platform both ways (2026-09-24).
+describe('run — consentFrom follows the consent platform', () => {
+  const w = window as unknown as Record<string, unknown>;
+  afterEach(() => {
+    delete w.Cookiebot;
+  });
+  const client = (destroy = vi.fn()) =>
+    ({
+      decide: vi.fn().mockResolvedValue({ layoutOrder: null, assignments: {}, slots: {}, persona: 'unknown', confidence: 0 }),
+      getPersona: vi.fn().mockReturnValue(null),
+      goal: vi.fn(), componentGoal: vi.fn(), destroy,
+    }) as never;
+
+  it('boots gated with no decision, grants on CookiebotOnAccept, revokes on CookiebotOnDecline', async () => {
+    (window as Window).sentient = { apiKey: 'pk_test', consentFrom: 'cookiebot' };
+    const destroy = vi.fn();
+    mockInit.mockReturnValue(client(destroy));
+    await run();
+    expect(mockInit.mock.calls[0]![0]).toMatchObject({ consent: false });
+    const state = () => (window as unknown as { SentientSnippet: { getState(): { consent: boolean } } }).SentientSnippet.getState().consent;
+    expect(state()).toBe(false);
+
+    w.Cookiebot = { consent: { statistics: true } };
+    window.dispatchEvent(new Event('CookiebotOnAccept'));
+    expect(state()).toBe(true);
+
+    w.Cookiebot = { consent: { statistics: false }, hasResponse: true };
+    window.dispatchEvent(new Event('CookiebotOnDecline'));
+    expect(destroy).toHaveBeenCalled();
+    expect(state()).toBe(false);
+  });
+
+  it('a false that is not a recorded refusal only pauses: dispose, identity kept (review M2)', async () => {
+    (window as Window).sentient = { apiKey: 'pk_test', consentFrom: 'cookiebot' };
+    const destroy = vi.fn();
+    const dispose = vi.fn();
+    mockInit.mockReturnValue({ ...(client(destroy) as object), dispose } as never);
+    await run();
+    w.Cookiebot = { consent: { statistics: true } };
+    window.dispatchEvent(new Event('CookiebotOnAccept'));
+    // Cookiebot re-opened, no answer recorded yet (hasResponse false).
+    w.Cookiebot = { consent: { statistics: false }, hasResponse: false };
+    window.dispatchEvent(new Event('CookiebotOnLoad'));
+    expect(dispose).toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it('a visitor who already consented boots with consent on', async () => {
+    w.Cookiebot = { consent: { statistics: true } };
+    (window as Window).sentient = { apiKey: 'pk_test', consentFrom: { cmp: 'cookiebot' } };
+    mockInit.mockReturnValue(client());
+    await run();
+    expect(mockInit.mock.calls[0]![0]).toMatchObject({ consent: true });
+  });
+
+  it('on a Shopify storefront with no consent config, Shopify Customer Privacy gates it (audit P0-10)', async () => {
+    let allowed = false;
+    w.Shopify = { shop: 'demo.myshopify.com', customerPrivacy: { analyticsProcessingAllowed: () => allowed } };
+    try {
+      (window as Window).sentient = { apiKey: 'pk_test' };
+      mockInit.mockReturnValue(client());
+      await run();
+      expect(mockInit.mock.calls[0]![0]).toMatchObject({ consent: false });
+      const state = () => (window as unknown as { SentientSnippet: { getState(): { consent: boolean } } }).SentientSnippet.getState().consent;
+      allowed = true;
+      document.dispatchEvent(new CustomEvent('visitorConsentCollected'));
+      expect(state()).toBe(true);
+
+      // Outside a consent region the API allows processing from the start.
+      mockInit.mockClear();
+      await run();
+      expect(mockInit.mock.calls[0]![0]).toMatchObject({ consent: true });
+
+      // An explicit consent flag is the merchant's call.
+      allowed = false;
+      mockInit.mockClear();
+      (window as Window).sentient = { apiKey: 'pk_test', consent: true };
+      await run();
+      expect(mockInit.mock.calls[0]![0]).toMatchObject({ consent: true });
+    } finally {
+      delete w.Shopify;
+    }
+  });
+
+  it('off Shopify, a bare config is not gated by the Shopify reader', async () => {
+    (window as Window).sentient = { apiKey: 'pk_test' };
+    mockInit.mockReturnValue(client());
+    await run();
+    expect(mockInit.mock.calls[0]![0].consent).toBeUndefined();
+  });
+
+  it('an explicit consent flag still wins over the platform', async () => {
+    w.Cookiebot = { consent: { statistics: true } };
+    (window as Window).sentient = { apiKey: 'pk_test', consent: false, consentFrom: 'cookiebot' };
+    mockInit.mockReturnValue(client());
+    await run();
+    expect(mockInit.mock.calls[0]![0]).toMatchObject({ consent: false });
+  });
+});
+
+describe('SentientSnippet.consentWatcher', () => {
+  it('is on the page API, with or without a valid config', async () => {
+    (window as Window).sentient = { apiKey: 'pk_test' };
+    mockInit.mockReturnValue({ decide: vi.fn().mockResolvedValue({ layoutOrder: null, assignments: {}, slots: {}, persona: 'unknown', confidence: 0 }), getPersona: vi.fn(), goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn() } as never);
+    await run();
+    const api = (window as unknown as { SentientSnippet: { consentWatcher: (s: unknown) => { read(): boolean | null } } }).SentientSnippet;
+    (window as unknown as Record<string, unknown>).Cookiebot = { consent: { marketing: true } };
+    expect(api.consentWatcher({ cmp: 'cookiebot', category: 'marketing' }).read()).toBe(true);
+    delete (window as unknown as Record<string, unknown>).Cookiebot;
+  });
+});
+
+describe('QA modes never touch consent (review L2/L3)', () => {
+  const w = window as unknown as Record<string, unknown>;
+  afterEach(() => {
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('a preview link neither fetches the consent chunk nor inits', async () => {
+    delete w.__sentientConsent;
+    window.history.replaceState({}, '', '/?sentient_preview=hero:urgent');
+    (window as Window).sentient = { apiKey: 'pk_test', consentFrom: 'cookiebot', slots: { hero: { dims: { tone: ['calm', 'urgent'] }, target: '#hero' } } };
+    await run();
+    expect(mockInit).not.toHaveBeenCalled();
+    expect(document.head.querySelector('script[src*="consent.global.js"]')).toBeNull();
+  });
+
+  it('a malformed preview param falls through to an ordinary visit', async () => {
+    window.history.replaceState({}, '', '/?sentient_preview=junk');
+    (window as Window).sentient = { apiKey: 'pk_test' };
+    await run();
+    expect(mockInit).toHaveBeenCalled();
+  });
+});
+
+describe('capture after a late grant keeps the server section map (review #2)', () => {
+  const w = window as unknown as Record<string, unknown>;
+  afterEach(() => {
+    delete w.Cookiebot;
+  });
+  it('the start that carries the section map wins over the grant-time start', async () => {
+    let resolveDecide!: (v: unknown) => void;
+    mockInit.mockReturnValue({
+      decide: vi.fn(() => new Promise((r) => (resolveDecide = r))),
+      getPersona: vi.fn().mockReturnValue(null),
+      goal: vi.fn(), componentGoal: vi.fn(), destroy: vi.fn(), dispose: vi.fn(),
+    } as never);
+    const cleanups: Array<ReturnType<typeof vi.fn>> = [];
+    mockCapture.mockImplementation(() => {
+      const c = vi.fn();
+      cleanups.push(c);
+      return c;
+    });
+    w.Cookiebot = { consent: { statistics: true } };
+    (window as Window).sentient = { ...CONFIG, consentFrom: 'cookiebot' };
+    const booted = run();
+    await new Promise((r) => setTimeout(r, 0));
+    // The platform grants before the decide lands: capture starts without a map.
+    window.dispatchEvent(new Event('CookiebotOnAccept'));
+    resolveDecide({
+      layoutOrder: null, assignments: {}, slots: {}, persona: 'unknown', confidence: 0,
+      sectionMap: [{ urlMatch: window.location.pathname, locator: { id: 'hero' }, type: 'hero' }],
+    });
+    await booted;
+    await new Promise((r) => setTimeout(r, 0));
+    const last = mockCapture.mock.calls.at(-1)![1] as { typeOf?: unknown };
+    expect(typeof last.typeOf).toBe('function');
+    // Exactly one capture is left running.
+    expect(cleanups.slice(0, -1).every((c) => c.mock.calls.length === 1)).toBe(true);
   });
 });

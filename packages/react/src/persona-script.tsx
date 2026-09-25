@@ -19,6 +19,14 @@ export type SentientPersonaScriptProps = {
    * decision snapshot (SPA / return-visit path).
    */
   persona?: { persona: string; confidence: number } | null;
+  /**
+   * The same consent gate you give the provider. With `consent={false}`, or a
+   * `consentFrom` source and no `consent={true}`, nothing is rendered: the
+   * fallback reads the stored decision from the visitor's device, and that
+   * must wait for consent (grader F3). `AdaptiveRoot` handles this for you.
+   */
+  consent?: boolean;
+  consentFrom?: unknown;
 };
 
 /** JSON string literal that is also safe inside an inline <script> element. */
@@ -52,7 +60,9 @@ export function personaScriptBody(props: SentientPersonaScriptProps): string {
  * (the same pattern next-themes uses). The client SDK adopts the attributes
  * as truth and never rewrites them mid-session.
  */
-export function SentientPersonaScript(props: SentientPersonaScriptProps): JSX.Element {
+export function SentientPersonaScript(props: SentientPersonaScriptProps): JSX.Element | null {
+  // A server-decided persona is not a storage read, so it always renders.
+  if (!props.persona && (props.consent === false || (props.consentFrom !== undefined && props.consent !== true))) return null;
   return (
     <script
       data-sentient-persona-script=""

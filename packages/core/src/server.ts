@@ -13,6 +13,7 @@ import {
 } from './slots.js';
 
 import type { SlotConfigEntry } from './snapshot.js';
+import type { RenderCaps } from './region-skeleton.js';
 import type { SitePalette } from './blocks.js';
 
 export type { SlotDeclInput, SlotResult, SlotConfigEntry, SitePalette };
@@ -30,6 +31,16 @@ export type ServerAssignConfig = {
    * keys — server-side fetch must send the same `Origin` the API allows.
    */
   origin?: string;
+  /**
+   * Optional: this project's SECRET key (sk_...), read from a server-only env
+   * var. When set, SSR calls also send it as `X-Sentient-Server-Key`, which
+   * proves they come from your server: the API then holds them to your plan's
+   * per-key limit instead of the 100 requests/min per-IP cap meant for
+   * browsers — without it, all SSR traffic from one server address shares that
+   * one cap. Never set this in code that ships to the browser; it is ignored
+   * (and not sent) when `window` exists.
+   */
+  serverKey?: string;
   /** From `User-Agent` request header (Next.js `headers()`). */
   userAgent?: string;
   /** From `Referer` request header. */
@@ -69,6 +80,22 @@ export type ServerAssignConfig = {
    */
   timeoutMs?: number;
 };
+
+/** Header carrying `serverKey` (apps/api lib/rate-limit.ts SERVER_KEY_HEADER). */
+export const SERVER_KEY_HEADER = 'X-Sentient-Server-Key';
+
+/** Auth headers for an SSR call: the pk_, its Origin, and the optional server proof. */
+function ssrHeaders(config: ServerAssignConfig): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${config.apiKey}`,
+  };
+  if (config.origin) headers.Origin = config.origin;
+  // A secret key must never leave a browser: if this module was bundled
+  // client-side by mistake, drop it rather than send it.
+  if (config.serverKey && typeof window === 'undefined') headers[SERVER_KEY_HEADER] = config.serverKey;
+  return headers;
+}
 
 /** componentId → assigned variantId */
 export type ServerAssignments = Record<string, string>;
@@ -117,13 +144,7 @@ export async function preloadAssignments(
   if (config.doNotTrack) return {};
 
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${config.apiKey}`,
-  };
-  if (config.origin) {
-    headers.Origin = config.origin;
-  }
+  const headers = ssrHeaders(config);
 
   // Session metadata must match the browser SDK so assign seeds variant_weights
   // under the same segment (not `unknown:unknown`).
@@ -216,6 +237,8 @@ export type DecideResult = {
   slotConfig?: Record<string, SlotConfigEntry>;
   /** Registry mode only: site palette for block rendering. */
   palette?: SitePalette;
+  /** Registry mode only: site styles the served Redesign arms borrow. */
+  vocabulary?: import('./style-vocabulary.js').StyleVocabulary;
 };
 
 /**
@@ -244,6 +267,15 @@ export async function preloadDecisions(
      * silently minting those trials.
      */
     registrySlotIds?: string[];
+    /**
+     * Registry mode: what each slot on this page can render (CONTRACTS §2).
+     * The server has no DOM here, so no fingerprint is sent and a Rewrite arm
+     * is assumed to match; a real mismatch is reported from the browser as
+     * drift. Declare `forms: false` for slots without an `onFormSubmit`, or a
+     * form arm can be drawn that this page will refuse. Default per slot:
+     * `{ forms: true, compose: true }`.
+     */
+    renderCaps?: Record<string, Omit<RenderCaps, 'fp'>>;
   },
   sessionId: string,
   config: ServerAssignConfig,
@@ -272,11 +304,7 @@ export async function preloadDecisions(
   // Opted-out visitor (DNT/GPC): baseline layout/slots, mint no session (audit P4).
   if (config.doNotTrack) return fallback;
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${config.apiKey}`,
-  };
-  if (config.origin) headers.Origin = config.origin;
+  const headers = ssrHeaders(config);
 
   const sessionBody = {
     ...buildSessionUpsertPayload(sessionId, {
@@ -317,7 +345,20 @@ export async function preloadDecisions(
           // bootstrap:false — editor goals and the section map are snippet
           // data the React SDK never reads. An EMPTY id list is meaningful
           // ("nothing published is on this page"): zero trials, still a decide.
-          ...(registryIds !== null ? { slotsFrom: 'registry', registrySlotIds: registryIds, bootstrap: false } : {}),
+          ...(registryIds !== null
+            ? {
+                slotsFrom: 'registry',
+                registrySlotIds: registryIds,
+                bootstrap: false,
+                // Always sent, so the server knows this is an SDK that can
+                // render Rewrite arms — no `render` field means legacy.
+                render: Object.fromEntries(
+                  // compose: true — the React SDK (the SSR consumer) renders
+                  // Redesign trees since native generation phase 2.
+                  registryIds.map((id) => [id, params.renderCaps?.[id] ?? { forms: true, compose: true }]),
+                ),
+              }
+            : {}),
           ...(config.persona ? { persona: config.persona } : {}),
         }),
       },
@@ -334,6 +375,7 @@ export async function preloadDecisions(
       slots?: Record<string, SlotResult>;
       slotConfig?: Record<string, SlotConfigEntry>;
       palette?: SitePalette;
+      vocabulary?: import('./style-vocabulary.js').StyleVocabulary;
       persona?: string;
       confidence?: number;
     };
@@ -363,6 +405,7 @@ export async function preloadDecisions(
       confidence: data.confidence ?? 0,
       ...(slotConfigOk ? { slotConfig: data.slotConfig } : {}),
       ...(data.palette ? { palette: data.palette } : {}),
+      ...(data.vocabulary ? { vocabulary: data.vocabulary } : {}),
     };
   } catch (err) {
     console.error('[SentientUI] preloadDecisions: decide threw', err);

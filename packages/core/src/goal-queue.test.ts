@@ -280,4 +280,21 @@ describe('createGoalQueue', () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('R9-3: a goal that reaches the queue after a pause is banked for the next page, not dropped', () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, status: 200 } as Response)));
+    const q = make();
+    q.destroy();
+    q.send(goal('late-1'));
+    const bucket = JSON.parse(localStorage.getItem(goalRetryStorageKey(KEY)) ?? '[]') as PendingGoal[];
+    expect(bucket.map((g) => g.id)).toContain('late-1');
+  });
+
+  it('R9-3: …but never after a forget', () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, status: 200 } as Response)));
+    const q = make();
+    q.destroy({ forget: true });
+    q.send(goal('late-2'));
+    expect(localStorage.getItem(goalRetryStorageKey(KEY))).toBeNull();
+  });
 });

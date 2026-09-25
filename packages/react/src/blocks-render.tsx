@@ -1,5 +1,16 @@
-import { Fragment, type CSSProperties, type JSX } from 'react';
-import type { BlockNode, FormBlock, SitePalette } from '@sentientui/core';
+import { cloneElement, Fragment, type CSSProperties, type JSX } from 'react';
+import type { BlockNode, ComposeArm, FormBlock, SitePalette, StyleVocabulary } from '@sentientui/core';
+
+/** A block's href/src, or undefined unless absolute https or a site-relative
+ *  path — the rule the server validates (twin of the snippet's `safeBlockUrl`
+ *  in ops.ts). The renderer is the last line: a stale config or a bypassed
+ *  validator must not render `javascript:` into an <a> (audit S14). React
+ *  itself only warns on `javascript:` URLs; it does not block them. */
+function safeBlockUrl(v: unknown): string | undefined {
+  // Whitespace/control chars rejected: browsers strip tab/newline, so
+  // `/\t/evil.example` would become `//evil.example`.
+  return typeof v === 'string' && !/[\s\x00-\x1f\\]/.test(v) && (/^https:\/\//i.test(v) || (v[0] === '/' && v[1] !== '/')) ? v : undefined;
+}
 
 // React Composition Block renderer (spec 2026-09-08 empty-cell-generation §3).
 // JSX from typed props ONLY — no dangerouslySetInnerHTML exists on this path,
@@ -23,6 +34,8 @@ const WEIGHT: Record<string, string> = { normal: '400', medium: '500', bold: '70
 
 export type RenderBlocksOptions = {
   palette: SitePalette | null;
+  /** The site styles a Redesign tree borrows (native generation phase 2). */
+  vocabulary?: StyleVocabulary | null;
   /** Absent handler = form trees must not reach this function (AdaptiveSlot gates). */
   onFormSubmit?: (values: Record<string, string>) => void;
   /** Fired with the form's submitGoal when a rendered form submits. */
@@ -121,8 +134,35 @@ function FormNode({ node, opts }: { node: FormBlock; opts: RenderBlocksOptions }
 }
 
 /** Render one validated block tree as JSX. Null for anything unrenderable — fail-safe. */
+/** The site's own class list for a node that borrows one, or undefined —
+ *  then the node renders with palette styling exactly as before (a dropped
+ *  vocabulary entry degrades, never blanks). */
+function classOf(node: BlockNode, opts: RenderBlocksOptions): string | undefined {
+  const like = (node as { like?: string }).like;
+  return like ? opts.vocabulary?.entries.find((e) => e.id === like)?.classes : undefined;
+}
+
+/** The measured text colour of a borrowed style whose class list doesn't set
+ *  one (StyleEntry.computed.inheritsColor) — applied to the element, or it
+ *  inherits whatever colour its new surroundings have. */
+function inheritedColor(like: string | undefined, opts: RenderBlocksOptions): string | undefined {
+  const e = like ? opts.vocabulary?.entries.find((x) => x.id === like) : undefined;
+  return e?.computed.inheritsColor ? e.computed.color : undefined;
+}
+
 export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.Element | null {
+  const el = renderOwn(node, opts);
+  const color = inheritedColor((node as { like?: string }).like, opts);
+  return el && color ? cloneElement(el, { style: { ...((el.props as { style?: CSSProperties }).style ?? {}), color } }) : el;
+}
+
+function renderOwn(node: BlockNode, opts: RenderBlocksOptions): JSX.Element | null {
   try {
+    // A borrowed class list is the site's own styling: when it resolves, the
+    // node keeps only LAYOUT styles (flex/grid/gap/pad/align, image fit,
+    // measure) and none of the palette paint — colors, borders, radius and
+    // type come from the site's CSS.
+    const cls = classOf(node, opts);
     switch (node.type) {
       case 'stack': {
         // Same unknown-token fallback as the grid below (audit SNIP-11).
@@ -131,10 +171,11 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
         // defaults to md (a zero-padding card is a design bug, not a choice).
         // Mirrors packages/snippet/src/blocks.ts — the drift-pin test is what
         // keeps the two renderers agreeing on these literals.
-        const raised = node.surface === 'raised';
+        const raised = node.surface === 'raised' && !cls;
         const pad = node.pad ?? (raised ? 'md' : undefined);
         return (
           <div
+            {...(cls ? { className: cls } : {})}
             style={{
               display: 'flex',
               flexDirection: node.direction,
@@ -167,6 +208,7 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
         const gap = GAP[node.gap ?? 'md'] ?? GAP['md']!;
         return (
           <div
+            {...(cls ? { className: cls } : {})}
             style={{
               display: 'grid',
               gridTemplateColumns: `repeat(auto-fit, minmax(max(200px, calc((100% - ${node.columns - 1} * ${gap}) / ${node.columns})), 1fr))`,
@@ -183,6 +225,13 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
         );
       }
       case 'text':
+        if (cls) {
+          return (
+            <p className={cls} style={node.maxWidth === 'measure' ? { maxWidth: '65ch' } : undefined}>
+              {node.value}
+            </p>
+          );
+        }
         return (
           <p
             style={{
@@ -198,7 +247,14 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
           </p>
         );
       case 'heading': {
-        const Tag = `h${node.level}` as 'h2' | 'h3' | 'h4';
+        const Tag = `h${node.level}` as 'h1' | 'h2' | 'h3' | 'h4';
+        if (cls) {
+          return (
+            <Tag className={cls} style={node.maxWidth === 'measure' ? { maxWidth: '65ch' } : undefined}>
+              {node.value}
+            </Tag>
+          );
+        }
         return (
           <Tag
             style={{
@@ -216,9 +272,9 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
         const emphasis = node.emphasis ?? 'primary';
         return (
           <a
-            href={node.href}
+            href={safeBlockUrl(node.href)}
             {...(node.tag ? { 'data-sentient-tag': node.tag } : {})}
-            style={buttonStyle(emphasis, opts.palette, node.size)}
+            {...(cls ? { className: cls } : { style: buttonStyle(emphasis, opts.palette, node.size) })}
           >
             {node.label}
           </a>
@@ -227,9 +283,9 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
       case 'link':
         return (
           <a
-            href={node.href}
+            href={safeBlockUrl(node.href)}
             {...(node.tag ? { 'data-sentient-tag': node.tag } : {})}
-            style={{ color: 'inherit', textDecoration: 'underline' }}
+            {...(cls ? { className: cls } : { style: { color: 'inherit', textDecoration: 'underline' } })}
           >
             {node.label}
           </a>
@@ -237,8 +293,9 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
       case 'image':
         return (
           <img
-            src={node.src}
+            src={safeBlockUrl(node.src)}
             alt={node.alt}
+            {...(cls ? { className: cls } : {})}
             style={{
               display: 'block',
               maxWidth: '100%',
@@ -248,6 +305,7 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
           />
         );
       case 'badge':
+        if (cls) return <span className={cls}>{node.value}</span>;
         return (
           <span
             style={{
@@ -285,4 +343,17 @@ export function renderBlocks(node: BlockNode, opts: RenderBlocksOptions): JSX.El
   } catch {
     return null; // fail-safe
   }
+}
+
+/**
+ * A Redesign (compose) arm: the tree, painted on a site section/card surface
+ * when its style resolves. Null when the tree's root can't render (a newer
+ * server's node type) — the caller treats that like a blocked blocks arm.
+ */
+export function renderCompose(compose: ComposeArm, opts: RenderBlocksOptions): JSX.Element | null {
+  const body = renderBlocks(compose.tree, opts);
+  if (body === null) return null;
+  const surface = compose.surface?.like ? opts.vocabulary?.entries.find((e) => e.id === compose.surface!.like)?.classes : undefined;
+  const color = inheritedColor(compose.surface?.like, opts);
+  return surface ? <div className={surface} {...(color ? { style: { color } } : {})}>{body}</div> : body;
 }

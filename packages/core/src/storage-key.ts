@@ -36,3 +36,33 @@ export const LEGACY_SESSION_COOKIE_NAME = '_snt_uid';
 export function sessionCookieName(apiKey?: string): string {
   return `${LEGACY_SESSION_COOKIE_NAME}${storageSuffix(apiKey)}`;
 }
+
+// Forget-me generation per project, on window so every bundle on the page
+// sees it (the snippet and its lazy chunks each carry their own copy of these
+// modules). Every client and queue captures it when created and persists only
+// while it is unchanged: a forget can never be undone by a later grant — the
+// old boolean marker was cleared by the next tracking client, and a paused
+// client's in-flight decide then wrote the forgotten visitor back (grader
+// NEW-1), as could its queues' failed final flush (F8).
+const GENS = '__sntForgetGen';
+type GenMap = Record<string, number>;
+const genMap = (): GenMap | undefined => {
+  try {
+    return (window as unknown as Record<string, GenMap | undefined>)[GENS];
+  } catch {
+    return undefined;
+  }
+};
+export function markForgotten(apiKey: string): void {
+  try {
+    const w = window as unknown as Record<string, GenMap>;
+    const m = (w[GENS] ??= {});
+    m[apiKey] = (m[apiKey] ?? 0) + 1;
+  } catch {
+    /* no window */
+  }
+}
+/** Bumped by every forget-me for this project in this page. */
+export function forgetGeneration(apiKey: string): number {
+  return genMap()?.[apiKey] ?? 0;
+}

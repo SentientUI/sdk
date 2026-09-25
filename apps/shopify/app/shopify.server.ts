@@ -37,21 +37,18 @@ const shopify = shopifyApp({
   // contract (plaintext rows stay readable; writes are encrypted).
   sessionStorage: new EncryptedSessionStorage(new PrismaSessionStorage(prisma)),
   distribution: AppDistribution.AppStore,
-  // NO Shopify billing, deliberately.
+  // No `billing` block: plans are sold through Shopify Managed Pricing (the
+  // hosted plan page), not the Billing API. The app_subscriptions/update
+  // webhook syncs the purchased plan to the merchant's SentientUI account
+  // (lib/plan-sync.server.ts), and a Shopify-billed account is never offered
+  // Stripe checkout. The free plan covers everything the app sets up.
   //
-  // The app is free and everything it sets up runs on SentientUI's free plan.
-  // Paid SentientUI plans (traffic beyond the free tier, extra seats, AI
-  // features) are optional upsells on the standalone service — own signup,
-  // own plans, customers with no Shopify store at all — billed by Stripe on
-  // the SentientUI account. Charging here would bill the same customer twice
-  // for the same service on two rails.
-  //
-  // Review history (2026-09-06 rejection, 1.2.1/1.2.2): wording that framed
-  // the service as paid-and-required ("priced on the traffic it optimizes")
-  // plus an in-app link to the external billing page was read as MANDATORY
-  // off-platform billing. Keep all merchant-facing copy free-plan-first and
-  // keep billing/account links out of the app. See README "Pricing and
-  // billing".
+  // Review history: round 1 (2026-09-06, 1.2.1/1.2.2) read copy that framed
+  // the service as paid-and-required, plus an in-app billing link, as
+  // mandatory off-platform billing; round 2 (2026-09-09) required Shopify
+  // billing for subscriptions — hence Managed Pricing. Keep merchant-facing
+  // copy free-plan-first and billing links out of the app. See README
+  // "Pricing and billing".
   future: {
     unstable_newEmbeddedAuthStrategy: true,
     expiringOfflineAccessTokens: true,
@@ -67,3 +64,10 @@ export const addDocumentResponseHeaders = shopify.addDocumentResponseHeaders;
 export const authenticate = shopify.authenticate;
 export const login = shopify.login;
 export const sessionStorage = shopify.sessionStorage;
+
+// Plan sync needs the connector secret; without it every paid subscription
+// webhook fails (and Shopify retries). Said at boot, not only per webhook, so
+// a deploy missing it is visible before a merchant buys (audit P0-7).
+if (process.env.NODE_ENV === "production" && !process.env.SHOPIFY_CONNECTOR_SECRET) {
+  console.error("[sentient] SHOPIFY_CONNECTOR_SECRET is not set — Managed Pricing plan sync will fail until it is");
+}

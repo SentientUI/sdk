@@ -8,6 +8,8 @@ import {
   recordForwardSuccess,
   recordTerminalDrop,
   saveSettings,
+  recordPlanIssue,
+  clearPlanIssue,
 } from './settings.server';
 
 // settings.server is the seam between the routes and the database: the sk_
@@ -18,6 +20,7 @@ import {
 
 vi.mock('../db.server', () => ({
   default: {
+    $executeRaw: vi.fn(),
     sentientSettings: {
       findUnique: vi.fn(),
       updateMany: vi.fn(),
@@ -29,6 +32,7 @@ vi.mock('../db.server', () => ({
 
 const KEY = 'a-test-passphrase-long-enough-to-count';
 const db = prisma as unknown as {
+  $executeRaw: ReturnType<typeof vi.fn>;
   sentientSettings: {
     findUnique: ReturnType<typeof vi.fn>;
     updateMany: ReturnType<typeof vi.fn>;
@@ -40,6 +44,7 @@ const db = prisma as unknown as {
 beforeEach(() => {
   vi.clearAllMocks();
   db.sentientSettings.updateMany.mockResolvedValue({ count: 1 });
+  db.$executeRaw.mockResolvedValue(1);
   db.sentientSettings.upsert.mockResolvedValue({});
 });
 
@@ -102,18 +107,43 @@ describe('getSettings / saveSettings — the sk_ envelope', () => {
 describe('recordTerminalDrop', () => {
   it('caps the reason at 300 chars — a huge API error body must not bloat the row or the banner', async () => {
     await recordTerminalDrop('x.myshopify.com', 'e'.repeat(1000));
-    const args = db.sentientSettings.updateMany.mock.calls[0]![0] as {
-      data: { lastDropReason: string; lastDropAt: Date };
-    };
-    expect(args.data.lastDropReason).toHaveLength(300);
-    expect(args.data.lastDropAt).toBeInstanceOf(Date);
+    const [sql, at, reason, shop] = db.$executeRaw.mock.calls[0]! as [TemplateStringsArray, Date, string, string];
+    expect(reason).toHaveLength(300);
+    expect(at).toBeInstanceOf(Date);
+    expect(shop).toBe('x.myshopify.com');
+    // Review R9: never through the Prisma client, whose @updatedAt would move
+    // the uninstall staleness guard's clock.
+    expect(sql.join('?')).not.toContain('updatedAt');
+    expect(db.sentientSettings.updateMany).not.toHaveBeenCalled();
   });
 
   it('never throws — a failed record must not turn the drop\'s 200 into a retry', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    db.sentientSettings.updateMany.mockRejectedValue(new Error('db down'));
+    db.$executeRaw.mockRejectedValue(new Error('db down'));
     await expect(recordTerminalDrop('x.myshopify.com', 'reason')).resolves.toBeUndefined();
     expect(error).toHaveBeenCalledWith(expect.stringContaining('db down'));
+  });
+});
+
+// Review R10 L1: plan refusals live apart from order drops.
+describe('recordPlanIssue / clearPlanIssue', () => {
+  it('records a capped reason and clears it, without the Prisma client (whose @updatedAt moves the uninstall clock)', async () => {
+    await recordPlanIssue('x.myshopify.com', 'r'.repeat(500));
+    const [sql, at, reason, shop] = db.$executeRaw.mock.calls[0]! as [TemplateStringsArray, Date, string, string];
+    expect(sql.join('?')).toContain('"planIssueAt"');
+    expect(at).toBeInstanceOf(Date);
+    expect(reason).toHaveLength(300);
+    expect(shop).toBe('x.myshopify.com');
+    await clearPlanIssue('x.myshopify.com');
+    expect((db.$executeRaw.mock.calls[1]![0] as TemplateStringsArray).join('?')).toContain('"planIssueAt" = NULL');
+    expect(db.sentientSettings.updateMany).not.toHaveBeenCalled();
+  });
+  it('never throws', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    db.$executeRaw.mockRejectedValue(new Error('db down'));
+    await expect(recordPlanIssue('x.myshopify.com', 'r')).resolves.toBeUndefined();
+    await expect(clearPlanIssue('x.myshopify.com')).resolves.toBeUndefined();
+    expect(error).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -122,7 +152,7 @@ describe('recordForwardSuccess — the write throttle', () => {
 
   it('first success (no lastForwardAt) writes', async () => {
     await recordForwardSuccess('x.myshopify.com', { lastForwardAt: null, lastDropAt: null });
-    expect(db.sentientSettings.updateMany).toHaveBeenCalledTimes(1);
+    expect(db.$executeRaw).toHaveBeenCalledTimes(1);
   });
 
   it('skips the write when the stored timestamp is under an hour old', async () => {
@@ -132,7 +162,7 @@ describe('recordForwardSuccess — the write throttle', () => {
       lastForwardAt: new Date(now - 5 * 60 * 1000),
       lastDropAt: null,
     });
-    expect(db.sentientSettings.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it('writes despite freshness when a drop was recorded after the last forward', async () => {
@@ -142,12 +172,12 @@ describe('recordForwardSuccess — the write throttle', () => {
       lastForwardAt: new Date(now - 5 * 60 * 1000),
       lastDropAt: new Date(now - 60 * 1000),
     });
-    expect(db.sentientSettings.updateMany).toHaveBeenCalledTimes(1);
+    expect(db.$executeRaw).toHaveBeenCalledTimes(1);
   });
 
   it('never throws — the forward already succeeded and must ack 200', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    db.sentientSettings.updateMany.mockRejectedValue(new Error('db down'));
+    db.$executeRaw.mockRejectedValue(new Error('db down'));
     await expect(
       recordForwardSuccess('x.myshopify.com', { lastForwardAt: null, lastDropAt: null }),
     ).resolves.toBeUndefined();
@@ -157,9 +187,9 @@ describe('recordForwardSuccess — the write throttle', () => {
 describe('provisionSentient', () => {
   it('POSTs an EMPTY JSON body with the sk_ — the {} is load-bearing (Fastify 400s a bodyless json content-type)', async () => {
     process.env.SENTIENT_API_URL = 'https://api.test';
-    const f = vi.fn(async () => ({ ok: true }));
+    const f = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, binding: 'live' }) }));
     vi.stubGlobal('fetch', f);
-    expect(await provisionSentient('sk_test')).toBe(true);
+    expect(await provisionSentient('sk_test')).toEqual({ ok: true, binding: 'live' });
     const [url, init] = f.mock.calls[0]! as unknown as [string, RequestInit];
     expect(url).toBe('https://api.test/v1/provision/shopify');
     expect(init.headers).toMatchObject({
@@ -180,16 +210,24 @@ describe('provisionSentient', () => {
     expect(timeout).toHaveBeenCalledWith(5_000);
   });
 
+  // Review R8 M1: a store disconnected in the dashboard is reported as such.
+  it('passes on the binding state, and tolerates an answer without one', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, binding: 'disconnected' }) })));
+    expect(await provisionSentient('sk_test')).toEqual({ ok: true, binding: 'disconnected' });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => { throw new Error('no body'); } })));
+    expect(await provisionSentient('sk_test')).toEqual({ ok: true, binding: null });
+  });
+
   it('a non-2xx answer → false (surfaces as the "save again to retry" warning)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false })));
-    expect(await provisionSentient('sk_test')).toBe(false);
+    expect((await provisionSentient('sk_test')).ok).toBe(false);
   });
 
   it('a thrown fetch (unreachable API, or the abort above) → false, never a throw', async () => {
     // Provisioning failing must not block saving keys — the merchant retries
     // by saving again.
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('down'); }));
-    expect(await provisionSentient('sk_test')).toBe(false);
+    expect((await provisionSentient('sk_test')).ok).toBe(false);
   });
 });
 

@@ -1,5 +1,7 @@
 /** Batched event queue with reliable transport (fetch + keepalive, localStorage retry). */
 
+import { forgetGeneration } from './storage-key.js';
+import { QUEUE_TIMEOUT_MS, timeoutSignal } from './timeout.js';
 import { backoffDelayMs, classifyResponse, drainBucket, purgeBucket, writeBucket } from './durable.js';
 
 export type EventType =
@@ -55,7 +57,10 @@ export type QueueConfig = {
 export type EventQueue = {
   push(event: SentientEvent): void;
   flush(): void;
-  destroy(): void;
+  /** Stop the queue with a final flush. `forget`: the visitor asked to be
+   *  forgotten — a failed final delivery must NOT be persisted for retry
+   *  (it re-created the retry bucket after forget-me removed it). */
+  destroy(opts?: { forget?: boolean }): void;
 };
 
 const MAX_SENT_IDS = 500;
@@ -92,6 +97,12 @@ export function createEventQueue(config: QueueConfig): EventQueue {
   const ingestUrl = config.ingestUrl;
   const apiKey = config.apiKey;
   const RETRY_KEY = retryStorageKey(apiKey);
+  // Set by destroy({ forget: true }); see the type's doc.
+  let forgotten = false;
+  const createdGen = forgetGeneration(apiKey);
+  const persistBucket: typeof writeBucket = (...a) => {
+    if (!forgotten && forgetGeneration(apiKey) === createdGen) writeBucket(...a);
+  };
 
   const queue: SentientEvent[] = [];
   const sentIds = new Set<string>();
@@ -177,10 +188,14 @@ export function createEventQueue(config: QueueConfig): EventQueue {
     const ids = batch.map((e) => e.id);
 
     let pending: Promise<Response> | Response;
+    const queueTimer = timeoutSignal(QUEUE_TIMEOUT_MS);
     try {
+      // Bounded (QUEUE_TIMEOUT_MS): a hung POST never settles, which held this
+      // batch in flight forever. An abort is a retry; ids dedupe server-side.
       pending = fetch(ingestUrl, {
         method: 'POST',
         keepalive: true,
+        signal: queueTimer.signal,
         body,
         headers: {
           'Content-Type': 'application/json',
@@ -189,13 +204,14 @@ export function createEventQueue(config: QueueConfig): EventQueue {
       });
     } catch {
       // Synchronous throw (typically jsdom in tests, or extreme browser failure).
-      writeBucket(batch, maxRetrySize, RETRY_KEY);
+      persistBucket(batch, maxRetrySize, RETRY_KEY);
       requeueFailed(batch);
       consecutiveFailures++;
       backoffUntil = Date.now() + backoffDelayMs(consecutiveFailures);
       return;
     }
 
+    Promise.resolve(pending).then(queueTimer.clear, queueTimer.clear);
     // fetch can sometimes return a value directly (tests using stubGlobal). Handle both.
     const handleResponse = (res: Response): void => {
       if (classifyResponse(res) !== 'retry') {
@@ -219,21 +235,22 @@ export function createEventQueue(config: QueueConfig): EventQueue {
         return;
       }
       // 5xx / 429 → retry with backoff.
-      writeBucket(batch, maxRetrySize, RETRY_KEY);
+      persistBucket(batch, maxRetrySize, RETRY_KEY);
       requeueFailed(batch);
       consecutiveFailures++;
       backoffUntil = Date.now() + backoffDelayMs(consecutiveFailures);
     };
 
-    if (pending instanceof Promise) {
+    // Thenable, not instanceof: another realm's Promise failed it (N11-4).
+    if (pending && typeof (pending as PromiseLike<unknown>).then === 'function') {
       pending.then(handleResponse).catch(() => {
-        writeBucket(batch, maxRetrySize, RETRY_KEY);
+        persistBucket(batch, maxRetrySize, RETRY_KEY);
         requeueFailed(batch);
         consecutiveFailures++;
         backoffUntil = Date.now() + backoffDelayMs(consecutiveFailures);
       });
     } else {
-      handleResponse(pending);
+      handleResponse(pending as unknown as Response); // test stubs return a plain value
     }
   };
 
@@ -315,7 +332,8 @@ export function createEventQueue(config: QueueConfig): EventQueue {
       }
     },
     flush,
-    destroy(): void {
+    destroy(opts?: { forget?: boolean }): void {
+      if (opts?.forget) forgotten = true;
       flushTimerActive = false;
       if (intervalId !== null) {
         clearInterval(intervalId);

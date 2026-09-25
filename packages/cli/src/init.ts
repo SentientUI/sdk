@@ -2,13 +2,15 @@ import { execSync } from 'node:child_process';
 import { detectFramework, detectPackageManager, installCommand, type Framework } from './detect.js';
 import { writeEnvFile, envVarName } from './env-file.js';
 import { scaffoldExample } from './scaffold.js';
-import { wrapSnippet, unknownInstructions, finale } from './snippets.js';
+import { wrapSnippet, unknownInstructions, finale, consentNote, type ConsentPreset } from './snippets.js';
 import { assertPublishableKey } from './validate-key.js';
 
 export type InitOptions = {
   cwd: string;
   /** From --key. Written into .env.local; omitted = empty value (local mode). */
   key?: string;
+  /** From --consent: the consent platform the printed snippet waits for. */
+  consent?: ConsentPreset;
   /** Injectable for tests. Defaults to execSync with stdio: 'inherit'. */
   exec?: (command: string, cwd: string) => void;
   /** Injectable for tests. Defaults to console.log. */
@@ -29,7 +31,9 @@ export function runInit(opts: InitOptions): { framework: Framework } {
   log(`[sentientui] detected framework: ${framework}`);
 
   if (framework === 'unknown') {
-    log(unknownInstructions());
+    log(unknownInstructions(opts.consent));
+    log('');
+    log(consentNote(opts.consent));
     return { framework };
   }
 
@@ -67,7 +71,9 @@ export function runInit(opts: InitOptions): { framework: Framework } {
 
   log('');
   log('Wrap your app:');
-  log(wrapSnippet(framework, envVarName(framework)));
+  log(wrapSnippet(framework, envVarName(framework), opts.consent));
+  log('');
+  log(consentNote(opts.consent));
   log('');
   log(`Then run your dev server and: ${finale(framework)}`);
   return { framework };

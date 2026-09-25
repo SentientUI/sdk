@@ -65,7 +65,13 @@ export function shrunkPosterior(
  */
 export const WEIGHTS_FALLBACK_PRIOR_PULLS = 5;
 
-/** One arm as published on the SDK weights feed (`/v1/weights`). */
+/**
+ * One arm as published on the SDK weights feed (`/v1/weights`). Since the feed
+ * is public-key readable, the API publishes it RANK-ENCODED (pulls 1, avgReward
+ * monotone in the server-computed score of this very function — see
+ * apps/api/src/routes/weights.ts `rankEncodeArms`), which preserves the pick.
+ * Changing the score below therefore needs the API encoder changed with it.
+ */
 export type WeightsFallbackArm = { variantId: string; pulls?: number | null; avgReward: number };
 
 /**

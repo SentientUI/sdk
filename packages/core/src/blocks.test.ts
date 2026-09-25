@@ -68,7 +68,8 @@ describe('composition blocks — token vocabularies', () => {
     expect(BLOCK_FITS).toEqual(['cover', 'contain']);
     expect(BLOCK_GRID_COLUMNS).toEqual([2, 3, 4]);
     // Never 1 (h1 belongs to the page), never 5-6 (below the visual hierarchy).
-    expect(BLOCK_HEADING_LEVELS).toEqual([2, 3, 4]);
+    // 1 added for compose heroes that replace the page's own h1.
+    expect(BLOCK_HEADING_LEVELS).toEqual([1, 2, 3, 4]);
     // Rung 1 (fully-design ladder spec 2026-09-10 §4). PADS deliberately equals
     // GAPS: both renderers reuse the GAP px scale for padding, so a divergence
     // here means someone added a pad step without a renderer value for it.

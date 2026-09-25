@@ -126,7 +126,61 @@ const bundles: Array<{ name: string; file: string; limit: number }> = [
   // behaviour it exists to measure, and short visits — the ones that most need
   // separating from a JS-less crawler — are over before a lazy chunk lands. Measured 27807 against 26624
   // (over by 1183). Budget moves one step and no further.
-  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 26 * 1024 + 1536 },
+  //
+  // +2048 (2026-09-23, native generation phase 1, spec 2026-09-23 §4.5/§4.6):
+  // the snippet half of CONTRACTS §2's "a slot decision may only draw an arm
+  // the page can render" plus Rewrite arms. Measured 27876 at HEAD → 29788:
+  // the region addressing walk (text nodes → owning elements → fingerprint)
+  // that the decide's `render` caps and edits apply both need, `applyEdits`
+  // (per-node text / class swap / hide / reorder on the site's own elements),
+  // and core's render/drift plumbing riding the shared client. None of it can
+  // be lazy: the fingerprint must be taken from the untouched page BEFORE the
+  // decide, and edits land in the same post-decide pass as content. Trimmed
+  // first: the descriptive half of the skeleton capture (roles, classes,
+  // colours, ambient background — ~800 bytes) is NOT here; snippet regions get
+  // full skeletons from the on-site editor session instead.
+  //
+  // +512 (2026-09-23, native generation phase 2; operator: "i dont mind
+  // pushing the size"): `like` resolution in renderBlock (a node borrowing the
+  // site's own class list keeps only layout styles) and compose apply through
+  // the same Option-B pipeline. Always-on because Option B pre-paints composed
+  // arms — a lazy chunk would reintroduce the flash it exists to prevent. The
+  // site-style sampler stays in the editor bundle. Measured 30348 against 30208.
+  //
+  // +1536 (2026-09-24; operator: "i dont mind pushing the size"): consent
+  // platform presets (`consentFrom`: Cookiebot, OneTrust, CookieYes, IAB TCF
+  // v2.2, Google Consent Mode v2). The snippet is one IIFE with no lazy
+  // chunks, so the watcher ships always-on; it must decide the gate BEFORE the
+  // client starts, and a second script load would delay every consented
+  // visitor. React loads the same code lazily. Measured 32047.
+  //
+  // HARD CEILING from 2026-09-25 (audit S24: "budgets ratcheted repeatedly").
+  // The consent presets moved to the lazy consent.global.js chunk (below) —
+  // 31306, down from 32162, WITH the Shopify Customer Privacy and region-aware
+  // Consent Mode readers added. The same batch then spent 427 of that on
+  // always-on hardening (request timeouts, CSP nonce, block URL scheme checks,
+  // Secure cookie) → measured 31733. The limit dropped to 32000 (from 32256)
+  // and is no longer raised: a new always-on feature pays for its bytes by
+  // moving a rare path lazy (the persona-preview banner and forced-preview
+  // modes are the next candidates) — say which in the commit.
+  // 32000 → 29696 (same day, grader regrade 3): engagement capture moved to
+  // engagement.global.js (fetched at boot in parallel with the decide —
+  // capture waits for the decide's section map anyway), measured 27557. The
+  // ceiling drops to bank it, with ~2 KiB for the regrade-3 consent fixes.
+  { name: '@sentientui/snippet (always-on)', file: 'snippet.global.js', limit: 29 * 1024 },
+  // Section attention + interaction capture: a parallel chunk, not on the
+  // critical path. Measured 5946 (it repeats a little shared core code).
+  { name: '@sentientui/snippet (engagement capture, lazy)', file: 'engagement.global.js', limit: 6.5 * 1024 },
+  // The consent-platform presets, fetched only by a page that configures a
+  // consent source (or runs on Shopify). Measured 2637.
+  // +512 (same day): refused() on every watcher and the client-less
+  // forgetVisitor for a boot-time "no" (grader N2) ride this chunk, not the
+  // always-on bundle. Measured 3255.
+  { name: '@sentientui/snippet (consent presets, lazy)', file: 'consent.global.js', limit: 3.5 * 1024 },
+  // The ?sentient_preview= / ?sentient_persona= QA modes, moved out of the
+  // always-on bundle 2026-09-25 to pay for the round-2 consent fixes (the
+  // pre-consent decide replay, fail-closed config, chunk-URL fallback).
+  { name: '@sentientui/snippet (preview modes, lazy)', file: 'preview.global.js', limit: 3 * 1024 },
   // 20 KiB (was 18, 12): re-baselined 2026-09-07 for the editor audit
   // remediation — the 18 KiB note reserved ~1.8 KiB for "the review card and
   // the NL command box" and said the next addition needs a deliberate
@@ -170,7 +224,23 @@ const bundles: Array<{ name: string; file: string; limit: number }> = [
   // streaming, the ref→element context builder, and draft save + in-place
   // preview for chat-created components and goals, net of the removed 💡
   // suggestion cards. Lazy bundle, zero bytes on the normal path.
-  { name: '@sentientui/snippet (editor overlay)', file: 'editor.global.js', limit: 25 * 1024 },
+  // +3072 (2026-09-23, native generation phase 1): the operator-only overlay
+  // now carries the DESCRIPTIVE half of the region skeleton capture (roles,
+  // classes, colours, ambient background) that was deliberately kept out of
+  // the always-on bundle, plus Rewrite previews (applyEdits) and "Refresh from
+  // page". Loaded only in an editor session, never for visitors. Measured
+  // 24934 → 27254.
+  // +1024 (2026-09-23, native generation phase 2; operator: "i dont mind
+  // pushing the size"): the site-style sampler (@sentientui/core/style-sample)
+  // runs on every editor open so Redesign can borrow the site's own classes.
+  // Operator-only bundle. Measured 29129.
+  // +512 (2026-09-24, same operator OK): colour normalization in the editor's
+  // style sampler and region capture (core css-color.ts) — Tailwind v4 sites
+  // report lab()/oklch(), which the sampler couldn't read, so a site's primary
+  // button had no measurable fill. Operator-only bundle. Measured 29728.
+  // +512 (2026-09-24): the sampler's floating-widget / consent-banner skip
+  // (CMP container list). Measured 30210.
+  { name: '@sentientui/snippet (editor overlay)', file: 'editor.global.js', limit: 29 * 1024 + 1024 },
 ];
 
 let allOk = true;

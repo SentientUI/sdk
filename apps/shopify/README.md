@@ -44,13 +44,14 @@ server-truth orders/refunds to the SentientUI API.
 
 Every checklist item below passed live on `sentientui-store.myshopify.com`,
 including the pixel path and the three-step checkout funnel, and the backend
-now runs at `sentientui-shopify.fly.dev` (see "Deploying to production").
+now runs at `connect.sentient-ui.com` (a CNAME to `sentientui-shopify.fly.dev`; see "Deploying to production").
 
 **Before submission.** The mandatory GDPR compliance webhooks
 (`customers/data_request`, `customers/redact`, `shop/redact`) are declared in
 `shopify.app.toml` and handled in `app/routes/webhooks.customers.*.tsx` /
-`webhooks.shop.redact.tsx`; the app is free and requests no Shopify charge (see
-"Pricing and billing"); the template's demo page is gone from the merchant nav.
+`webhooks.shop.redact.tsx`; paid plans are sold through Shopify App Pricing and
+the free plan covers everything the app sets up (see "Pricing and billing"); the
+template's demo page is gone from the merchant nav.
 What is left is **operator work, not code**:
 
 - **Re-confirm the protected-customer-data declaration.** Granted for
@@ -271,7 +272,8 @@ Runtime contract:
 ### 2. Point the app at the hosted URL and deploy
 
 1. Already done in the committed toml: `application_url` points at
-   `sentientui-shopify.fly.dev`, `automatically_update_urls_on_dev = false`
+   `connect.sentient-ui.com` (CNAME to `sentientui-shopify.fly.dev`; review
+   rejects "shopify" in the app's domain), `automatically_update_urls_on_dev = false`
    (so a stray `shopify app dev` cannot overwrite the prod URLs), and
    `redirect_urls` lists `<url>/auth/callback` + `<url>/auth/login` — these
    must match `authPathPrefix` in `app/shopify.server.ts`, NOT the template's
@@ -282,10 +284,64 @@ Runtime contract:
    subscriptions) as one app version. Webhook URIs are relative, so they
    follow `application_url` automatically.
 
+### Release order (this branch's changes)
+
+0. Before deploying the API, list every Shopify-billed paid account — all of
+   them are pre-187 (no subscription rows yet), and the legacy-plan rule above
+   finds their paying store through its allowlisted myshopify origin, which a
+   store whose keys were saved before 2026-09-06 and whose plan was bought
+   before 2026-09-21 without re-saving does not have. Check each has one
+   origin per Shopify store it runs; for any that does not, have the merchant
+   open the app once after deploy (provision + reconcile write their rows)
+   before anything else touches the account:
+   ```sql
+   SELECT u.id, u.plan, array_agg(o) FILTER (WHERE o LIKE 'https://%.myshopify.com') AS shop_origins
+     FROM users u LEFT JOIN projects p ON p.user_id = u.id LEFT JOIN LATERAL unnest(p.allowed_origins) o ON TRUE
+    WHERE u.billing_source = 'shopify' AND u.plan IN ('starter','growth','scale')
+    GROUP BY u.id, u.plan;
+   ```
+1. API with migrations 187 and 188 (`release_command` migrates before boot; the
+   boot check refuses an image whose migrations are unapplied) — the new
+   `/v1/provision/shopify/customer` route and plan-sync fields must exist
+   before an app build calls them, or the GDPR webhooks 500 until it does.
+2. Dashboard (`/connect/shopify`, `/r/` reports, Settings → Connected Shopify
+   stores) — BEFORE the Fly app, whose settings screen shows "Connect with
+   SentientUI": deployed first, that button led to a 404 (review R3 N6).
+3. Publish `@sentientui/snippet` 0.32 to npm — the embed's
+   `consentFrom:"shopify"` is ignored by 0.31.x.
+4. The Fly app (`SHOPIFY_APP_URL`, reconcile, metafield owner move) and
+   `shopify app deploy` (the theme embed's key fallback) together: the
+   settings screen stops asking for the second pk_ paste only when the embed
+   can read it. Not during an App Store review window.
+5. Merchants' next admin visit re-writes the app-data metafields; the old
+   shop-owned mapping is shown in the settings box until they save.
+6. `listing/LISTING.md` bullet 4 (Results card) and a zero-key bullet 1
+   describe this release — resubmit the listing copy only after it is live.
+
+**Customer data requests** are recorded in the project's audit log
+(`gdpr.customer_data_request`, with the orders held) — an operator must send
+them to the store owner within 30 days. `shop/redact` erases this app's rows;
+the merchant's SentientUI project (theirs, on their own account) is left alone
+by design — deleting it is the merchant's call from the dashboard. So are the
+API's billing records for the shop (its connection to the project and its
+Shopify subscription history), which the account's plan is derived from.
+
+**Zero-key connect (audit H11).** "Connect with SentientUI" signs `{shop,
+exp, n}` with `SHOPIFY_CONNECTOR_SECRET` and sends the merchant to
+`${SENTIENT_DASHBOARD_URL:-https://sentient-ui.com}/connect/shopify`. There the
+signed-in user picks or creates a project; the API (`POST
+/v1/mgmt/shopify/connect`) verifies the state, mints an ADDITIONAL pk_ + sk_
+(nothing rotated) and POSTs them to this app's `/connect/callback`, which only
+HOLDS them (`PendingConnect`, Prisma migration `20260925120000`). The merchant
+confirms in the embedded admin, which runs the normal save. The API needs
+`SHOPIFY_APP_URL` (default `https://connect.sentient-ui.com`) and the same
+`SHOPIFY_CONNECTOR_SECRET`; undelivered keys are revoked. Manual paste stays as
+the fallback.
+
 ### 3. Before App Store submission (not needed for custom installs)
 
-- Billing: decided — the app is free and carries no Shopify charge. See
-  "Pricing and billing" for the reasoning and the review answer.
+- Billing: decided — Shopify App Pricing (Managed Pricing) for Shopify
+  merchants, never Stripe. See "Pricing and billing".
 - Protected customer data: the self-serve declaration made for dev gets
   human review at submission; the app requests order data only, no PII
   fields, which is the cheapest tier to defend.
@@ -297,7 +353,10 @@ Runtime contract:
   enablement recorded while `shopify app dev` previewed the app does not
   carry over to the released version — after the first `shopify app
   deploy` (and `shopify app dev clean` for a stuck preview), re-enable
-  the embed in the theme editor and re-enter the pk. The web pixel is
+  the embed in the theme editor (the pk comes from the app's saved keys via
+  the `config.publishable_key` app-data metafield; a pk typed into the embed
+  still overrides it). Deploy the Fly app and the extension together: the
+  settings screen no longer asks for a second paste. The web pixel is
   unaffected: it's an API-created resource, not a theme setting.
 - **The production database starts empty.** Keys saved during dev lived
   in a dev database and do not travel; the merchant must save keys once on the
@@ -338,14 +397,59 @@ billing REPLACES Stripe (never alongside — nobody pays on two rails):
   accounts. Claiming it only at purchase left every free Shopify merchant —
   which is exactly what a reviewer is — looking at the dashboard's Stripe
   upgrade button, and that is what round 3 flagged as off-platform billing.
-  Uninstall releases it again (`disconnect: true` on the plan sync); a mere
-  cancellation does not, because that merchant can still re-subscribe through
+  Uninstall releases THAT shop's subscriptions (`disconnect: true` on the plan
+  sync, as of the uninstall's triggered-at) and hands the rail back only when
+  no other shop of the account still has live history; a mere cancellation
+  keeps the rail, because that merchant can still re-subscribe through
   Shopify.
-- The `app_subscriptions/update` webhook maps the active subscription to a
-  SentientUI plan and syncs it via `POST /v1/provision/shopify/plan` —
-  authorized by the shop's sk_ PLUS `SHOPIFY_CONNECTOR_SECRET` (a Fly secret
-  on both apps; the sk_ alone must never grant plan changes or any sk_
-  holder could self-upgrade).
+- The `app_subscriptions/update` webhook maps the subscription to a
+  SentientUI plan and syncs it via `POST /v1/provision/shopify/plan-by-shop`
+  (connector secret + the shop's sk_, which names the project even after a
+  rotation revoked it; the shop's binding to that project must be live), or
+  `POST /v1/provision/shopify/plan` for a shop not bound yet. Never by the sk_
+  alone — any sk_ holder could self-upgrade. Each subscription keeps its own
+  state and the plan is derived (the latest ACTIVE per shop, the highest
+  across shops), so delivery order does not matter.
+- Settings → Connected Shopify stores → Disconnect cuts a shop from a project
+  (connected either way — zero-key, or pasted keys, listed by domain): its
+  binding is marked disconnected and its subscriptions stop counting (not
+  while the owner reaches the shop through another project), then its connect
+  keys are revoked. The shop can still LOWER the plan (a cancellation in
+  Shopify, an uninstall) but an ACTIVE is refused with 409, which the app
+  treats as final. Only a key created after the disconnect re-binds the shop,
+  its plan restored by the reconcile that follows (Shopify's own ACTIVE) —
+  never by a marker a lost webhook could leave stale. The app shows a disconnected store as such
+  (provision reports `binding`), and a plan change SentientUI refuses lands in
+  the admin's drop banner. Billing continues in Shopify until the merchant
+  cancels there. Deleting a project cuts its shops the same way, first.
+- A shop has one live binding: connecting it to another project detaches the
+  old one (cutting it from another account if it moved), and an uninstall
+  detaches it. A connect re-attaches an uninstalled binding; a moved one needs
+  a key created after the move. When nothing on Shopify funds an account any
+  more — no live store and no counted live subscription — it returns to free
+  and card billing. A plan set before migration 187 (no subscription ever
+  active in the rows) ends only once no store could still be paying for it: no
+  live store whose subscriptions were never read from Shopify and found empty
+  (the app reports that read on provision), and no myshopify origin on the
+  account whose store is unaccounted for. Comps and contract plans are never
+  changed by a Shopify event.
+- A binding the shop moved away from is treated like a disconnected one: it
+  can only lower a plan. A cancellation ends the subscription on every
+  account still counting it, and an uninstall releases the account the shop
+  is live on whichever key delivered it. The app refuses to save a pasted key
+  whose store comes back disconnected — and, when replacing stored keys, any
+  answer that does not confirm the store live (a timeout keeps the current
+  keys). A plan change SentientUI refuses (the account is billed another way,
+  or the store is disconnected) is shown in its own admin banner
+  (`planIssueAt`, Prisma migration `20260925140000`) until a later plan event
+  applies — orders flowing again do not clear it.
+- Provisioning records the binding in one transaction on one connection,
+  serialised per shop, and only if the binding is still what it read (a
+  Disconnect committing mid-provision wins). If that step fails the API
+  answers 503 and writes nothing.
+- Rotating keys in the dashboard does not disconnect a store: its plan events
+  still reach the account (the connector secret, not the key, is the proof).
+  Use Disconnect for that.
 - The API marks such accounts `users.billing_source = 'shopify'`: the
   dashboard hides Stripe checkout for them (the API refuses it too), and a
   'free' sync (cancellation/uninstall) only downgrades accounts the Shopify

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { parseSnippetConfig } from './config';
 
 describe('parseSnippetConfig', () => {
@@ -78,6 +78,9 @@ describe('parseSnippetConfig', () => {
         noDims: { target: '#x' },                            // dims missing
         badTarget: { dims: { tone: ['a', 'b'] }, target: 7 }, // target not a string
         tooManyDims: { dims: { a: ['1','2'], b: ['1','2'], c: ['1','2'], d: ['1','2'], e: ['1','2'] } }, // > 4 dims
+        eqValue: { dims: { tone: ['calm', 'a=b'] } },        // '=' is the dims encoding's delimiter
+        pipeValue: { dims: { tone: ['calm', 'x|y'] } },      // so is '|'
+        eqName: { dims: { 'to=ne': ['a', 'b'] } },
       },
     })!;
     expect(Object.keys(cfg.slots)).toEqual(['good']);
@@ -122,5 +125,31 @@ describe('sections parsing (B1.1)', () => {
   it('caps at 50 so an oversized list degrades instead of 400ing the decide', () => {
     const many = Array.from({ length: 60 }, (_, i) => `#s${i}`);
     expect(parseSnippetConfig({ ...base, sections: many })?.sections).toHaveLength(50);
+  });
+});
+
+describe('consentFrom', () => {
+  it('accepts presets and option objects, drops anything else', () => {
+    expect(parseSnippetConfig({ apiKey: 'pk_test', consentFrom: 'onetrust' })?.consentFrom).toBe('onetrust');
+    expect(parseSnippetConfig({ apiKey: 'pk_test', consentFrom: { cmp: 'tcf', purposes: [1, 8] } })?.consentFrom).toEqual({ cmp: 'tcf', purposes: [1, 8] });
+    expect(parseSnippetConfig({ apiKey: 'pk_test', consentFrom: { cookie: 'c', value: 'y' } })?.consentFrom).toEqual({ cookie: 'c', value: 'y' });
+    expect(parseSnippetConfig({ apiKey: 'pk_test', consentFrom: 'trustme' })?.consentFrom).toBeUndefined();
+    expect(parseSnippetConfig({ apiKey: 'pk_test', consentFrom: { cmp: 'nope' } })?.consentFrom).toBeUndefined();
+  });
+
+  it('an unusable consent config fails CLOSED, with a warning (audit N4)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    for (const bad of [
+      { consentFrom: 'onetrsut' },
+      { consentFrom: { cmp: 'Cookiebot' } },
+      { consentFrom: { event: 'x' } },
+      { consentFrom: 42 },
+      { consent: 'false' },
+    ]) {
+      expect(parseSnippetConfig({ apiKey: 'pk_test', ...bad })?.consent, JSON.stringify(bad)).toBe(false);
+    }
+    expect(warn).toHaveBeenCalledTimes(5);
+    expect(parseSnippetConfig({ apiKey: 'pk_test' })?.consent).toBeUndefined();
+    warn.mockRestore();
   });
 });
