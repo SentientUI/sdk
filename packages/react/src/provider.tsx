@@ -24,6 +24,7 @@ import {
   type SitePalette,
   type SlotConfigEntry,
   type StyleVocabulary,
+  type StageAttributes,
   type SlotResult,
 } from '@sentientui/core';
 import type { SemanticType } from '@sentientui/core/engagement';
@@ -263,6 +264,18 @@ export type AdaptiveProviderProps = {
    * per visit); remount the provider to apply a new value.
    */
   persona?: string;
+  /**
+   * Opt-in theme hook: put the visitor's funnel stage on
+   * `<html data-sentient-stage>` so CSS can make deterministic per-stage
+   * changes (hide the first-order discount from people who have bought).
+   * Projects with stages turned on only; never for the control group.
+   * `true` exposes `new`, `browsing`, `carted` and `returning` (has bought
+   * here); `'detailed'` splits `returning` into `customer` and `lapsed`. Any
+   * script on the page can read it, which is why detail is a second opt-in.
+   * How the visitor arrived (ads, emails) is never written to the page.
+   * `AdaptiveRoot` also writes it in the server HTML.
+   */
+  stageAttributes?: StageAttributes;
   /**
    * Keyless local mode. 'auto' (default) simulates decisions on-device in
    * development builds when no valid API key is configured; `true` forces the
@@ -527,6 +540,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       ssrSessionId: props.ssrSessionId,
       country: props.country,
       persona: props.persona,
+      stageAttributes: props.stageAttributes,
       localMode: props.localMode,
       initialSlots: props.initialSlots,
       initialSlotConfig: props.initialSlotConfig,

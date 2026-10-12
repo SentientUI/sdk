@@ -15,14 +15,18 @@ replayable decisions.
 ## What's inside
 
 **Bandit / Thompson sampling** (`bandit.ts`)
-- `sampleBeta(alpha, beta, rand?)` — one draw from `Beta(alpha, beta)` (Marsaglia–Tsang gamma method).
-- `sampleArm(arms, rand?)` — Thompson-samples each arm's Beta posterior and returns the argmax arm id (or `null` for no arms).
+- `sampleBeta(alpha, beta, rand?)` — one draw from `Beta(alpha, beta)` (Marsaglia–Tsang gamma method). Returns `NaN` ("no draw") when a shape is non-finite or `<= 0`.
+- `sampleArm(arms, rand?)` — Thompson-samples each arm's Beta posterior and returns the argmax arm id (or `null` for no arms). Arms with an unusable posterior are excluded from the draw; if every arm is unusable the pick is uniform.
+- `isValidBetaShape(alpha, beta)`, `invalidPosteriorArms(arms)`, `usablePosteriors(arms)` — the validity rule the samplers apply, exported so callers can surface corrupt rows and compute selection probabilities that match the draw.
 
 **Empirical-Bayes pooling & shrinkage** (`shrinkage.ts`, `pooling.ts`)
 - `shrunkPosterior(persona, pooled, m?)` — one-axis read-time shrinkage; cells are born warm (`w = m / (m + exposures)`) and detach as their own data accumulates. `SHRINKAGE_M` is the default strength.
 - `posteriorOfCounts({ exposures, conversions })` — `Beta` posterior from raw counts (`alpha = conversions + 1`, `beta = max(0, exposures − conversions) + 1`).
 - `pooledPosterior(cells, personaKnown, m?)` — hierarchical partial pooling over `(segment, persona)`; reproduces legacy segment-only and persona-only behavior when only those cells are present. `POOL_ALL` is the `__all__` sentinel for marginal/global rows.
 - `weightCellsFor(...)` — the write-side counterpart: which weight rows a single trial/credit must bump.
+
+**Value-weighted (EV) selection** (`ev.ts`)
+- `sampleArmEv(arms, reference, rand?)` — Thompson draw × each arm's empirical-Bayes-shrunk average order value (`shrunkAvgValue`, strength `EV_SHRINK_K`). An arm whose value multiplier is non-finite is excluded (if every one is, the draw falls back to plain CVR Thompson); with no value data it ranks exactly like `sampleArm`.
 
 **Arm encoding & slot validation** (`arm-encoding.ts`)
 - `canonicalArm(values)` / `parseArm(arm)` — stable string encoding of a multi-dimensional arm and its inverse.
@@ -34,12 +38,14 @@ replayable decisions.
 - `LAYOUT_ARCHETYPES` / `orderByArchetype(sections, sectionTypes, archetype, sectionRoles?)` — a catalogue of orderings (`conversion_led`, `evidence_led`, `price_led`, `discovery_led`). Not a persona taxonomy.
 - `previewOrderForPersona(sections, sectionTypes, persona, sectionRoles?)` — **keyless local mode only.** Maps any persona key onto an archetype so `?sentient_persona=<anything>` visibly rearranges a page with no server. Never use it for serving.
 - `chooseLayout(sections, sectionTypes, persona, learned, rand?)` — Thompson-samples the learned layout posteriors over the candidates. The authored order is always among them, so "leave the page alone" can win.
+- `chooseLayoutFactored(sections, sectionTypes, persona, cells, rand?)` (`layout-factored.ts`) — the factored layout value model: one posterior per (section type, position bucket) shared by every candidate, with a shrunk persona deviation, instead of one independent posterior per order.
 - *Deprecated:* `applyClusterHeuristic` (use `orderByArchetype` on the server, `previewOrderForPersona` locally).
 - `hashLayout(order)` — stable hash of a section order (the `layoutHash` key).
 
-**Personas** (`personas.ts`)
+**Personas** (`personas.ts`, `vocabulary.ts`)
 - `UNKNOWN_PERSONA`, `UNKNOWN_PERSONA_DISPLAY` — the only persona key the package defines. There is no built-in persona list: every persona comes from the project's own vocabulary (declared by the app, or promoted by discovery).
 - `canonicalPersona(label)` — normalize any label to a persona key (trimmed, lowercased, key-shaped), or `'unknown'`. Says nothing about vocabulary membership.
+- `resolvePersona({ declared, clusterLabel, inferredConfidence }, members)` — which persona a session is served under: a declared key in the vocabulary, else an inferred label the active vocabulary still contains, else `unknown`. An unrecognized declared value is reported, never served.
 
 **Deterministic helpers** (`deterministic.ts`)
 - `fnv1a(input)` — FNV-1a hash.

@@ -9,9 +9,17 @@ export function envVarName(framework: Framework): string {
       return 'REACT_APP_SENTIENT_API_KEY';
     case 'vite':
     case 'remix':
+    case 'react-router':
       // Vite (and Remix v2, which is Vite-powered) only exposes VITE_-prefixed
       // vars to the client via import.meta.env.
       return 'VITE_SENTIENT_API_KEY';
+    case 'astro':
+      // Astro (Vite underneath) exposes only PUBLIC_-prefixed vars to client
+      // islands via import.meta.env — a VITE_ var is undefined there.
+      return 'PUBLIC_SENTIENT_API_KEY';
+    case 'gatsby':
+      // Gatsby inlines only GATSBY_-prefixed vars into the browser bundle.
+      return 'GATSBY_SENTIENT_API_KEY';
     case 'next-app':
     case 'next-pages':
     case 'unknown':
@@ -19,6 +27,15 @@ export function envVarName(framework: Framework): string {
       // reaches writeEnvFile (init bails earlier); it just needs a sane default.
       return 'NEXT_PUBLIC_SENTIENT_API_KEY';
   }
+}
+
+/**
+ * The env file the framework actually loads in development. Gatsby reads
+ * `.env.development` / `.env.production` and ignores `.env.local`, so writing
+ * the key there left a Gatsby site silently keyless.
+ */
+export function envFileName(framework: Framework): string {
+  return framework === 'gatsby' ? '.env.development' : '.env.local';
 }
 
 export type EnvWriteResult = 'created' | 'appended' | 'updated' | 'kept';
@@ -37,7 +54,7 @@ export type EnvWriteResult = 'created' | 'appended' | 'updated' | 'kept';
  */
 export function writeEnvFile(cwd: string, framework: Framework, key: string | undefined): EnvWriteResult {
   const varName = envVarName(framework);
-  const file = path.join(cwd, '.env.local');
+  const file = path.join(cwd, envFileName(framework));
   const block = [
     '',
     '# SentientUI — leave empty for local mode (decisions are simulated on-device; nothing is sent)',

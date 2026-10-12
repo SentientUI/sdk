@@ -63,6 +63,49 @@ import { AdaptiveProvider } from '@sentientui/react';
 <AdaptiveProvider apiKey={import.meta.env.${envVar} ?? ''}${c}>
   <Outlet />
 </AdaptiveProvider>`;
+    case 'react-router':
+      // React Router v7 framework mode is Remix's successor: same app/root.tsx
+      // shape, Vite-powered, so the client reads VITE_ vars from import.meta.env.
+      return `// app/root.tsx — wrap your <Outlet /> inside <body>
+import { AdaptiveProvider } from '@sentientui/react';
+
+// inside the Layout/App component body:
+<AdaptiveProvider apiKey={import.meta.env.${envVar} ?? ''}${c}>
+  <Outlet />
+</AdaptiveProvider>`;
+    case 'gatsby':
+      // Gatsby has no single root component: the provider goes in BOTH
+      // wrapRootElement hooks, or SSR-built pages and the browser runtime
+      // disagree. Only GATSBY_-prefixed vars reach the browser bundle.
+      return `// gatsby-browser.tsx AND gatsby-ssr.tsx (same export in both files)
+import * as React from 'react';
+import { AdaptiveProvider } from '@sentientui/react';
+
+export const wrapRootElement = ({ element }: { element: React.ReactNode }) => (
+  <AdaptiveProvider apiKey={process.env.${envVar} ?? ''}${c}>
+    {element}
+  </AdaptiveProvider>
+);`;
+    case 'astro':
+      // Astro renders React as isolated islands: there is no app-wide React
+      // root to wrap, and a provider in one island is invisible to another.
+      // Saying "wrap your app" here sent people looking for a root that does
+      // not exist; each hydrated island carries its own provider instead.
+      return `// Astro has no app-wide React root: wrap INSIDE each React island that uses SentientUI.
+// src/components/AdaptiveIsland.tsx
+import { AdaptiveProvider } from '@sentientui/react';
+import { AdaptiveExampleHero } from './adaptive-example';
+
+export default function AdaptiveIsland() {
+  return (
+    <AdaptiveProvider apiKey={import.meta.env.${envVar} ?? ''}${c}>
+      <AdaptiveExampleHero />
+    </AdaptiveProvider>
+  );
+}
+
+// then in a .astro page (needs @astrojs/react) — client:load so it hydrates:
+// <AdaptiveIsland client:load />`;
     case 'cra':
       return `// src/index.tsx
 import { createRoot } from 'react-dom/client';
@@ -80,13 +123,12 @@ createRoot(document.getElementById('root')!).render(
 }
 
 export function unknownInstructions(consent?: ConsentPreset): string {
-  return `[sentientui] could not detect a supported framework (Next.js, Vite, Remix, CRA).
+  return `[sentientui] could not detect a supported framework (Next.js, React Router v7, Remix, Gatsby, Astro, Vite, CRA).
 Manual setup:
   1. Install the SDK:        npm install @sentientui/react
   2. Wrap your app root in:  <AdaptiveProvider apiKey=""${consent ? ` consentFrom="${consent}"` : ''}>…</AdaptiveProvider>
   3. Leave the key empty for local mode; decisions are simulated on-device.
-  4. Open your app with ?sentient_persona=a, then ?sentient_persona=b, to preview two personas
-     (keyless local mode accepts any key).`;
+  4. ${VERIFY_HINT}`;
 }
 
 /** Printed after the snippet. Tracking is default-on, so an install made
@@ -102,10 +144,40 @@ export function consentNote(consent?: ConsentPreset): string {
   ].join('\n');
 }
 
+/**
+ * How to check the install worked. This used to say the page should "render
+ * differently" under two ?sentient_persona= values — a check the CLI's own
+ * scaffold can never pass: the example <Adaptive> renders its original
+ * children until a version is published from the dashboard, and keyless local
+ * mode has no dashboard, so both URLs looked identical and a working install
+ * read as broken. What keyless mode DOES do is honour ?sentient_persona= (any
+ * well-formed key) and write it to <html data-sentient-persona> once the SDK
+ * decides, so that attribute is the observable check. It is written once per
+ * page load (single-writer), hence "reload", not client-side navigation.
+ */
+export const VERIFY_HINT =
+  'Verify: load the page with ?sentient_persona=a and check that <html> carries data-sentient-persona="a"\n' +
+  '     (devtools console: document.documentElement.dataset.sentientPersona), then reload with ?sentient_persona=b\n' +
+  '     and see "b". Keyless local mode accepts any key; the example itself keeps showing its original\n' +
+  '     until a version is published from the dashboard (that needs a real pk_ key).';
+
+export function devPort(framework: Framework): number {
+  switch (framework) {
+    case 'vite':
+    case 'react-router':
+      return 5173;
+    case 'astro':
+      return 4321;
+    case 'gatsby':
+      return 8000;
+    default:
+      return 3000;
+  }
+}
+
 export function finale(framework: Framework): string {
-  const port = framework === 'vite' ? 5173 : 3000;
   // Any key works in keyless local mode. This used to name one of
   // the four seeded personas removed 2026-09-13 — against a real project that key no
   // longer exists, so the example read as a persona the SDK ships with.
-  return `open http://localhost:${port}?sentient_persona=a (then ?sentient_persona=b)`;
+  return `open http://localhost:${devPort(framework)}/?sentient_persona=a\n${VERIFY_HINT}`;
 }

@@ -8,6 +8,7 @@ import { cacheEditorToken, clearCachedEditorToken } from '../editor-token';
 import { deriveSitePalette } from './palette';
 import { CSS_PROP, cssValueSafe } from '../css-guard';
 import { applyOps } from '../ops';
+import { applyContentText, canTestText, currentText } from '../text';
 import { normalizePagePath, pageScopeChoices, pageScopeLabel } from './page-scope-choice';
 import {
   buildDraftPayload, funnelSummaryLine, stepOptions, toggleStepSelection,
@@ -500,6 +501,16 @@ export function buildStyleOps(c: StyleControls): { style: Record<string, string>
   }
   return { style, errors };
 }
+
+// Every text input / select in the panel. border-box is load-bearing: the panel
+// lives in the host page's light DOM, so on a site with no global box-sizing
+// reset `width: 100%` plus padding and border made each field ~20px wider than
+// the panel, clipping its right edge. Three copies of this object had drifted.
+const FIELD_STYLE: Partial<CSSStyleDeclaration> = {
+  display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '4px', padding: '7px 9px',
+  borderRadius: '8px', border: '1px solid rgba(255,255,255,0.18)',
+  background: '#1f2937', color: '#fff', font: '13px system-ui, sans-serif',
+};
 
 function el(tag: string, style: Partial<CSSStyleDeclaration>, text?: string): HTMLElement {
   const node = document.createElement(tag);
@@ -1066,16 +1077,11 @@ export function mount(b: Boot): void {
     closeForm();
     const getters: Record<string, () => string> = {};
     const feedbackEls: Record<string, HTMLElement> = {};
-    const inputStyle: Partial<CSSStyleDeclaration> = {
-      display: 'block', width: '100%', marginTop: '4px', padding: '7px 9px',
-      borderRadius: '8px', border: '1px solid rgba(255,255,255,0.18)',
-      background: '#1f2937', color: '#fff', font: '13px system-ui, sans-serif',
-    };
     for (const f of fields) {
       const label = el('label', { display: 'block', fontSize: '12px', opacity: '0.85', marginTop: '8px' }, f.label);
       formHost.append(label);
       if (f.type === 'select') {
-        const select = el('select', inputStyle) as HTMLSelectElement;
+        const select = el('select', FIELD_STYLE) as HTMLSelectElement;
         select.setAttribute('data-field', f.key);
         const blank = document.createElement('option');
         blank.value = ''; blank.textContent = '— no change —';
@@ -1088,7 +1094,7 @@ export function mount(b: Boot): void {
         getters[f.key] = () => select.value;
         formHost.append(select);
       } else if (f.type === 'color') {
-        const input = el('input', { ...inputStyle, padding: '2px', height: '34px' }) as HTMLInputElement;
+        const input = el('input', { ...FIELD_STYLE, padding: '2px', height: '34px' }) as HTMLInputElement;
         input.type = 'color';
         input.setAttribute('data-field', f.key);
         // An <input type=color> always reports a value (defaults to #000000), so
@@ -1098,7 +1104,7 @@ export function mount(b: Boot): void {
         getters[f.key] = () => (touched ? input.value : '');
         formHost.append(input);
       } else {
-        const input = el('input', inputStyle) as HTMLInputElement;
+        const input = el('input', FIELD_STYLE) as HTMLInputElement;
         input.setAttribute('data-field', f.key);
         if (f.value !== undefined) input.value = f.value;
         getters[f.key] = () => input.value;
@@ -1145,10 +1151,7 @@ export function mount(b: Boot): void {
   const scopeControl = (slotId: string): { node: HTMLElement; value: () => string } => {
     const here = normalizePagePath(location.pathname);
     const node = el('div', {});
-    const sel = el('select', {
-      display: 'block', width: '100%', marginTop: '4px', padding: '7px 9px', borderRadius: '8px',
-      border: '1px solid rgba(255,255,255,0.18)', background: '#1f2937', color: '#fff', font: '13px system-ui, sans-serif',
-    }) as HTMLSelectElement;
+    const sel = el('select', FIELD_STYLE) as HTMLSelectElement;
     sel.setAttribute('data-field', 'page');
     for (const v of pageScopeChoices(here, knownPages[slotId])) {
       const o = document.createElement('option');
@@ -1453,16 +1456,16 @@ export function mount(b: Boot): void {
     // directly, so the buttons themselves never render.
     textBtn.style.display = 'none';
     styleBtn.style.display = 'none';
-    // The text test applies via el.textContent (ops.ts), which REPLACES all child
-    // markup — arming "Original" on a container like <h1>Get <span>started</span></h1>
-    // would flatten it to plain text for every visitor. So the text test is offered
-    // only for leaf / text-only elements; containers get a disabled button that
-    // explains why. Style and goal are non-destructive and stay gated on uniqueness
-    // alone.
-    const isLeaf = t.childElementCount === 0;
-    (textBtn as HTMLButtonElement).disabled = !unique || !isLeaf;
+    // A text test changes the element's sole text node (ops.ts → text.ts), so a
+    // label + icon CTA keeps its icon. Several text nodes, like
+    // <h1>Get <span>started</span></h1>, have no single place the copy belongs —
+    // applying would flatten the markup for every visitor — so those get a
+    // disabled button that explains why. Style and goal are non-destructive and
+    // stay gated on uniqueness alone.
+    const textOk = canTestText(t);
+    (textBtn as HTMLButtonElement).disabled = !unique || !textOk;
     textBtn.title = !unique ? ''
-      : isLeaf ? ''
+      : textOk ? ''
       : 'This element contains other elements, so testing text here would replace them. Pick the text itself (e.g. the heading), not its container.';
     (styleBtn as HTMLButtonElement).disabled = !unique;
     (arrangeBtn as HTMLButtonElement).disabled = !unique;
@@ -1613,14 +1616,16 @@ export function mount(b: Boot): void {
     );
 
     // Live preview: the alternative wording lands on the element as it is
-    // typed (leaf-only, same guard as the form itself); empty restores the
-    // original so backspacing never leaves a blank element on screen.
+    // typed (same guard as the form itself); empty restores the original so
+    // backspacing never leaves a blank element on screen. Every write goes
+    // through applyContentText, as the served version does — a textContent
+    // write here stripped a CTA's icon in the preview and again on Cancel.
     const target = selected;
-    const origText = target.textContent ?? '';
-    previewRestore = () => { target.textContent = origText; };
+    const origText = currentText(target);
+    previewRestore = () => { applyContentText(target, origText); };
     const altField = formHost.querySelector<HTMLInputElement>('input[data-field="alt"]');
     altField?.addEventListener('input', () => {
-      target.textContent = altField.value.trim() === '' ? origText : altField.value;
+      applyContentText(target, altField.value.trim() === '' ? origText : altField.value);
     });
   };
 
@@ -1991,11 +1996,7 @@ export function mount(b: Boot): void {
     closeForm();
     let selection: string[] = [];
     const nameLabel = el('label', { display: 'block', fontSize: '12px', opacity: '0.85', marginTop: '8px' }, 'Funnel name');
-    const nameInput = el('input', {
-      display: 'block', width: '100%', marginTop: '4px', padding: '7px 9px',
-      borderRadius: '8px', border: '1px solid rgba(255,255,255,0.18)',
-      background: '#1f2937', color: '#fff', font: '13px system-ui, sans-serif',
-    }) as HTMLInputElement;
+    const nameInput = el('input', FIELD_STYLE) as HTMLInputElement;
     formHost.append(nameLabel, nameInput);
     const orderNote = el('div', { fontSize: '11px', opacity: '0.7', marginTop: '6px' }, 'Steps (click in journey order):');
     formHost.append(orderNote);
@@ -2220,7 +2221,9 @@ export function mount(b: Boot): void {
       elements.push({
         ref, tag: node.tagName.toLowerCase().slice(0, 16),
         text: (node.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 300),
-        isLeaf: node.childElementCount === 0, inForm: !!node.closest('form'),
+        // `isLeaf` is the API's "text versions allowed" flag (editor-chat.ts):
+        // a label + icon CTA qualifies, as in the editor's own text test.
+        isLeaf: canTestText(node), inForm: !!node.closest('form'),
         ...(isSel ? { selected: true } : {}), ...(label ? { label: label.slice(0, 120) } : {}),
       });
     };
@@ -2262,11 +2265,11 @@ export function mount(b: Boot): void {
    *  puts the page back exactly like a form preview. */
   const previewVersion = (node: HTMLElement, ops: SlotOps | null): void => {
     discardPreview();
-    const origText = node.textContent ?? '';
+    const origText = currentText(node);
     const origCss = node.style.cssText;
-    previewRestore = () => { node.textContent = origText; node.style.cssText = origCss; };
+    previewRestore = () => { applyContentText(node, origText); node.style.cssText = origCss; };
     if (!ops) return;
-    if (typeof ops.text === 'string') node.textContent = ops.text;
+    if (typeof ops.text === 'string') applyContentText(node, ops.text);
     for (const [k, v] of Object.entries(ops.style ?? {})) {
       const prop = CSS_PROP[k];
       if (prop && typeof v === 'string' && cssValueSafe(v)) node.style.setProperty(prop, v.trim(), 'important');

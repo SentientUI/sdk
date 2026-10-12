@@ -12,6 +12,12 @@ export type SnippetConfig = {
    */
   context?: 'landing' | 'ecommerce' | 'saas' | 'marketplace';
   personaAttributes: boolean;
+  /** Opt-in `<html data-sentient-stage>`: the visitor's funnel stage, for
+   *  per-stage CSS. `true` → `new` | `browsing` | `carted` | `returning`
+   *  (has bought here); `'detailed'` splits `returning` into `customer` and
+   *  `lapsed`. Only projects with stages on, never the control group, never
+   *  how the visitor arrived. Omitted unless declared. */
+  stageAttributes?: true | 'detailed';
   /** Consent gate passthrough to core. Omitted when not declared (core defaults to true). */
   consent?: boolean;
   /** Read consent from the site's consent platform instead of `consent`:
@@ -146,6 +152,7 @@ export function parseSnippetConfig(raw: unknown): SnippetConfig | null {
     cfg.preConsentBehavior = r.preConsentBehavior;
   }
   if (r.debug === true) cfg.debug = true;
+  if (r.stageAttributes === true || r.stageAttributes === 'detailed') cfg.stageAttributes = r.stageAttributes;
   if (typeof r.registry === 'boolean') cfg.registry = r.registry;
   if (typeof r.editorSrc === 'string') cfg.editorSrc = r.editorSrc;
   if (typeof r.consentSrc === 'string') cfg.consentSrc = r.consentSrc;

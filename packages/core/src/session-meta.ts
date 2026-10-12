@@ -198,6 +198,8 @@ export type SessionUpsertPayload = {
   clickIds: Record<string, string>;
   deviceClass: string;
   trafficSource: string;
+  /** Landing page path, no query string (arrival classification). */
+  landingPath?: string;
   referrerDomain: string | null;
   timeOfDay: string;
   dayOfWeek: string;
@@ -234,6 +236,8 @@ export function buildSessionUpsertPayload(
     now?: Date;
     /** `navigator.webdriver` value from the browser, when available. */
     webdriver?: boolean;
+    /** The landing page's path (no query string), when the caller knows it. */
+    landingPath?: string;
   },
 ): SessionUpsertPayload {
   const ua = opts?.userAgent?.trim() ?? '';
@@ -252,5 +256,6 @@ export function buildSessionUpsertPayload(
     timeOfDay: detectTimeOfDay(now),
     dayOfWeek: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][now.getDay()] ?? 'sun',
     automation: opts?.webdriver === true || uaTokenMatch(ua),
+    ...(opts?.landingPath ? { landingPath: opts.landingPath.split(/[?#]/)[0] } : {}),
   };
 }

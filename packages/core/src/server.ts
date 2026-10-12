@@ -55,6 +55,12 @@ export type ServerAssignConfig = {
    */
   clickIds?: Record<string, string>;
   /**
+   * The landing page's path (no query string). With it the server can tell a
+   * paid click to a product page, or a Shopify `/discount/CODE` link, from any
+   * other arrival on the FIRST decision of the visit.
+   */
+  landingPath?: string;
+  /**
    * Set true when the request carries a tracking opt-out — `DNT: 1` or
    * `Sec-GPC: 1`. When set, the SSR helpers skip the session upsert and the
    * assign/decide call entirely: the page renders defaults/baseline and no
@@ -155,6 +161,7 @@ export async function preloadAssignments(
       utmParams: config.utmParams,
       clickIds: config.clickIds,
       appOrigin: config.origin,
+      landingPath: config.landingPath,
     }),
     ...(config.persona ? { persona: config.persona } : {}),
   };
@@ -239,6 +246,11 @@ export type DecideResult = {
   palette?: SitePalette;
   /** Registry mode only: site styles the served Redesign arms borrow. */
   vocabulary?: import('./style-vocabulary.js').StyleVocabulary;
+  /** The visit's funnel stage, raw — projects with stages on, treated visitors
+   *  only. Pass it through `exposedStage` before it reaches the page. */
+  stage?: string;
+  /** The visit's serving context. Never for the page. */
+  context?: string;
 };
 
 /**
@@ -313,6 +325,7 @@ export async function preloadDecisions(
       utmParams: config.utmParams,
       clickIds: config.clickIds,
       appOrigin: config.origin,
+      landingPath: config.landingPath,
     }),
     ...(config.persona ? { persona: config.persona } : {}),
   };
@@ -378,6 +391,8 @@ export async function preloadDecisions(
       vocabulary?: import('./style-vocabulary.js').StyleVocabulary;
       persona?: string;
       confidence?: number;
+      stage?: unknown;
+      context?: unknown;
     };
 
     const slots: Record<string, SlotResult> = {};
@@ -406,6 +421,8 @@ export async function preloadDecisions(
       ...(slotConfigOk ? { slotConfig: data.slotConfig } : {}),
       ...(data.palette ? { palette: data.palette } : {}),
       ...(data.vocabulary ? { vocabulary: data.vocabulary } : {}),
+      ...(typeof data.stage === 'string' ? { stage: data.stage } : {}),
+      ...(typeof data.context === 'string' ? { context: data.context } : {}),
     };
   } catch (err) {
     console.error('[SentientUI] preloadDecisions: decide threw', err);

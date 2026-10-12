@@ -4,6 +4,7 @@ import type { SnippetSlotDecl } from './config';
 import { isLocatorMiss, isUrlScopedOut, resolveLocatorOne } from './locator';
 import { applyOps } from './ops';
 import { applySlotBlocks, sweepOrphanBlocks } from './blocks';
+import { applyContentText } from './text';
 
 type SlotResult = string | Record<string, string>;
 
@@ -89,35 +90,9 @@ export function applySlotArms(
   }
 }
 
-/**
- * Put a content arm's copy into `el` without flattening its markup.
- * `el.textContent = copy` destroyed every child element: a target wrapping an
- * icon + label lost the icon, and a target that WRAPS the site's <button> lost
- * the button itself — the styled control became bare text. When the target has
- * exactly one visible text node, only that node's value changes, so every
- * element and class around it survives. Otherwise (several texts, or none)
- * there is no single place the copy belongs, and textContent — the target
- * element keeps its own styling — is still the honest fallback. Idempotent:
- * after either path the target holds one text node with the copy.
- * Same rule as @sentientui/react's slot-text.ts.
- */
-export function applyContentText(el: Element, text: string): void {
-  // 4 = NodeFilter.SHOW_TEXT; the global isn't guaranteed outside browsers.
-  const walker = el.ownerDocument.createTreeWalker(el, 4);
-  let only: Node | null = null;
-  for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
-    if ((n.nodeValue ?? '').trim() === '') continue;
-    const parent = n.parentElement?.tagName;
-    if (parent === 'SCRIPT' || parent === 'STYLE' || parent === 'TEMPLATE') continue;
-    if (only !== null) {
-      el.textContent = text;
-      return;
-    }
-    only = n;
-  }
-  if (only !== null) only.nodeValue = text;
-  else el.textContent = text;
-}
+// applyContentText lives in ./text so ops.ts (which this file imports) can
+// share it without an import cycle; re-exported for existing importers.
+export { applyContentText } from './text';
 
 /**
  * Registry-mode apply: the server owns the declared space, so we trust the

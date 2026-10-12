@@ -1,5 +1,39 @@
 # @sentientui/policy
 
+## 0.16.0
+
+### Minor Changes
+
+- 0bd0768: `sampleContextArm`, `sampleContextArmNested`, `contextRootPosteriors`, `relativeEffect`: Thompson sampling partitioned by a visit context (funnel stage or arrival class), where only each arm's log-odds effect relative to the original crosses contexts — never a conversion rate — with the segment × persona cell nested under a correlated root draw.
+
+## 0.15.0
+
+### Minor Changes
+
+- 9357f9f: `computeStage`, `arrivalClass`, `resolveContext`, `stageHintFor`, `campaignIntentOf`: a visitor's funnel stage (new, browsing, carted, customer, lapsed) from their own history before a decision, the strong-intent class of a visit's arrival (cart recovery, offer, product ad, search intent, retargeting, referred, paid prospecting), and the single context the two resolve to.
+
+## 0.14.0
+
+### Minor Changes
+
+- f684da5: `classifyArrival` and `normalizeLandingPath`: classify how a visitor arrived (paid/organic search, paid/organic social, video, email/SMS, affiliate, AI assistant, marketplace app, referral, direct) from first-party landing facts only — UTM params, which click-ID keys are present (never their values), the referrer host and the in-app-browser user agent.
+
+## 0.13.1
+
+### Patch Changes
+
+- 3c77319: `sampleArmEv` no longer throws when every value multiplier is non-finite. An arm whose `shrunkAvgValue` is NaN or ±Infinity (a NaN `valueSum`, a NaN or infinite reference) is now excluded from the EV draw — the same rule the posterior guard applies to corrupt Beta shapes — and when every multiplier is non-finite the draw falls back to plain CVR Thompson over the posteriors. Before, an all-NaN set left the argmax with no winner and dereferenced `null`, and a `+Infinity` arm won every draw. New export: `usableMultipliers`. Draws with finite multipliers are unchanged, including their consumption of `rand`.
+
+## 0.13.0
+
+### Minor Changes
+
+- 17b44e9: Thompson sampling no longer lets a corrupt posterior capture traffic. `sampleBeta` returns `NaN` ("no draw") when a shape is non-finite or `<= 0` instead of running the gamma sampler on it (NaN in, a blow-up for shapes in (−1, 0), 0/0 for `alpha = beta = 0`). `sampleArm` and `sampleArmEv` exclude arms with an unusable posterior from the draw — before, a NaN draw on the first arm won every argmax — and pick uniformly only when every arm is unusable. The factored slot and layout models drop candidates that score with a corrupt cell. New exports: `isValidBetaShape`, `invalidPosteriorArms`, `usablePosteriors`. Draws over valid posteriors are unchanged, including their consumption of `rand`.
+
+### Patch Changes
+
+- 5c8f59a: New `holdoutUnit(projectId, sessionId)` and `fmix32(h)`: the holdout bucket is now salted by project and finalized with murmur3's fmix32, so two projects no longer hold out the same visitors. Server-side only — no SDK computes holdout, and `fnv1a` / `pickDeterministicArm` are unchanged, so local-engine decisions and capture ids from older SDK versions still match.
+
 ## 0.12.1
 
 ### Patch Changes

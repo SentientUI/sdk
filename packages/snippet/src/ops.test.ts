@@ -8,6 +8,14 @@ beforeEach(() => {
 });
 
 describe('applyOps', () => {
+  it('keeps a CTA icon when the text changes (editor text tests serve through here)', () => {
+    document.body.innerHTML = '<a id="c">Let’s Collaborate<svg id="i"></svg></a>';
+    const el = document.getElementById('c')!;
+    applyOps(el, { text: 'Book a design sprint' }, 'c', document);
+    expect(el.textContent).toBe('Book a design sprint');
+    expect(el.querySelector('#i')).not.toBeNull();
+  });
+
   it('sets text via textContent, never innerHTML', () => {
     document.body.innerHTML = '<a id="c">old</a>';
     const el = document.getElementById('c')!;

@@ -29,6 +29,14 @@ describe('parseSnippetConfig', () => {
     expect(cfg).toEqual({ apiKey: 'pk_abc', personaAttributes: false, slots: {} });
   });
 
+  it('accepts stageAttributes true or "detailed" and drops anything else', () => {
+    expect(parseSnippetConfig({ apiKey: 'pk_x', stageAttributes: true })?.stageAttributes).toBe(true);
+    expect(parseSnippetConfig({ apiKey: 'pk_x', stageAttributes: 'detailed' })?.stageAttributes).toBe('detailed');
+    for (const v of ['true', 'full', 1, false, null]) {
+      expect(parseSnippetConfig({ apiKey: 'pk_x', stageAttributes: v })).not.toHaveProperty('stageAttributes');
+    }
+  });
+
   it('records an explicit sectionCapture: false (default-on is applied at the gate)', () => {
     const cfg = parseSnippetConfig({ apiKey: 'pk_x', sectionCapture: false });
     expect(cfg?.sectionCapture).toBe(false);

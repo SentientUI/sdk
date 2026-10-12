@@ -352,7 +352,7 @@ export default function Index() {
                   <Text as="p" variant="bodySm" tone="subdued">
                     Measured against visitors who always see your original store (the control group). As of{" "}
                     {data.results.computedAt}.{" "}
-                    <Link url={`${data.dashboardUrl}/projects/${data.results.projectId}`} target="_blank">
+                    <Link url={`${data.dashboardUrl}/projects/${data.results.projectId}?via=shopify`} target="_blank">
                       Open in SentientUI
                     </Link>
                   </Text>
@@ -491,7 +491,7 @@ export default function Index() {
                 </Form>
                 <Text as="p" variant="bodyMd">
                   Or paste a project&apos;s keys from the{" "}
-                  <Link url="https://sentient-ui.com" target="_blank">
+                  <Link url={`${data.dashboardUrl}/dashboard?via=shopify`} target="_blank">
                     SentientUI dashboard
                   </Link>{" "}
                   (Settings → API keys):
@@ -558,10 +558,10 @@ export default function Index() {
                   </List.Item>
                   <List.Item>
                     Try a different look: open your storefront from the{" "}
-                    <Link url="https://sentient-ui.com" target="_blank">
+                    <Link url={`${data.dashboardUrl}/dashboard?via=shopify`} target="_blank">
                       SentientUI dashboard
                     </Link>{" "}
-                    (Components → Edit on site), pick a section, and choose{" "}
+                    (Matrix → Components → Edit on site), pick a section, and choose{" "}
                     <b>Try a different arrangement</b> — ready-made section designs, tested
                     against your page as it is today.
                   </List.Item>
@@ -573,7 +573,14 @@ export default function Index() {
               </BlockStack>
             </Card>
 
-            {/* Billing went through three review rejections before landing
+            {/* Every link out of this app to SentientUI carries ?via=shopify:
+                the dashboard marks the browser as Shopify-referred and hides
+                card billing on it. Round 4 (2026-10-07) was suspended because
+                a reviewer reached Stripe checkout from the SentientUI side;
+                the marketing homepage these links used to open leads straight
+                to the public pricing page.
+
+                Billing went through three review rejections before landing
                 here: round 1 (2026-09-06) killed wording that framed the
                 service as paid-and-required with an external billing link;
                 round 2 (2026-09-09, ref 133916) ruled that even the optional

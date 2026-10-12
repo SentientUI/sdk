@@ -69,6 +69,27 @@ describe('chooseLayoutFactored', () => {
     expect(a).toEqual(b);
   });
 
+  // Audit I10: a corrupt cell's draw is NaN, so no order is ranked on it.
+  it('a corrupt GLOBAL cell poisons every order, so the authored page is served (never a garbage ranking)', () => {
+    for (let s = 0; s < 20; s++) {
+      const order = chooseLayoutFactored(SECTIONS, TYPES, 'admin', [cell(GLOBAL_FACTOR_PERSONA, 'pricing', 0, NaN, 3)], seeded(s));
+      expect(order).toEqual(SECTIONS);
+    }
+  });
+
+  it('a corrupt persona cell excludes only the orders that use it', () => {
+    // (admin, pricing, bucket 0) is corrupt: no served order may put pricing
+    // above the fold, yet the draw still explores among the rest.
+    const picks = new Set<string>();
+    for (let s = 0; s < 200; s++) {
+      const order = chooseLayoutFactored(SECTIONS, TYPES, 'admin', [cell('admin', 'pricing', 0, 100, NaN)], seeded(s));
+      const pricingAt = order.indexOf('pricing');
+      expect(pricingAt === 0 || pricingAt === 1).toBe(false);
+      picks.add(order.join(','));
+    }
+    expect(picks.size).toBeGreaterThan(1);
+  });
+
   it('cold start still explores across candidates (not a constant pick)', () => {
     const picks = new Set<string>();
     for (let s = 0; s < 200; s++) picks.add(chooseLayoutFactored(SECTIONS, TYPES, 'admin', [], seeded(s)).join(','));

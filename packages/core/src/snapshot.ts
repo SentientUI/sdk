@@ -86,6 +86,9 @@ export type DecisionSnapshot = {
   /** The site-style entries the served compose arms reference — cached so the
    *  pre-paint render already borrows the site's classes. Additive (v stays 1). */
   vocabulary?: import('./style-vocabulary.js').StyleVocabulary;
+  /** The `data-sentient-stage` value last decided — already coarsened, and
+   *  present only for a `stageAttributes` install (additive, v stays 1). */
+  stage?: string;
 };
 
 const BANDS = ['low', 'medium', 'high'];
@@ -121,6 +124,8 @@ export function readSnapshot(apiKey: string): DecisionSnapshot | null {
     if (v !== undefined && (typeof v !== 'object' || v === null || !Array.isArray(v.entries) || !Array.isArray(v.images))) {
       delete p.vocabulary;
     }
+    // Same for the stage: a non-string never reaches setAttribute.
+    if (p.stage !== undefined && typeof p.stage !== 'string') delete p.stage;
     return p as DecisionSnapshot;
   } catch {
     return null;
@@ -147,7 +152,7 @@ export function writeSnapshot(apiKey: string, snap: DecisionSnapshot): void {
  * - Built by string concatenation and contains no backticks, so the output
  *   survives being embedded in template-literal-based renderers.
  */
-export function renderPrePaintScript(apiKey: string): string {
+export function renderPrePaintScript(apiKey: string, opts?: { stage?: boolean }): string {
   const key = JSON.stringify(SNAPSHOT_STORAGE_KEY_PREFIX + apiKey).replace(/</g, '\\u003c');
   return (
     '(function(){try{' +
@@ -161,6 +166,14 @@ export function renderPrePaintScript(apiKey: string): string {
     // The same 30-day life readSnapshot enforces.
     'if(!(' + SNAPSHOT_MAX_AGE_MS + '>Date.now()-s.savedAt))return;' +
     'var d=document.documentElement;' +
+    // Opt-in stage attribute (`stageAttributes`): the snapshot holds only the
+    // already-coarsened value, so this copies it as-is. Before the persona
+    // single-writer return below — an SSR persona must not stop it — but with
+    // its own single-writer check, so an SSR-written stage wins. Absent from
+    // the output entirely without the option (the default bytes are pinned).
+    (opts?.stage
+      ? 'if(typeof s.stage=="string"&&!d.hasAttribute("data-sentient-stage"))d.setAttribute("data-sentient-stage",s.stage);'
+      : '') +
     'if(d.hasAttribute("data-sentient-persona"))return;' +
     'd.setAttribute("data-sentient-persona",s.persona);' +
     'd.setAttribute("data-sentient-confidence",s.band);' +

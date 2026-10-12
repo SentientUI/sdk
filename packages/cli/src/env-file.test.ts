@@ -23,6 +23,9 @@ describe('envVarName', () => {
     expect(envVarName('remix')).toBe('VITE_SENTIENT_API_KEY');
     // CRA only inlines REACT_APP_-prefixed vars.
     expect(envVarName('cra')).toBe('REACT_APP_SENTIENT_API_KEY');
+    expect(envVarName('react-router')).toBe('VITE_SENTIENT_API_KEY');
+    expect(envVarName('astro')).toBe('PUBLIC_SENTIENT_API_KEY');
+    expect(envVarName('gatsby')).toBe('GATSBY_SENTIENT_API_KEY');
   });
 });
 

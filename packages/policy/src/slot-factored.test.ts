@@ -216,3 +216,28 @@ describe('parameter count — the reason this model exists', () => {
     expect(SLOT_FACTORS).toHaveLength(4);
   });
 });
+
+// Audit I10: a corrupt count cell makes its sampleBeta draw NaN, which can
+// never win `score > bestScore` — no arm is ranked on garbage.
+describe('chooseSlotArmFactored — corrupt cells', () => {
+  it('a corrupt factor cell excludes only the arm that scores with it', () => {
+    const rand = lcg(17);
+    const cells = [
+      cell('a', 'global', GLOBAL_FACTOR_LEVEL, 1000, 50),
+      cell('b', 'global', GLOBAL_FACTOR_LEVEL, 1000, 52),
+      cell('bad', 'global', GLOBAL_FACTOR_LEVEL, 1000, 51),
+      cell('bad', 'device', 'mobile', 400, NaN),
+    ];
+    const seen = new Set<string>();
+    for (let i = 0; i < 300; i++) seen.add(chooseSlotArmFactored(['bad', 'a', 'b'], ctx(), cells, rand)!.arm);
+    expect(seen).toEqual(new Set(['a', 'b']));
+  });
+
+  it('a corrupt GLOBAL cell poisons the slot-wide pool, so the factored draw yields (null → unfactored path)', () => {
+    const cells = [
+      cell('a', 'global', GLOBAL_FACTOR_LEVEL, 1000, 50),
+      cell('bad', 'global', GLOBAL_FACTOR_LEVEL, NaN, 3),
+    ];
+    expect(chooseSlotArmFactored(['bad', 'a'], ctx(), cells, lcg(1))).toBeNull();
+  });
+});

@@ -123,6 +123,11 @@ export function chooseLayoutFactored(
     const post = p
       ? shrunkPosterior(posteriorOfCounts({ exposures: p.exposures, conversions: p.conversions }), gPost)
       : gPost;
+    // NaN for a corrupt cell (sampleBeta): every order using it scores NaN and
+    // can never win `score > bestScore`; if that is every order, the authored
+    // page is served below. A corrupt GLOBAL cell gets there in one step: it
+    // poisons `poolPost`, which every cell shrinks toward. Ranking on the gamma
+    // sampler's garbage for invalid shapes was the alternative.
     const v = sampleBeta(post.alpha, post.beta, rand);
     draws.set(key, v);
     return v;

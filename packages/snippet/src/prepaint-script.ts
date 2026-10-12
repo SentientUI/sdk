@@ -30,16 +30,27 @@ export type PrePaintRecord = {
   done: boolean;
   /** Disconnect now — the bundle has taken over. */
   stop(): void;
+  /** v2+: true while the strong-intent hold keeps registry targets hidden. */
+  held?: boolean;
+  /** v2+: end the hold now (the decision is on the page). Idempotent; absent on v1. */
+  reveal?(): void;
 };
 
 /** Contract version of the snippet inline pre-paint script — mirrored at runtime
  *  as `window.__sntPP.v`, and reported to /v1/decide as `pp` so the dashboard can
  *  tell a two-tag install from a three-tag one. The script is pasted into a site
- *  once and never floats, so v1 must stay supported by the bundle indefinitely. */
-export const SNIPPET_PREPAINT_VERSION = 1;
+ *  once and never floats, so every version must stay supported by the bundle
+ *  indefinitely — v1 has no `held`/`reveal`, and the bundle calls `reveal`
+ *  only when it exists.
+ *
+ *  v2 (2026-10-09): `data-sentient-stage` from the snapshot (opt-in
+ *  `stageAttributes`), the strong-intent hold, and the QA gate widened to the
+ *  context preview, the URL fragment (`#sentient_editor_code`,
+ *  `#sentient_preview_token`) and a cached editor session. */
+export const SNIPPET_PREPAINT_VERSION = 2;
 
 /**
- * Snippet-install inline pre-paint script (v1).
+ * Snippet-install inline pre-paint script (v2).
  *
  * The snippet loader is `defer`, so the bundle's snapshot pass is pre-*decide*
  * but not necessarily pre-*paint*: on a return visit a page can show its natural
@@ -62,9 +73,21 @@ export const SNIPPET_PREPAINT_VERSION = 1;
  *   `__sntPP` reconcile in index.ts).
  *
  * What it deliberately does NOT do: no `textContent`, no ops stylesheet, no
- * `moveBefore`/`moveAfter`, no Composition-Block rendering, and no cloak of any
- * kind. Those either need the decide response to be trustworthy or need the
+ * `moveBefore`/`moveAfter`, no Composition-Block rendering, and no page-wide
+ * cloak. Those either need the decide response to be trustworthy or need the
  * renderer that lives in the bundle.
+ *
+ * The one hiding it does (v2) is the strong-intent hold: when the landing URL
+ * says the visitor clicked an ad or an email (a click ID, a paid or email
+ * `utm_medium`, a `/discount/` link), this visit's decide may serve a version
+ * written for that arrival, and showing last visit's version first is the
+ * flicker that wastes the click. So ONLY the registry slots' target elements
+ * (the ones resolved below) get `visibility:hidden` — layout is kept, so no
+ * shift — until the bundle has applied the decision (`__sntPP.reveal()`) or
+ * 300 ms have passed, whichever comes first; then the merchant's own inline
+ * value is restored. Every other visitor pays nothing. Those targets come from
+ * the snapshot, so a browser with none (a true first visit, a wiped Safari
+ * storage) has nothing to hold and none is attempted.
  */
 export function renderSnippetPrePaintScript(): string {
   return (
@@ -85,8 +108,12 @@ export function renderSnippetPrePaintScript(): string {
     // Same predicate as isDoNotTrackEnabled, plus automation: the bundle already
     // withholds structural changes from crawlers, and this has nothing to gain.
     'if(N.doNotTrack=="1"||N.doNotTrack=="yes"||W.doNotTrack=="1"||N.msDoNotTrack=="1"||N.globalPrivacyControl||N.webdriver)return;' +
-    // Editor / preview / persona-preview must never show a stale state first.
-    'if(/[?&]sentient_(editor|preview|persona)=/.test(L.search))return;' +
+    // Editor / preview / persona / context preview must never show a stale
+    // state first — nor hold anything. v2 also reads the fragment: the
+    // dashboard hands the editor code and the preview token over in `#…`
+    // (grade E1/C13), and a cached editor session re-enters editor mode with
+    // no URL marker at all; v1 stamped the snapshot under the editor there.
+    'if(/[?&#]sentient_(editor|preview|persona|context)/.test(L.search+L.hash)||sessionStorage.getItem("__snt_editor_token"))return;' +
     // JSON.parse(null) is null, so a missing snapshot throws into the catch.
     'var s=JSON.parse(localStorage.getItem("_snt_snap:"+c.apiKey)),S=s.slots;' +
     // Shape checks mirror readSnapshot. The freshness test is written inverted
@@ -95,16 +122,29 @@ export function renderSnippetPrePaintScript(): string {
     // `age > TTL` alone would have let it through. 30 days = the visitor window;
     // an older snapshot is worth nothing and could name retired arms.
     'if(s.v!==1||typeof s.persona!="string"||typeof s.band!="string"||!S||typeof S!="object"||!(2592e6>n-s.savedAt))return;' +
+    // Strong-intent arrival (v2), from the landing URL alone: an ad click ID
+    // (fbclid excluded — Meta appends it to organic clicks too), a paid or
+    // email utm_medium (PAID_MEDIA / EMAIL_MEDIA in @sentientui/policy
+    // arrival.ts), or a Shopify /discount/ link. No value is ever read.
+    'var u=L.search,I=/[?&](gclid|gbraid|wbraid|ttclid|msclkid|twclid|li_fat_id)=/.test(u)||' +
+    '/[?&]utm_medium=(cpc|ppc|cp[mv]|sem|paid([-_+]?s(earch|ocial))?|social[-_+]?paid|display|banner|re(targeting|marketing)|shopping|pmax|e-?mail|newsletter|sms|text|push)(&|$)/i.test(u)||' +
+    '/^\\/discount\\//.test(L.pathname);' +
     // --- Hand-off record read by the bundle (see reconcilePrePaint).
-    'var H=["data-sentient-persona","data-sentient-confidence"],d=D.documentElement,' +
-    'P=W.__sntPP={v:1,at:n,stamped:[],html:[],reordered:!1,done:!1,stop:function(){X()}},' +
-    'b=P.stamped,p=[],i,k,t,e,l,m,x,V=c.sections,O=s.layoutOrder,' +
+    'var H=["data-sentient-persona","data-sentient-confidence","data-sentient-stage"],d=D.documentElement,' +
+    'P=W.__sntPP={v:2,at:n,stamped:[],html:[],reordered:!1,done:!1,held:!1,stop:function(){X()},reveal:function(){Z()}},' +
+    'b=P.stamped,p=[],h=[],j=[],i,k,t,e,l,m,x,K,V=c.sections,O=s.layoutOrder,' +
     // Reorder is retired up front unless both halves are present and agree in
     // length; `q` doubles as the once-only latch inside F.
     'q=!(V&&V.length>1&&O&&O.length==V.length);' +
     // (a) <html> persona attributes — renderPrePaintScript's job, folded in.
     // Single-writer: never overwrite attributes an SSR pass already set.
-    'if(c.personaAttributes&&!d.hasAttribute(H[0])){d.setAttribute(H[0],s.persona);d.setAttribute(H[1],s.band);P.html=H}' +
+    'if(c.personaAttributes&&!d.hasAttribute(H[0])){d.setAttribute(H[0],s.persona);d.setAttribute(H[1],s.band);P.html.push(H[0],H[1])}' +
+    // (a2) v2: the stage, opt-in (`stageAttributes`). The bundle stores it
+    // already coarsened; it is coarsened again here so a site that turned
+    // 'detailed' OFF never shows customer/lapsed from an older snapshot, not
+    // even for one paint.
+    'if(c.stageAttributes&&typeof(t=s.stage)=="string"&&!d.hasAttribute(H[2])){' +
+    'd.setAttribute(H[2],c.stageAttributes!="detailed"&&/^(customer|lapsed)$/.test(t)?"returning":t);P.html.push(H[2])}' +
     // Attribute-selector value escaping, same rule as resolveLocatorOne.
     'var Q=function(v){return(""+v).replace(/["\\\\]/g,"\\\\$&")},' +
     // A(selector, result, decl): queue (selector, attr, value) triples. With a
@@ -140,22 +180,37 @@ export function renderSnippetPrePaintScript(): string {
     'try{m=D.querySelectorAll(t[0])}catch(_){p[i]=0;continue}' +
     'if(m.length>1){U(t);p[i]=0}' +
     'else if(m.length==1&&(!t[3]||t[3][0]!=m[0])){U(t);e=m[0];t[3]=[e,t[1],e.getAttribute(t[1])];e.setAttribute(t[1],t[2]);b.push(t[3])}}' +
+    // The hold (v2): a uniquely-resolved registry target is hidden as the
+    // parser inserts it, its own inline visibility remembered for Z. Through
+    // the CSSOM, so a strict style-src CSP cannot block it, and visibility
+    // (not display) so the page keeps its layout — the hold costs no CLS.
+    'if(P.held)for(i in h){try{m=D.querySelectorAll(h[i])}catch(_){continue}' +
+    'if(m.length==1&&(e=m[0]).style.visibility!="hidden"){j.push([e,e.style.visibility]);e.style.visibility="hidden"}}' +
     'if(!q)q=R()},' +
     // X(): stop observing. DOMContentLoaded (the parser is done — anything later
     // is the bundle's job), the bundle calling stop(), or the 3s hard cap so a
     // page that never reaches DOMContentLoaded cannot keep an observer alive.
+    // Stopping does NOT end the hold: the bundle stops the observer at boot,
+    // long before its decide answers.
     'X=function(){if(P.done)return;P.done=!0;try{o.disconnect()}catch(_){}clearTimeout(T)},' +
+    // Z(): end the hold — the bundle applied the decision, or 300 ms passed.
+    // Whatever is ready shows; on a timeout that is the merchant's original.
+    'Z=function(){if(!P.held)return;P.held=!1;clearTimeout(K);for(i in j)j[i][0].style.visibility=j[i][1];j=[]},' +
     // (b) the two sources of (selector, attributes) pairs.
     'G=c.slots,C=s.slotConfig;' +
     'for(i in G)if(G[i]&&G[i].target)A(G[i].target,S[i],G[i]);' +
     // Registry slots: the locator reduced to its STRUCTURAL parts only. The
     // fingerprint (tag/text) cannot be checked before children parse, so it is
     // skipped and the bundle verifies it; urlMatch is honoured (same compare as
-    // isUrlScopedOut). Attributes only — never content or ops.
+    // isUrlScopedOut). Attributes only — never content or ops. These are also
+    // the only elements the hold hides: page-declared slots (above) are the
+    // attribute rung, and their stamp is not a content swap.
     'for(i in C){e=C[i]||{};l=e.locator;t=e.target;' +
     'if(l){if(l.urlMatch&&!~L.pathname.indexOf(l.urlMatch))continue;' +
     't=l.id?\'[id="\'+Q(l.id)+\'"]\':l.dataAttr&&/^[\\w-]+$/.test(l.dataAttr.name)?"["+l.dataAttr.name+\'="\'+Q(l.dataAttr.value)+\'"]\':l.selector}' +
-    'if(t)A(t,S[i])}' +
+    'if(t){A(t,S[i]);h.push(t)}}' +
+    // Nothing on this page to hold: no hold, no timer.
+    'if(P.held=!!(I&&h[0]))K=setTimeout(Z,300);' +
     'var o=new MutationObserver(F),T=setTimeout(X,3e3);' +
     'o.observe(d,{childList:!0,subtree:!0});' +
     // One final pass at DOMContentLoaded catches anything inserted in the last

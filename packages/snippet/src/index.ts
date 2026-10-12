@@ -1,7 +1,7 @@
 import { consentWatcher, setConsentSrc } from './consent-lazy';
 import { chunkSrc, loadChunk, setChunkSrc } from './chunk-src';
 import type { PreviewHost } from './preview';
-import { init, grantConsent as coreGrantConsent, forgetVisitor, forgetGeneration, routeKey, isDoNotTrackEnabled, applyNonce, setCspNonce, readSnapshot, writeSnapshot, type CompoundLocator, type DecideOutcome, type DecisionSnapshot, type GoalDefinition, type RenderCaps, type SentientClient, type SlotConfigEntry } from '@sentientui/core';
+import { init, grantConsent as coreGrantConsent, forgetVisitor, forgetGeneration, routeKey, isDoNotTrackEnabled, applyNonce, setCspNonce, readSnapshot, writeSnapshot, exposedStage, setStageAttribute, type CompoundLocator, type DecideOutcome, type DecisionSnapshot, type GoalDefinition, type RenderCaps, type SentientClient, type SlotConfigEntry } from '@sentientui/core';
 import { regionAddress } from '@sentientui/core/region';
 import type { SemanticType, startEngagementCapture as StartCapture } from '@sentientui/core/engagement';
 import { parseSnippetConfig, type SnippetConfig } from './config';
@@ -1203,7 +1203,7 @@ export async function run(): Promise<void> {
     // so they live in the lazy preview.global.js chunk (audit S24: the
     // always-on bundle pays for new fixes by moving rare paths out).
     // A param the chunk can't parse falls through to an ordinary visit.
-    if (typeof window !== 'undefined' && /[?&]sentient_(preview|persona)=[^&]/.test(window.location.search)) {
+    if (typeof window !== 'undefined' && /[?&]sentient_(preview|persona|context)=[^&]/.test(window.location.search)) {
       if (await runPreviewChunk(cfg)) return;
     }
 
@@ -1284,6 +1284,14 @@ export async function run(): Promise<void> {
         activeLayoutOrder = snap.layoutOrder;
         applyLayoutOrder(activeLayoutOrder, document);
       }
+      // Opt-in stage attribute, last visit's value until this visit's decide
+      // answers (core rewrites it then). Confirmed, so the reconcile below
+      // keeps what the inline script set from the same snapshot.
+      const st = exposedStage(snap.stage, cfg.stageAttributes);
+      if (st) {
+        setStageAttribute(st);
+        confirmed.push([document.documentElement, 'data-sentient-stage']);
+      }
     }
     // Revert anything the inline script stamped that the pass above did NOT
     // re-apply. It runs mid-parse and cannot verify a registry locator's
@@ -1300,6 +1308,8 @@ export async function run(): Promise<void> {
       debug: cfg.debug,
       // Declared persona rides core's session upsert + decide bodies.
       persona: cfg.persona,
+      // Core writes data-sentient-stage after each decide when opted in.
+      stageAttributes: cfg.stageAttributes,
       ingestUrl: ingestUrlFrom(cfg),
       ...(SDK_IDENT ? { sdk: SDK_IDENT } : {}),
     });
@@ -1464,6 +1474,10 @@ export async function run(): Promise<void> {
         });
         if (!registryMode) reportLocatorMisses(cfg, applyMissed);
         applyLayoutOrder(activeLayoutOrder, document);
+        // End the inline script's strong-intent hold (v2): the decision is on
+        // the page. A v1 record has no reveal; its 300 ms timer may already
+        // have ended the hold, which is a no-op here.
+        try { prePaint?.reveal?.(); } catch { /* fail-safe */ }
         // From here copy/ops are confirmed by the server — a subsequent reapply()
         // (SPA nav / hydration) may safely restamp content, not just attributes.
         decided = true;
@@ -1537,6 +1551,8 @@ export async function run(): Promise<void> {
         // The site styles the served Redesign arms borrow, so the next visit's
         // pre-paint already renders them native.
         ...(outcome.vocabulary ? { vocabulary: outcome.vocabulary } : {}),
+        // The next visit's pre-paint value: exposed (coarsened) only, opt-in only.
+        ...((st) => (st ? { stage: st } : {}))(exposedStage(outcome.stage, cfg.stageAttributes)),
       });
       // Start this page's late-render watch and deferred miss classification —
       // on whatever path we are on NOW, so a navigation that landed while decide

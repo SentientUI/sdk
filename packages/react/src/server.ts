@@ -40,6 +40,8 @@ export type LoadAdaptiveAssignmentsOptions = {
   utmParams?: Record<string, string>;
   /** Ad-platform click IDs (gclid, fbclid, ttclid, …) from the landing URL — same derivation as `utmParams`. */
   clickIds?: Record<string, string>;
+  /** The landing page's path (no query string) — recognises a paid click to a product page or a `/discount/` link on the first decision. */
+  landingPath?: string;
   /** Set true when the request carries `DNT: 1` or `Sec-GPC: 1` — skips the SSR session upsert + assignment so no session is minted for an opted-out visitor (audit P4). `AdaptiveRoot` sets this automatically from the request headers. */
   doNotTrack?: boolean;
   /** Milliseconds to wait for the API before returning default variants. Defaults to 1000 (typical decide is well under 150 ms; the full budget is only reached on a cold start or a distant API). */
@@ -85,6 +87,7 @@ export async function loadAdaptiveAssignments(
     referer: options.referer,
     utmParams: options.utmParams,
     clickIds: options.clickIds,
+    landingPath: options.landingPath,
     doNotTrack: options.doNotTrack,
     timeoutMs: options.timeoutMs,
     persona: options.persona,
@@ -219,6 +222,7 @@ export async function loadAdaptiveDecision(
       referer: options.referer,
       utmParams: options.utmParams,
       clickIds: options.clickIds,
+    landingPath: options.landingPath,
       doNotTrack: options.doNotTrack,
       timeoutMs: options.timeoutMs,
       persona: options.persona,

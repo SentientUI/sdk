@@ -1,8 +1,9 @@
 // preview.global.js — the snippet's event-free QA modes, loaded only when the
-// URL asks for one (?sentient_preview=, ?sentient_persona=): no visitor ever
+// URL asks for one (?sentient_preview=, ?sentient_persona=,
+// ?sentient_context=): no visitor ever
 // downloads it. Moved out of the always-on bundle 2026-09-25 (audit S24). The
 // snippet hands over the internals it drives through PreviewHost.
-import type { SlotConfigEntry } from '@sentientui/core';
+import { exposedStage, setStageAttribute, type SlotConfigEntry } from '@sentientui/core';
 import type { SnippetConfig } from './config';
 import { readCachedEditorToken } from './editor-token';
 import { takeHashParam } from './hash-param';
@@ -48,18 +49,33 @@ const PINNED_BOX_STYLE: Partial<CSSStyleDeclaration> = {
  *  false = nothing to preview (a malformed param): the snippet runs an
  *  ordinary visit, as it did before the preview modes became a chunk. */
 export async function runPreview(host: PreviewHost): Promise<boolean> {
+  const context = parseContextPreview(window.location.search);
   const forced = parsePreview(window.location.search);
   if (forced) {
-    await previewForced(host, forced);
+    await previewForced(host, forced, context);
     return true;
   }
   const persona = parsePersonaPreview(window.location.search);
-  if (persona) {
-    await previewPersona(host, persona);
-    host.dbg('persona preview', persona);
+  // A context alone previews the pre-portrait visitor in that context.
+  if (persona || context) {
+    await previewPersona(host, persona ?? '', context);
+    host.dbg('persona preview', persona, context);
     return true;
   }
   return false;
+}
+
+// ?sentient_context=<stage or arrival class> — a visit in that funnel context
+// (`carted`, `cart_recovery`, …): versions restricted to it become eligible
+// and its pins win. Read-only like the persona preview; the API owns the
+// closed set (400 on anything else), this only refuses what could not be one.
+export function parseContextPreview(search: string): string | null {
+  try {
+    const v = new URLSearchParams(search).get('sentient_context');
+    return v && /^[a-z_]{1,40}$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 // ?sentient_preview=hero:tone=urgent,motion=pulse|checkout:express
@@ -107,7 +123,7 @@ const PREVIEW_BANNER_ID = 'sentient-persona-preview-banner';
  *  `unrecognized`, says so instead — the typed value isn't in the project's
  *  persona vocabulary, so the page is showing the default experience, and the
  *  banner must not claim otherwise (B1.2). */
-function showPreviewBanner(persona: string, unrecognized?: boolean): void {
+function showPreviewBanner(persona: string, unrecognized?: boolean, context?: string | null, notServing?: boolean): void {
   try {
     if (typeof document === 'undefined' || document.getElementById(PREVIEW_BANNER_ID)) return;
     const label = persona.charAt(0).toUpperCase() + persona.slice(1).replace(/[_-]+/g, ' ');
@@ -122,9 +138,14 @@ function showPreviewBanner(persona: string, unrecognized?: boolean): void {
       border: '1px solid rgba(255,255,255,0.14)',
     } as Partial<CSSStyleDeclaration>);
     const text = document.createElement('span');
-    text.textContent = unrecognized
+    // A forced context is named, and so is the honest caveat: on a project
+    // still RECORDING stages its context versions do not reach visitors yet.
+    const ctx = context
+      ? ` · ${context.replace(/_/g, ' ')} visitors${notServing ? ' (not served until stage serving is on)' : ''}`
+      : '';
+    text.textContent = (unrecognized
       ? `“${persona}” isn’t in your personas — showing the default experience`
-      : `Previewing as ${label}`;
+      : persona ? `Previewing as ${label}` : 'Previewing') + ctx;
     const exit = document.createElement('button');
     exit.type = 'button';
     exit.textContent = 'Exit preview';
@@ -136,6 +157,7 @@ function showPreviewBanner(persona: string, unrecognized?: boolean): void {
       try {
         const url = new URL(window.location.href);
         url.searchParams.delete('sentient_persona');
+        url.searchParams.delete('sentient_context');
         window.location.href = url.pathname + url.search + url.hash;
       } catch {
         /* fail-safe */
@@ -196,7 +218,7 @@ function explain(host: PreviewHost, body: Record<string, unknown>): Promise<Reco
   );
 }
 
-async function previewForced(host: PreviewHost, forced: SlotResults): Promise<void> {
+async function previewForced(host: PreviewHost, forced: SlotResults, context: string | null = null): Promise<void> {
   const cfg = host.cfg;
   const registryMode = cfg.registry ?? Object.keys(cfg.slots).length === 0;
   const previewToken = takePreviewToken();
@@ -212,6 +234,9 @@ async function previewForced(host: PreviewHost, forced: SlotResults): Promise<vo
       // slot that is not live yet is precisely what needs looking at.
       includeDrafts: true,
       ...(previewToken ? { previewToken } : {}),
+      // The dashboard adds the version's own context to its preview link, so
+      // the rest of the page renders as a visitor in that context would see it.
+      ...(context ? { context } : {}),
       force: Object.fromEntries(
         Object.entries(forced).filter((e): e is [string, string] => typeof e[1] === 'string'),
       ),
@@ -243,14 +268,15 @@ async function previewForced(host: PreviewHost, forced: SlotResults): Promise<vo
  * apply it, and stop. No `init`, no tracking, no snapshot. Registry-mode sites
  * ask the server for their published slots; declared-slot sites send their own.
  */
-async function previewPersona(host: PreviewHost, persona: string): Promise<void> {
+async function previewPersona(host: PreviewHost, persona: string, context: string | null = null): Promise<void> {
   const cfg = host.cfg;
   const registryMode = cfg.registry ?? Object.keys(cfg.slots).length === 0;
+  const ctx = context ? { context } : {};
   const outcome = await explain(
     host,
     registryMode
-      ? { persona, slotsFrom: 'registry' }
-      : { persona, slots: Object.entries(cfg.slots).map(([id, s]) => ({ id, dims: s.dims })) },
+      ? { persona, slotsFrom: 'registry', ...ctx }
+      : { persona, slots: Object.entries(cfg.slots).map(([id, s]) => ({ id, dims: s.dims })), ...ctx },
   );
   if (!outcome) {
     // The page API must exist on the failure path too (same reason as editor/
@@ -268,6 +294,7 @@ async function previewPersona(host: PreviewHost, persona: string): Promise<void>
     personaDisplay?: string;
     recognized?: boolean;
     personaAttributes?: { persona?: string; confidence?: string };
+    contextServing?: boolean;
   };
   const shown = data.personaAttributes?.persona ?? data.persona ?? persona;
   const band = (data.personaAttributes?.confidence as Band) ?? 'high';
@@ -287,7 +314,12 @@ async function previewPersona(host: PreviewHost, persona: string): Promise<void>
   // legacy claim beats wrongly contradicting a valid key. Recognized previews
   // prefer the server's display name over the cosmetic capitalization, and the
   // unrecognized banner quotes what was TYPED, not the folded 'unknown'.
-  if (data.recognized === false) showPreviewBanner(persona, true);
-  else showPreviewBanner(data.personaDisplay ?? shown);
+  // A forced STAGE also drives the opt-in theme attribute, so the merchant's
+  // own [data-sentient-stage] CSS previews too (coarsened the same way). An
+  // arrival class is never a stage, so it writes nothing.
+  if (context && cfg.stageAttributes) setStageAttribute(exposedStage(context, cfg.stageAttributes));
+  const notServing = data.contextServing === false;
+  if (persona && data.recognized === false) showPreviewBanner(persona, true, context, notServing);
+  else showPreviewBanner(persona ? data.personaDisplay ?? shown : '', false, context, notServing);
 }
 

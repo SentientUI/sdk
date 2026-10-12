@@ -1,4 +1,4 @@
-import { deriveSessionSegment, extractTrackedParams, matchedAgentToken } from '@sentientui/core';
+import { deriveSessionSegment, exposedStage, extractTrackedParams, matchedAgentToken } from '@sentientui/core';
 import { consentFromCookies } from '@sentientui/core/consent';
 import type { SlotDeclInput, SlotResult } from '@sentientui/core';
 import { cookies, headers } from 'next/headers';
@@ -132,6 +132,13 @@ export type AdaptiveRootProps = Omit<
    * ```
    */
   searchParams?: Record<string, string | string[] | undefined> | URLSearchParams | string;
+  /**
+   * The page's path (e.g. `/products/trail-shoe`). Server components cannot
+   * read their own URL, so pass it on landing pages that receive ad or email
+   * traffic: with it, a paid click to a product page or a `/discount/` link
+   * is recognised on the server render — adapted from the first byte.
+   */
+  pathname?: string;
   /** Override: when set no network fetch is made. Useful for tests. */
   initialAssignments?: ServerAssignments;
   /**
@@ -234,6 +241,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
     registrySlotIds,
     appOrigin,
     searchParams,
+    pathname,
     initialAssignments: initialAssignmentsOverride,
     ssrSessionId: ssrSessionIdProp,
     timeoutMs,
@@ -300,6 +308,15 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
     providerProps.consent ??
     (cf ? (consentFromCookies(cf, (name) => rawCookie(headerStore.get('cookie'), name)) ?? undefined) : undefined);
   const skipSsr = doNotTrack || consent === false || (cf != null && consent !== true);
+  // Keyless local mode, by the client's own rule (core init: a `pk_` key or
+  // `localMode: false` means hosted). The browser runs on simulated decisions
+  // with no network, but the server still called the hosted API with the
+  // empty key — every SSR request logged `session upsert failed (401)` and
+  // spent a round trip on a decision the client would never use. Nothing
+  // hosted runs server-side either.
+  const keyless =
+    providerProps.localMode === true ||
+    (providerProps.localMode !== false && !(typeof providerProps.apiKey === 'string' && providerProps.apiKey.startsWith('pk_')));
 
   // SSR preload MUST hit the same API host the client will use, otherwise the
   // SSR-minted session lives on the wrong host and the client's first /assign
@@ -317,7 +334,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   // agentFeed JSON-LD below.
   const agentPath = agentFeed?.path ?? headerStore.get('x-pathname') ?? '/';
   const agentBot = matchedAgentToken(userAgent ?? '');
-  if (captureAgents !== false && agentBot) {
+  if (!keyless && captureAgents !== false && agentBot) {
     logAgentFetch({ baseUrl, apiKey: providerProps.apiKey, path: agentPath, botName: agentBot, userAgent });
   }
 
@@ -328,6 +345,8 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   let initialPalette: LoadAdaptiveDecisionResult['palette'];
   let initialVocabulary: LoadAdaptiveDecisionResult['vocabulary'];
   let initialPersona: { persona: string; confidence: number } | null = null;
+  // Opt-in theme attribute: this request's stage, coarsened unless 'detailed'.
+  let initialStage: string | null = null;
   let ssrSessionId: string | undefined;
 
   // Registry mode only when ids were declared: an unscoped registry decide
@@ -337,11 +356,11 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   if (initialAssignmentsOverride) {
     initialAssignments = initialAssignmentsOverride;
     ssrSessionId = ssrSessionIdProp;
-  } else if (skipSsr) {
+  } else if (skipSsr || keyless) {
     // Nothing server-side: no decide, no assign, no session. Components fall
     // back to `ssrFallback`, and the client starts only if the visitor later
     // consents — via the `consent` prop or grantConsent(), neither of which
-    // needs a page reload.
+    // needs a page reload. Keyless: the client's local engine decides.
     initialAssignments = {};
   } else if ((sections && sections.length > 0) || (slots && slots.length > 0) || registry) {
     // `loadAdaptiveDecision` accepted `registrySlotIds` long before AdaptiveRoot
@@ -360,6 +379,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       referer,
       utmParams,
       clickIds,
+      landingPath: pathname,
       // doNotTrack is deliberately not passed: it is necessarily false on this
       // branch — a DNT/GPC or consent-gated request already took the skipSsr
       // arm above and never reaches this loader.
@@ -381,6 +401,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       decision.persona !== undefined
         ? { persona: decision.persona, confidence: decision.confidence ?? 0 }
         : null;
+    initialStage = exposedStage(decision.stage, providerProps.stageAttributes);
     ssrSessionId = decision.sessionId;
   } else {
     const result = await loadAdaptiveAssignments(components, {
@@ -392,6 +413,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       referer,
       utmParams,
       clickIds,
+      landingPath: pathname,
       // doNotTrack is deliberately not passed: it is necessarily false on this
       // branch — a DNT/GPC or consent-gated request already took the skipSsr
       // arm above and never reaches this loader.
@@ -410,7 +432,13 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   // consent is exactly what a consent gate exists to prevent. The browser SDK
   // takes over once the visitor's platform says yes.
   const personaScript = skipSsr ? null : (
-    <SentientPersonaScript apiKey={providerProps.apiKey} persona={initialPersona} nonce={nonce} />
+    <SentientPersonaScript
+      apiKey={providerProps.apiKey}
+      persona={initialPersona}
+      nonce={nonce}
+      stageAttributes={providerProps.stageAttributes}
+      stage={initialStage}
+    />
   );
 
   const client = (

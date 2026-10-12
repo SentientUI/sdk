@@ -15,18 +15,23 @@ Usage
 
 Commands
   init                 Set up SentientUI in an existing React app: detect the
-                       framework (Next.js App/Pages Router, Vite, Remix, CRA),
-                       install @sentientui/react, write .env.local, and scaffold
-                       an example component.
+                       framework (Next.js App/Pages Router, React Router v7,
+                       Remix, Gatsby, Astro, Vite, CRA), install
+                       @sentientui/react with the package manager of the
+                       enclosing workspace, write the env file (.env.local;
+                       .env.development for Gatsby), and scaffold an example
+                       component.
 
 Options
-  --key <pk_...>       Publishable API key to write into .env.local. Omit it to
+  --key <pk_...>       Publishable API key to write into the env file. Omit it to
                        use keyless local mode, which returns deterministic
                        simulated decisions and needs no account.
   --consent <preset>   Wait for this consent platform before tracking:
                        cookiebot | onetrust | cookieyes | tcf |
                        google-consent-mode | shopify. Omit it and tracking
                        starts on first paint for every visitor.
+  --no-install         Skip installing @sentientui/react; print the command
+                       to run yourself instead.
   --yes, -y            Accept defaults without prompting (the default today).
   --help, -h           Show this help.
   --version, -v        Print the CLI version.
@@ -35,8 +40,10 @@ Notes
   init does NOT edit your layout. It prints the snippet — you must wrap your app
   in <AdaptiveRoot> yourself, or nothing adapts and nothing is tracked.
 
-  Verify an install by loading the app with two different ?sentient_persona=
-  values; in keyless local mode the two should render differently.
+  Verify an install by loading a page with ?sentient_persona=a and checking
+  that <html> carries data-sentient-persona="a" (then reload with =b). The
+  example component keeps showing its original until a version is published
+  from the dashboard, so it looks the same under both values — that is expected.
 
 Docs   https://sentient-ui.com/docs/developers#cli
 API    https://api.sentient-ui.com/openapi.json`;
@@ -45,6 +52,8 @@ export function parseArgs(argv: string[]): {
   command: string | undefined;
   key?: string;
   consent?: ConsentPreset;
+  /** False when --no-install was passed. */
+  install?: boolean;
   help?: boolean;
   version?: boolean;
   /** Fatal usage problem; main() prints it to stderr and exits 1. */
@@ -54,6 +63,7 @@ export function parseArgs(argv: string[]): {
   const command = args.shift();
   let key: string | undefined;
   let consent: ConsentPreset | undefined;
+  let install: boolean | undefined;
   // `--help` in the command slot is a flag, not an unknown command — otherwise
   // the one thing every user and every agent tries first exits non-zero.
   let help = command === '--help' || command === '-h';
@@ -86,6 +96,8 @@ export function parseArgs(argv: string[]): {
       help = true;
     } else if (arg === '--version' || arg === '-v') {
       version = true;
+    } else if (arg === '--no-install') {
+      install = false;
     } else if (arg === '--yes' || arg === '-y') {
       // Accepted for npx muscle memory; v1 has no prompts, so it is also the
       // default behavior (YAGNI: no prompt library).
@@ -96,11 +108,11 @@ export function parseArgs(argv: string[]): {
       break;
     }
   }
-  return { command, key, consent, help, version, error };
+  return { command, key, consent, install, help, version, error };
 }
 
 export function main(argv: string[]): void {
-  const { command, key, consent, help, version, error } = parseArgs(argv);
+  const { command, key, consent, install, help, version, error } = parseArgs(argv);
 
   // A bad flag must fail loudly BEFORE anything runs: acting on half-parsed
   // options is how `init --kye pk_x` ended up doing a silent keyless init.
@@ -123,7 +135,7 @@ export function main(argv: string[]): void {
 
   if (command === 'init') {
     try {
-      runInit({ cwd: process.cwd(), key, consent });
+      runInit({ cwd: process.cwd(), key, consent, install });
     } catch (err) {
       console.error(`[sentientui] init failed: ${String(err)}`);
       process.exit(1);

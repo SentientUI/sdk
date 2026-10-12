@@ -16,7 +16,7 @@ page is left exactly as it was.
 
 The install is two tags in `<head>`: an inline tag that sets `window.sentient` and then runs
 the pre-paint script, followed by the deferred loader. Copy the real thing from your dashboard's
-Install page, or generate it (the pre-paint script is ~2.6 KB and byte-identical for every site,
+Install page, or generate it (the pre-paint script is ~3.7 KB and byte-identical for every site,
 so it is not reproduced here):
 
 ```html
@@ -24,8 +24,9 @@ so it is not reproduced here):
   window.sentient = {
     apiKey: 'pk_your_key',            // sentient-ui.com → Settings
     personaAttributes: true,          // sets data-sentient-persona / -confidence on <html>
+    stageAttributes: true,            // optional: sets data-sentient-stage on <html> (see below)
     persona: () => window.myApp?.role, // optional: declare the role your site already knows
-                                       // (string or function; must be a key from Settings → Personas)
+                                       // (string or function; must be a key from Matrix → Audiences)
     sections: ['#hero', '#pricing', '#faq'], // optional: sections eligible for reordering,
                                              // CSS selectors in your theme's natural order
     slots: {
@@ -65,10 +66,18 @@ meant for is not a failure.
 and on a return visit the browser may already have painted your original section order and
 baseline styles before it does. The pre-paint script closes that gap: a tiny synchronous inline
 script that applies the last served decision *before* the page paints. It reads only the
-snapshot already stored on that visitor's own device, makes no network request, hides nothing
-(there is no cloak here, by design), and does nothing at all on a first visit, for a
-Do-Not-Track / Global Privacy Control visitor, or unless the config says `consent: true` or
-has no consent gate at all. It can't read a consent platform (it runs before any of them load),
+snapshot already stored on that visitor's own device, makes no network request, and does
+nothing at all on a first visit, for a Do-Not-Track / Global Privacy Control visitor, or unless
+the config says `consent: true` or has no consent gate at all. There is no page-wide cloak, by
+design. The one thing it hides is narrow: when the landing URL says the visitor clicked an ad or
+an email — an ad click ID (`gclid`, `gbraid`, `wbraid`, `ttclid`, `msclkid`, `twclid`,
+`li_fat_id`; not `fbclid`, which organic Meta clicks carry too), a paid or email `utm_medium`
+(`cpc`, `paid_social`, `display`, `email`, `sms`, …) or a `/discount/` link — the components
+you published from the dashboard that it found in the visitor's snapshot are kept invisible
+(`visibility: hidden`, so nothing on the page moves) until this visit's decision is applied,
+or for at most 300 ms. That visit may be served a version written for the campaign it came from,
+and showing last visit's version first is exactly the flicker that wastes the click. Every
+other visitor is untouched, and there is no hold in previews or the editor, or without consent. It can't read a consent platform (it runs before any of them load),
 so with `consentFrom` it steps aside and the loader applies the visitor's decision once the
 platform grants. See [Consent](#consent). Anything it gets wrong — a
 selector that resolved differently mid-parse, say — the loader reverts within the same page
@@ -98,7 +107,7 @@ up new snippet versions on its own and this tag is pasted once. That is the reco
 and what the Shopify app embed and the dashboard's install page both hand out.
 
 **Pinning instead.** Add `@<version>` to the package path
-(`@sentientui/snippet@0.21.0/dist/snippet.global.js`) when you want a controlled rollout, or
+(`@sentientui/snippet@0.32.2/dist/snippet.global.js`) when you want a controlled rollout, or
 when you want Subresource Integrity — an SRI hash is only possible on a pinned URL, since the
 hash changes with every release. Compute it from the published file
 (`openssl dgst -sha384 -binary dist/snippet.global.js | openssl base64 -A`) and pass it as
@@ -112,8 +121,8 @@ version it sees running falls behind.
 `engagement.global.js` (section and interaction capture, fetched at boot in parallel with the
 decision, only for a visit that may be tracked), `consent.global.js` (only when a consent
 source is configured, or on Shopify),
-`preview.global.js` (only for `?sentient_preview=` / `?sentient_persona=` links from your
-dashboard) and `editor.global.js` (only when you open the on-site editor). Self-hosting? Put
+`preview.global.js` (only for `?sentient_preview=` / `?sentient_persona=` /
+`?sentient_context=` links from your dashboard) and `editor.global.js` (only when you open the on-site editor). Self-hosting? Put
 all five files in one folder. If the chunk URL can't be derived (an inlined or bundled
 snippet), set `consentSrc` / `editorSrc` in `window.sentient`. A missing consent chunk keeps
 tracking **off** and logs a warning.
@@ -125,14 +134,33 @@ so a nonce-based policy needs no `'unsafe-inline'`.
 ```css
 #hero[data-tone='urgent'] .cta { font-weight: 700; }
 html[data-sentient-persona='trial_user'] .upgrade-banner { display: block; }
+html[data-sentient-stage='returning'] .first-order-offer { display: none; }
 ```
+
+`stageAttributes: true` puts the visitor's buying stage on `<html>` as `data-sentient-stage`, for
+changes you want everyone at that stage to get — hiding the first-order discount from people who
+have already bought, say. It only appears once stages are turned on for the project (e-commerce
+projects record them from the start), and never for visitors in the control group: a stage rule
+is the same for everyone at that stage, so it is not an experiment, and the control group is how
+its effect is measured. The values are `new`, `browsing`, `carted` and `returning` (has bought
+here before). Because any script on the page — and anyone at a shared computer — can read it,
+`customer` and `lapsed` are only shown separately if you ask for them with
+`stageAttributes: 'detailed'`. How the visitor arrived (an ad, an email) is never written to the
+page. The value is set before paint from the visitor's last visit and corrected when this
+visit's decision arrives.
+
+To see your site as visitors at one stage, or arriving one way, see it, add
+`?sentient_context=` to any page: `carted`, `customer`, `cart_recovery`, `product_ad`, and so on.
+It previews read-only — nothing is recorded — showing the versions you limited to that audience
+with **Show to**, and says so when those versions are not being served yet. It combines with
+`?sentient_persona=`.
 
 The first value of each dim is your baseline (what you show today). Decisions are locked per
 session and learned per visitor type on the SentientUI API: a first visit sees your original, the return visit adapts.
 
 `persona` declares the visitor type your site already knows (e.g. a role from your own
 session state) instead of waiting for it to be inferred. It must be a key in the project's
-persona vocabulary (dashboard → Settings → Personas); unrecognized values are ignored
+persona vocabulary (dashboard → Matrix → Audiences); unrecognized values are ignored
 server-side and surfaced in the dashboard so you can add them. Keep it a low-cardinality
 role label — never a user id or email.
 
@@ -202,4 +230,4 @@ Everything stored and sent is listed in
 
 The always-on bundle is capped at 29 KiB gzip, a ceiling that only ever goes down. The
 engagement, consent and preview chunks are capped at 6.5, 3.5 and 3 KiB gzip, the editor overlay
-at 30 KiB gzip, and the pre-paint tag at 3 KiB raw. All limits are CI-enforced. MIT.
+at 30 KiB gzip, and the pre-paint tag at 3.7 KiB raw. All limits are CI-enforced. MIT.

@@ -41,7 +41,8 @@ describe('runInit', () => {
     expect(existsSync(path.join(dir, 'components', 'adaptive-example.tsx'))).toBe(true);
     const out = lines.join('\n');
     expect(out).toContain('<AdaptiveRoot');
-    expect(out).toContain('open http://localhost:3000?sentient_persona=a (then ?sentient_persona=b)');
+    expect(out).toContain('open http://localhost:3000/?sentient_persona=a');
+    expect(out).toContain('data-sentient-persona="a"');
   });
 
   it('uses the detected package manager (pnpm lockfile → pnpm add)', () => {
@@ -108,7 +109,7 @@ describe('runInit', () => {
     expect(result.framework).toBe('vite');
     expect(readFileSync(path.join(dir, '.env.local'), 'utf-8')).toContain('VITE_SENTIENT_API_KEY=');
     expect(existsSync(path.join(dir, 'src', 'components', 'adaptive-example.tsx'))).toBe(true);
-    expect(lines.join('\n')).toContain('open http://localhost:5173?sentient_persona=a (then ?sentient_persona=b)');
+    expect(lines.join('\n')).toContain('open http://localhost:5173/?sentient_persona=a');
   });
 
   it('never clobbers an existing example component', () => {
@@ -126,5 +127,60 @@ describe('runInit', () => {
     expect(calls).toEqual([]);
     expect(existsSync(path.join(dir, '.env.local'))).toBe(false);
     expect(lines.join('\n')).toContain('could not detect');
+  });
+  // M15: the verification step used to promise the two persona URLs "render
+  // differently" — impossible with the scaffold, which shows its original
+  // until a dashboard version is published.
+  it('verification points at the <html> persona attribute, not a visual difference', () => {
+    nextAppFixture();
+    runInit(opts());
+    const out = lines.join('\n');
+    expect(out).toContain('data-sentient-persona');
+    expect(out).not.toMatch(/render differently/);
+  });
+
+  it('--no-install skips the install and prints the command instead', () => {
+    nextAppFixture();
+    writeFileSync(path.join(dir, 'pnpm-lock.yaml'), '');
+    runInit({ ...opts(), install: false });
+    expect(calls).toEqual([]);
+    expect(lines.join('\n')).toContain('run it yourself: pnpm add @sentientui/react');
+    // Everything else still happens.
+    expect(existsSync(path.join(dir, '.env.local'))).toBe(true);
+  });
+
+  // M16: a workspace package has no lockfile of its own; npm there breaks
+  // `workspace:` specifiers.
+  it('inside a pnpm workspace package, installs with pnpm from the root lockfile', () => {
+    writeFileSync(path.join(dir, 'pnpm-lock.yaml'), '');
+    mkdirSync(path.join(dir, '.git'));
+    const app = path.join(dir, 'apps', 'web');
+    mkdirSync(path.join(app, 'app'), { recursive: true });
+    writeFileSync(path.join(app, 'package.json'), JSON.stringify({ dependencies: { next: '15.0.0' } }));
+    runInit({ ...opts(), cwd: app });
+    expect(calls).toEqual(['pnpm add @sentientui/react']);
+  });
+
+  it('gatsby: GATSBY_ var in .env.development (Gatsby ignores .env.local), port 8000', () => {
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { gatsby: '5.0.0' } }));
+    mkdirSync(path.join(dir, 'src'));
+    const result = runInit(opts());
+    expect(result.framework).toBe('gatsby');
+    expect(readFileSync(path.join(dir, '.env.development'), 'utf-8')).toContain('GATSBY_SENTIENT_API_KEY=');
+    expect(existsSync(path.join(dir, '.env.local'))).toBe(false);
+    const out = lines.join('\n');
+    expect(out).toContain('.env.development created');
+    expect(out).toContain('wrapRootElement');
+    expect(out).toContain('http://localhost:8000/');
+  });
+
+  it('astro: PUBLIC_ var, island-level provider, port 4321', () => {
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { astro: '5.0.0' }, devDependencies: { vite: '6.0.0' } }));
+    const result = runInit(opts());
+    expect(result.framework).toBe('astro');
+    expect(readFileSync(path.join(dir, '.env.local'), 'utf-8')).toContain('PUBLIC_SENTIENT_API_KEY=');
+    const out = lines.join('\n');
+    expect(out).toContain('client:load');
+    expect(out).toContain('http://localhost:4321/');
   });
 });

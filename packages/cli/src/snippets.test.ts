@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { wrapSnippet, consentNote, unknownInstructions } from './snippets.js';
+import { wrapSnippet, consentNote, unknownInstructions, finale } from './snippets.js';
 import { envVarName } from './env-file.js';
 import type { Framework } from './detect.js';
 
 // Every framework the CLI advertises must produce a snippet that actually reads
 // the user's key from the correct client-exposed env var — never a hardcoded "".
-const ADVERTISED: Framework[] = ['next-app', 'next-pages', 'vite', 'remix', 'cra'];
+const ADVERTISED: Framework[] = ['next-app', 'next-pages', 'react-router', 'remix', 'gatsby', 'astro', 'vite', 'cra'];
 
 describe('wrapSnippet', () => {
   for (const framework of ADVERTISED) {
@@ -80,5 +80,21 @@ describe('--consent with an undetected framework (review #10)', () => {
   it('still puts consentFrom in the manual instructions', () => {
     expect(unknownInstructions('tcf')).toContain('consentFrom="tcf"');
     expect(unknownInstructions()).not.toContain('consentFrom');
+  });
+});
+
+describe('finale / verification (M15)', () => {
+  it('checks the <html> persona attribute instead of promising a visual change', () => {
+    const text = finale('vite');
+    expect(text).toContain('http://localhost:5173/?sentient_persona=a');
+    expect(text).toContain('data-sentient-persona="a"');
+    expect(text).not.toMatch(/render differently/);
+    expect(unknownInstructions()).toContain('data-sentient-persona');
+  });
+  it('uses each framework dev server port', () => {
+    expect(finale('react-router')).toContain(':5173/');
+    expect(finale('astro')).toContain(':4321/');
+    expect(finale('gatsby')).toContain(':8000/');
+    expect(finale('next-app')).toContain(':3000/');
   });
 });

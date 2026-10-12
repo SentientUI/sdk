@@ -33,6 +33,11 @@ describe('parseArgs', () => {
     expect(parseArgs(['init', '-y'])).toMatchObject({ command: 'init', error: undefined });
   });
 
+  it('parses --no-install', () => {
+    expect(parseArgs(['init', '--no-install'])).toMatchObject({ command: 'init', install: false, error: undefined });
+    expect(parseArgs(['init'])).toMatchObject({ install: undefined });
+  });
+
   // `--key` used to swallow whatever token came next, so `init --key --yes`
   // silently used "--yes" as the API key.
   it('rejects an option-shaped value for --key', () => {

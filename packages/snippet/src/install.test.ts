@@ -44,7 +44,7 @@ describe('renderSnippetInstall — two-tag default', () => {
     try {
       (0, eval)(parseTags(html).inline[0]!);
       const pp = (window as unknown as { __sntPP?: PrePaintRecord }).__sntPP;
-      expect(pp?.v).toBe(1); // what the bundle reports as `pp` — unaffected by folding
+      expect(pp?.v).toBe(2); // what the bundle reports as `pp` — unaffected by folding
       expect((window as unknown as { sentient?: { apiKey: string } }).sentient?.apiKey).toBe(KEY);
     } finally {
       (window as unknown as { __sntPP?: PrePaintRecord }).__sntPP?.stop();

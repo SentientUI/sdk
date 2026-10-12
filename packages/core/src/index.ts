@@ -40,6 +40,7 @@ import {
   type SlotResult,
 } from './slots.js';
 import { readSnapshot, writeSnapshot, SNAPSHOT_STORAGE_KEY_PREFIX, type SlotConfigEntry, type CompoundLocator } from './snapshot.js';
+import { exposedStage, setStageAttribute, type StageAttributes } from './stage-attribute.js';
 import type { RegionSkeleton, RenderCaps } from './region-skeleton.js';
 
 /** A captured skeleton, or why none could be captured. */
@@ -241,6 +242,16 @@ export type SentientConfig = {
    * Defaults to the nonce of a script already on the page.
    */
   nonce?: string;
+  /**
+   * Opt-in: write the visitor's funnel stage to `<html data-sentient-stage>`
+   * after each decide (and remember it for the next visit's pre-paint script),
+   * so a theme can make deterministic CSS changes per stage. Only projects
+   * with stages turned on send one. `true` exposes `new`, `browsing`, `carted`
+   * and `returning` (has bought here — `customer`/`lapsed` collapsed, since any
+   * script on the page can read it); `'detailed'` exposes `customer` and
+   * `lapsed` as they are. How the visitor arrived is never written.
+   */
+  stageAttributes?: StageAttributes;
 };
 
 export type AssignResult = { variantId: string; assignmentTtlMs: number; content?: string };
@@ -256,6 +267,8 @@ export {
 } from './snapshot.js';
 export type { DecisionSnapshot, SlotConfigEntry, SlotOps, CompoundLocator } from './snapshot.js';
 export { pageScopeMatches, PAGE_SCOPE_RE } from './page-scope.js';
+export { exposedStage, setStageAttribute, STAGE_ATTRIBUTE } from './stage-attribute.js';
+export type { StageAttributes } from './stage-attribute.js';
 export * from './blocks.js';
 export * from './region-skeleton.js';
 // Types only: the vocabulary's runtime constants (roles, id pattern, caps) are
@@ -304,6 +317,12 @@ export type DecideOutcome = {
   palette?: import('./blocks.js').SitePalette;
   // Registry mode only: the site styles served Redesign arms borrow.
   vocabulary?: import('./style-vocabulary.js').StyleVocabulary;
+  /** The visit's funnel stage — only for projects with stages on, never for
+   *  the control group. Raw: see `stageAttributes` for what reaches the page. */
+  stage?: string;
+  /** The visit's serving context (an arrival class or the stage). Never
+   *  written to the page or the snapshot. */
+  context?: string;
 };
 
 export type DecideInput = {
@@ -1511,6 +1530,10 @@ export function init(config: SentientConfig): SentientClient {
       // because Google Ads auto-tagging appends ONLY gclid — without this,
       // paid search with no manual UTM template reported as organic.
       clickIds,
+      // The landing page's PATH (never its query string) — it is what tells a
+      // paid click to a product page or a Shopify /discount/ link apart from
+      // any other arrival (server-side arrival classification).
+      landingPath: typeof location !== 'undefined' ? location.pathname : undefined,
       timeOfDay: detectTimeOfDay(new Date()),
       dayOfWeek: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][new Date().getDay()],
       ephemeral: session.isEphemeral(),
@@ -1920,7 +1943,14 @@ export function init(config: SentientConfig): SentientClient {
             vocabulary?: import('./style-vocabulary.js').StyleVocabulary;
             persona?: string;
             confidence?: number;
+            stage?: string;
+            context?: string;
           };
+          // Opt-in theme attribute: what this visit's decide says, overwriting
+          // the pre-paint value (last visit's) — absent means "no stage for
+          // this visitor" (control group, stages off) and removes it.
+          const shownStage = exposedStage(data.stage, config.stageAttributes);
+          if (config.stageAttributes) setStageAttribute(shownStage);
 
           const slots: Record<string, SlotResult> = {};
           for (const d of declared) {
@@ -2020,6 +2050,10 @@ export function init(config: SentientConfig): SentientClient {
             ...(slotConfigStore.size > 0 ? { slotConfig: Object.fromEntries(slotConfigStore) } : {}),
             ...(sitePalette ? { palette: sitePalette } : {}),
             ...(styleVocabulary ? { vocabulary: styleVocabulary } : {}),
+            // Only the EXPOSED value, and only when opted in: localStorage is
+            // readable by every script on the page, so the raw stage (and the
+            // context) never go there.
+            ...(shownStage ? { stage: shownStage } : {}),
           });
 
           return {
@@ -2033,6 +2067,8 @@ export function init(config: SentientConfig): SentientClient {
             ...(data.sectionMap ? { sectionMap: data.sectionMap } : {}),
             ...(data.palette ? { palette: data.palette } : {}),
             ...(data.vocabulary ? { vocabulary: data.vocabulary } : {}),
+            ...(data.stage ? { stage: data.stage } : {}),
+            ...(data.context ? { context: data.context } : {}),
           };
         } catch {
           seedSlotBaselines(declared);

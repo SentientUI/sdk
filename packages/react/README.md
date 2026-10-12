@@ -17,11 +17,13 @@ npx @sentientui/cli init
 # then follow its printed instructions: wrap your app with <AdaptiveRoot> (or
 # <AdaptiveProvider>) and mount the generated components/adaptive-example.tsx
 npm run dev
-# open http://localhost:3000?sentient_persona=a, then ?sentient_persona=b — the example adapts
+# open http://localhost:3000?sentient_persona=a, then ?sentient_persona=b — <html data-sentient-persona> follows it
 ```
 
 The CLI installs the package, writes `.env.local`, and generates an example component — it does
-**not** edit your layout, so nothing adapts until you do the wrap-and-mount step it prints.
+**not** edit your layout, so nothing adapts until you do the wrap-and-mount step it prints. The
+example hero itself looks the same under both personas: it shows your original until a version
+is published from the dashboard, which needs a real key.
 
 With no API key the SDK runs in keyless **local mode**: deterministic simulated decisions, zero
 network. Add a `pk_…` key from [sentient-ui.com](https://sentient-ui.com) to learn from real
@@ -77,8 +79,7 @@ stored on the visitor's device, which has to wait for consent. `AdaptiveRoot` do
 ### Rung 0 — Observe
 
 Install is the integration. The dashboard immediately shows who is arriving: persona mix, device
-and traffic-source segments, engagement signals. The "Suggested next step" card tells you which
-rung to climb next, with a copy-pasteable snippet.
+and traffic-source segments, engagement signals.
 
 ### Rung 1 — Style (CSS only)
 
@@ -89,8 +90,8 @@ data-sentient-persona   = <vocabulary key> | unknown
 data-sentient-confidence = low | medium | high
 ```
 
-The persona value is a key from the project's persona vocabulary (dashboard → Settings →
-Personas) — declared by your app via the `persona` prop, or discovered from behavior. The
+The persona value is a key from the project's persona vocabulary (dashboard → Matrix →
+Audiences) — declared by your app via the `persona` prop, or discovered from behavior. The
 vocabulary starts empty (every visitor is `unknown` until a persona exists). Renaming a persona in
 the dashboard keeps the old key resolving as an alias, so existing CSS stays intact.
 
@@ -228,14 +229,19 @@ Imported from `@sentientui/react/next`.
 | `registrySlotIds` | `string[]` *(optional)* | The generated-mode `<Adaptive id>`s this page renders. Decides their published versions in the same SSR round trip and serializes the served content into the HTML, so first paint shows the version instead of the original children. Scoped to exactly these ids — an unscoped registry decide would record a trial for every published slot on every page. Omit and the regions decide client-side after mount. |
 | `sectionTypes` | `Partial<Record<string, SemanticType>>` *(optional)* | What each section is, keyed by `data-sentient-id`: `{ about: 'trust', contact: 'cta' }`. Sections are classified from their content, so declare only the ones it gets wrong — a band with little signal-bearing copy (an "About us" block, a contact form) reads `generic` and is ordered the same for every persona. Any section with a `data-sentient-id` can appear, reorderable or not. Also accepted by `AdaptiveProvider`. |
 | `apiKey` | `string` | `pk_…` key — used by both the browser SDK and server-side SSR requests. |
-| `appOrigin` | `string` *(default `http://localhost:3001`)* | Your app origin (e.g. `https://yourapp.com`). Must be on the project's allowed-origins list. Always set in production. |
+| `slots` | `Array<{ id, dims? \| arms?, baseline? }>` *(optional)* | The `useAdaptiveTokens` / `<AdaptiveGroup>` slots this tree renders. Declaring them decides them in the same SSR round trip, so their values serialize into the server HTML; undeclared ones decide after mount. |
+| `appOrigin` | `string` *(optional)* | Your app origin (e.g. `https://yourapp.com`). Must be on the project's allowed domains. Defaults to `https://<Host header>` in production and `http://localhost:3001` in development — set it explicitly in production. |
+| `searchParams` | page `searchParams` *(optional)* | Pass the page's `searchParams` on landing pages that get ad traffic: a Server Component can't read the request URL, so without it the SSR session carries no `utm_*` or click IDs. |
+| `pathname` | `string` *(optional)* | The page's path, e.g. `/products/trail-shoe`. Pass it with `searchParams` on landing pages that get ad or email traffic, so a paid click to a product page or a `/discount/` link is recognised on the server render. |
 | `context` | `'landing' \| 'ecommerce' \| 'saas' \| 'marketplace'` *(optional, deprecated)* | Unused — the project's type is set in the dashboard. Safe to omit. |
-| `persona` | `string` *(optional)* | Declared persona — the role your app already knows for this visitor (e.g. from your auth context). Must be a key in the project's persona vocabulary (dashboard → Settings → Personas); unrecognized values are ignored server-side. Served at full confidence, overriding the inferred persona; forwarded through both SSR paths. Stable for the session — remount to apply a new value. Never a user id or email. |
+| `persona` | `string` *(optional)* | Declared persona — the role your app already knows for this visitor (e.g. from your auth context). Must be a key in the project's persona vocabulary (dashboard → Matrix → Audiences); unrecognized values are ignored server-side. Served at full confidence, overriding the inferred persona; forwarded through both SSR paths. Stable for the session — remount to apply a new value. Never a user id or email. |
 | `consent` | `boolean` *(default `true`)* | Set `false` to skip SDK init (no cookies, no events). Flip to `true` after the visitor accepts. |
 | `respectDoNotTrack` | `boolean` *(default `true`)* | Honor the browser's Do Not Track signal. When on and DNT is enabled, the SDK sets no cookies and sends no tracking data (overriding `consent: true`), and `grantConsent()` won't re-enable it. Set `false` to make your own consent gate authoritative. |
 | `consentFrom` | preset or `{ cookie, value, event }` *(optional)* | Your consent platform — see [Consent management](#consent-management-gdpr). Cookie-based sources are also read on the server, so a consented visitor gets personalized HTML and a non-consented one gets none. |
 | `timeoutMs` | `number` *(default `1000`)* | Server-side fetch timeout before falling back to the first variant. Typical decide is well under 150 ms; the full budget is only reached on a cold start or an API distant from your SSR host. |
 | `nonce` | `string` *(optional)* | CSP nonce for the inline pre-paint script and the `<style>` the client injects. |
+| `captureAgents` | `boolean` *(default `true`)* | Logs a known AI-agent fetch (GPTBot, Claude-User, PerplexityBot, …, matched by user-agent) to your agent analytics — machine telemetry only, no cookie or session. Set `false` to opt out. |
+| `agentFeed` | `{ path?, content? }` *(optional)* | Emits a server-rendered JSON-LD block describing the page's winning variants and layout for AI crawlers that don't run JS. Omit to emit nothing. |
 | `debug` | `boolean` | Log assignment and event activity to the console. |
 
 #### What `<AdaptiveRoot>` costs your rendering
@@ -456,6 +462,35 @@ and never rewrites them mid-session. Requirements: `suppressHydrationWarning` on
 `AdaptiveRoot` at the top of the tree. In keyless local mode (development without a `pk_` key),
 override with `?sentient_persona=<persona>` — the parameter is ignored in hosted (`pk_`) mode.
 
+### Stage attribute (`stageAttributes`)
+
+For stores, the visitor's buying stage can go on `<html>` too, so CSS can make changes everyone at
+that stage should get — hiding the first-order discount from people who have already bought:
+
+```tsx
+<AdaptiveRoot apiKey="pk_…" stageAttributes>{children}</AdaptiveRoot>
+```
+
+```css
+html[data-sentient-stage='returning'] .first-order-offer { display: none; }
+html[data-sentient-stage='carted'] .free-shipping-bar { order: -1; }
+```
+
+`data-sentient-stage` is `new`, `browsing`, `carted` or `returning` (has bought here before). Any
+script on the page, and anyone at a shared computer, can read it, so `customer` and `lapsed` are
+only shown separately with `stageAttributes="detailed"`. How the visitor arrived (an ad, an
+email) is never written to the page. It is set only once stages are turned on for the project, and
+never for visitors in the control group: a stage rule is the same for everyone at that stage, so
+it is not an experiment, and the control group is how its effect is measured.
+
+`AdaptiveRoot` writes it in the server HTML. `AdaptiveProvider` takes the same prop and writes it
+after each decision; pass `stageAttributes` to `<SentientPersonaScript>` as well to have it set
+before paint from the visitor's last visit (the decision then corrects it).
+
+In the devtools panel, a persona previewed on a page opened with `?sentient_context=<context>`
+(`carted`, `cart_recovery`, …) is simulated in that context: the published versions you limited
+to it with **Show to** become eligible, and its pins apply. Nothing is recorded.
+
 ### `useAssignment(componentId, variantIds)`
 
 > **Deprecated** — use [`useAdaptive`](#useadaptiveid-config) instead; it carries the goal and exposure wiring `useAssignment` leaves to you. Kept for backward compatibility.
@@ -545,7 +580,8 @@ export async function getServerSideProps({ req }) {
   const { assignments, sessionId } = await loadAdaptiveAssignments(
     [{ id: 'hero_cta', variantIds: ['control', 'variant_a'] }],
     {
-      cookies: req.cookies,
+      // Pages Router's req.cookies is a plain object; the helper reads cookies via get(name).
+      cookies: { get: (name) => (req.cookies[name] ? { value: req.cookies[name] } : undefined) },
       apiKey:  process.env.NEXT_PUBLIC_SENTIENT_API_KEY!,
       baseUrl: 'https://api.sentient-ui.com/v1',
       origin:  process.env.NEXT_PUBLIC_APP_URL,
@@ -596,7 +632,7 @@ DOM graph scanning and behavioral engagement capture are **on by default** — n
 
 Both modules are loaded on demand after init, so the base bundle stays lean, and neither ever runs for a Do-Not-Track, Global Privacy Control, or consent-gated visitor (see Consent below).
 
-What they cost, so you can decide: about 21 KB gzip on top of the ~16 KB core client, fetched after hydration (never on the critical path). One `MutationObserver` watches the page for sections added later, and it batches a burst of DOM changes into a single scan 200 ms after the burst starts, so a chat or a live list doesn't make it do work on every frame. Turn graph scanning off and the dashboard's page-structure view goes empty. Turn engagement off and audiences stop learning from on-page behaviour.
+What they cost, so you can decide: about 21 KB gzip on top of the ~17 KB core client, fetched after hydration (never on the critical path). One `MutationObserver` watches the page for sections added later, and it batches a burst of DOM changes into a single scan 200 ms after the burst starts, so a chat or a live list doesn't make it do work on every frame. Turn graph scanning off and the dashboard's page-structure view goes empty. Turn engagement off and audiences stop learning from on-page behaviour.
 
 Opt out per feature:
 

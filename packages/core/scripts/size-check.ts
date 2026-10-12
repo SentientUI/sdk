@@ -146,7 +146,11 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // SDK and was never drawn a Rewrite arm — and reportSlots carries a hybrid
     // <Adaptive>'s authored arms. Redundant client-side text normalization was
     // cut first (the server normalizes). Measured 17433 against 17408.
-    limit: 16 * 1024 + 1280,
+    //
+    // +64 (2026-10-09, operator-approved): the opt-in `stageAttributes` theme
+    // attribute (plan 5.4) — the post-decide write, the coarsened snapshot
+    // field and the pre-paint fallback's stage line. Measured 17725.
+    limit: 16 * 1024 + 1280 + 64,
   },
   {
     name: '@sentientui/core/graph (with shared chunks)',
@@ -208,7 +212,10 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // longer un-decides. Two new messages were shortened first. Measured
     // 22280 — the old ceiling left 27 B, so the next change would have
     // failed on arrival.
-    limit: 17 * 1024 + 3584 + 1280 + 256,
+    //
+    // +96 (2026-10-09, operator-approved): the same `stageAttributes` code as
+    // the lean entry above. Measured 22620.
+    limit: 17 * 1024 + 3584 + 1280 + 256 + 96,
   },
 ];
 

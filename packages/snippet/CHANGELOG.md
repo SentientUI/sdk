@@ -1,5 +1,30 @@
 # @sentientui/snippet
 
+## 0.33.0
+
+### Minor Changes
+
+- 0e26ad9: Inline pre-paint script v2 (`pp: 2`). When the landing URL shows an ad or email click (an ad click ID other than `fbclid`, a paid or email `utm_medium`, or a `/discount/` link), the registry components found in the visitor's snapshot stay invisible (`visibility: hidden`, no layout shift) until this visit's decision is applied or 300 ms pass, whichever comes first; every other visitor is untouched, and there is no hold in previews, the editor, or without consent. It also sets the opt-in `data-sentient-stage`, and stays out of the context preview, the `#sentient_editor_code` / `#sentient_preview_token` fragments and a cached editor session. Re-paste the inline tag to get it; v1 keeps working. New `?sentient_context=<context>` preview: a read-only visit in that stage or arrival class, showing the versions limited to it with "Show to". The inline tag's size budget is 3.7 KiB raw (was 3 KiB).
+- 0e26ad9: Opt-in `data-sentient-stage` on `<html>`: the visitor's buying stage, for per-stage CSS (hide the first-order offer from people who have already bought). Turn it on with `stageAttributes: true` (core `init`, the React `AdaptiveProvider`/`AdaptiveRoot` prop, the snippet's `window.sentient`). Values are `new`, `browsing`, `carted` and `returning`; `stageAttributes: 'detailed'` shows `customer` and `lapsed` instead of `returning`. Set only for projects with stages turned on, never for the control group, and how the visitor arrived is never written to the page or to device storage. `AdaptiveRoot` writes it in the server HTML; the pre-paint scripts set it from the visitor's last visit and each decision corrects it. `DecideOutcome` and the SSR `DecideResult` gain the raw `stage` and `context`; `exposedStage()` gives the page-safe value.
+
+## 0.32.3
+
+### Patch Changes
+
+- ac4f748: The session upsert now sends the landing page's path (never its query string), so the server can recognise a paid click to a product page or a Shopify `/discount/` link from the first decision of a visit. Server-side: `landingPath` on the SSR helpers' options, and a `pathname` prop on `AdaptiveRoot` — server components cannot read their own URL, so pass it on landing pages that receive ad or email traffic.
+
+## 0.32.2
+
+### Patch Changes
+
+- c5ffc6a: On-site editor: text inputs and selects no longer overflow the panel's right edge on sites without a global box-sizing reset.
+
+## 0.32.1
+
+### Patch Changes
+
+- f702fc8: The on-site editor can now test new wording on a CTA that pairs its label with an icon (`<a>Let's talk <svg/></a>`), which is how most CTAs are built. It used to refuse anything that wasn't a bare text element, and its live preview and Cancel wrote `textContent`, which would have stripped the icon. The editor, its preview and served text versions now all change only the element's single text node, the same rule content arms already used. Elements with several text runs (`Get <span>started</span>`) are still refused, since there is no single place the copy belongs.
+
 ## 0.32.0
 
 ### Minor Changes

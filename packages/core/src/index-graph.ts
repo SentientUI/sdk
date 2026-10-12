@@ -29,6 +29,8 @@ export {
   renderPrePaintScript,
 } from './snapshot.js';
 export type { DecisionSnapshot, SlotConfigEntry, SlotOps, CompoundLocator } from './snapshot.js';
+export { exposedStage, setStageAttribute, STAGE_ATTRIBUTE } from './stage-attribute.js';
+export type { StageAttributes } from './stage-attribute.js';
 export { armOfResult, baselineResultFor, baselineSlots, toWireSlot } from './slots.js';
 export type { SlotDeclInput, SlotResult } from './slots.js';
 export * from './blocks.js';

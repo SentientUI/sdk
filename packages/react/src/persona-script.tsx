@@ -1,7 +1,7 @@
 // `type JSX` from react, not the global namespace removed in @types/react@19
 // (peers allow react >=18) — see adaptive-text.tsx.
 import type { JSX } from 'react';
-import { renderPrePaintScript } from '@sentientui/core';
+import { renderPrePaintScript, type StageAttributes } from '@sentientui/core';
 import { confidenceBand } from '@sentientui/policy';
 
 export type SentientPersonaScriptProps = {
@@ -27,6 +27,15 @@ export type SentientPersonaScriptProps = {
    */
   consent?: boolean;
   consentFrom?: unknown;
+  /**
+   * Opt-in `data-sentient-stage` (see `AdaptiveProviderProps.stageAttributes`).
+   * With a server decision, pass the value to write as `stage` (already
+   * coarsened — `exposedStage` from `@sentientui/core`); without one the
+   * script copies the stage the visitor's last decide stored.
+   */
+  stageAttributes?: StageAttributes;
+  /** The stage value to write, from this request's decide; null writes none. */
+  stage?: string | null;
 };
 
 /** JSON string literal that is also safe inside an inline <script> element. */
@@ -39,13 +48,18 @@ export function personaScriptBody(props: SentientPersonaScriptProps): string {
   if (props.persona) {
     return (
       '(function(){try{var d=document.documentElement;' +
+      // The stage first, with its own single-writer check: an already-set
+      // persona must not stop it. Only a value this request's decide gave.
+      (props.stage
+        ? 'if(!d.hasAttribute("data-sentient-stage"))d.setAttribute("data-sentient-stage",' + inlineJsString(props.stage) + ');'
+        : '') +
       'if(d.hasAttribute("data-sentient-persona"))return;' +
       'd.setAttribute("data-sentient-persona",' + inlineJsString(props.persona.persona) + ');' +
       'd.setAttribute("data-sentient-confidence",' + inlineJsString(confidenceBand(props.persona.confidence)) + ');' +
       '}catch(e){}})();'
     );
   }
-  return renderPrePaintScript(props.apiKey);
+  return renderPrePaintScript(props.apiKey, props.stageAttributes ? { stage: true } : undefined);
 }
 
 /**

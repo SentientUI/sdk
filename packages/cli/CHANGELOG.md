@@ -1,5 +1,13 @@
 # @sentientui/cli
 
+## 0.5.0
+
+### Minor Changes
+
+- 0e22262: MCP: reversal tools — `resume_variant`, `update_variant` (edit or activate a managed draft), `delete_variant_draft`, `retire_variant`, `restore_variant` — plus `add_origin`, `list_cell_reviews` and `review_cell`. `pause_variant` is now marked destructive, `generate_cell` says whether the version will publish automatically or wait for review, `get_agent_traffic` takes the same `range`/`from`/`to` window as the other windowed tools, 400/404/409/5xx errors come back with next-step guidance and the server's own message, and a `pk_` key is refused at startup. The tool list is exported as `TOOL_CATALOG` and the README/AGENTS.md tables are tested against the registry.
+
+  CLI: `init` detects React Router v7, Gatsby and Astro, finds the package manager from a workspace-root lockfile (so `workspace:` dependencies no longer break), adds `--no-install`, and its verification step now checks `<html data-sentient-persona>` — which its own scaffold can actually pass.
+
 ## 0.4.0
 
 ### Minor Changes

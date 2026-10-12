@@ -1,9 +1,11 @@
 import { applyNonce, type SlotOps } from '@sentientui/core';
 import { resolveLocatorOne } from './locator';
 import { CSS_PROP, cssValueSafe } from './css-guard';
+import { applyContentText } from './text';
 
 // Bounded ops apply engine (Phase 3). Applies a server-validated `SlotOps` to an
-// element: text → textContent (NEVER innerHTML); https-only href/src/alt; and a
+// element: text → the element's sole text node, else textContent (NEVER
+// innerHTML — see ./text); https-only href/src/alt; and a
 // whitelisted style set + hidden via a single generated stylesheet using
 // `!important` (required to beat Webflow/Framer inline styles — acceptable
 // because the property set is bounded and user-authored). No arbitrary CSS/JS.
@@ -73,7 +75,9 @@ export function applyOps(el: Element, ops: SlotOps, slotId: string, doc: Documen
     }
   }
 
-  if (typeof ops.text === 'string') el.textContent = ops.text; // never innerHTML
+  // Never innerHTML. A label + icon keeps its icon: the editor's text test
+  // (previewed and served through here) used to flatten every such CTA.
+  if (typeof ops.text === 'string') applyContentText(el, ops.text);
   if (typeof ops.href === 'string' && HTTPS.test(ops.href)) el.setAttribute('href', ops.href);
   if (typeof ops.imageSrc === 'string' && HTTPS.test(ops.imageSrc)) el.setAttribute('src', ops.imageSrc);
   if (typeof ops.imageAlt === 'string') el.setAttribute('alt', ops.imageAlt);

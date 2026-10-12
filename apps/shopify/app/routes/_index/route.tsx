@@ -35,7 +35,7 @@ export default function App() {
         </p>
         <p className={styles.text}>
           New here?{" "}
-          <a href="https://sentient-ui.com" target="_blank" rel="noreferrer">
+          <a href="https://sentient-ui.com/?via=shopify" target="_blank" rel="noreferrer">
             Learn more about SentientUI
           </a>
           .

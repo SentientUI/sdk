@@ -34,6 +34,7 @@ const INTERNAL = [
   'detectTrafficSource', 'extractTrackedParams', 'matchedAgentToken', 'pageScopeMatches', 'readSnapshot',
   'referrerDomainFromReferer', 'resetRevealStyles', 'reveal', 'sessionCookieName',
   'toWireSlot', 'uaTokenMatch', 'writeSnapshot', 'routeKey', 'forgetGeneration',
+  'exposedStage', 'setStageAttribute', 'STAGE_ATTRIBUTE',
 ] as const;
 
 describe('@sentientui/core root exports', () => {

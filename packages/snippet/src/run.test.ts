@@ -1760,3 +1760,141 @@ describe('capture after a late grant keeps the server section map (review #2)', 
     expect(cleanups.slice(0, -1).every((c) => c.mock.calls.length === 1)).toBe(true);
   });
 });
+
+describe('run — stage attribute (stageAttributes, plan 5.4)', () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute('data-sentient-stage');
+    delete (window as unknown as { __sntPP?: unknown }).__sntPP;
+  });
+
+  it('hands the opt-in to core and stores only the coarsened stage for the next pre-paint', async () => {
+    (window as Window).sentient = { ...CONFIG, stageAttributes: true };
+    mockInit.mockReturnValue({
+      decide: vi.fn().mockResolvedValue({
+        layoutOrder: null, assignments: {}, slots: {}, persona: 'admin', confidence: 0.8,
+        stage: 'customer', context: 'cart_recovery',
+      }),
+      getPersona: vi.fn().mockReturnValue(null),
+    } as never);
+
+    await run();
+
+    expect(mockInit).toHaveBeenCalledWith(expect.objectContaining({ stageAttributes: true }));
+    const snap = readSnapshot('pk_test');
+    expect(snap!.stage).toBe('returning');
+    // The arrival context never reaches device storage.
+    expect(JSON.stringify(snap)).not.toContain('cart_recovery');
+  });
+
+  it('stores no stage without the opt-in', async () => {
+    mockInit.mockReturnValue({
+      decide: vi.fn().mockResolvedValue({
+        layoutOrder: null, assignments: {}, slots: {}, persona: 'admin', confidence: 0.8, stage: 'carted',
+      }),
+      getPersona: vi.fn().mockReturnValue(null),
+    } as never);
+    await run();
+    expect(readSnapshot('pk_test')).not.toHaveProperty('stage');
+  });
+
+  it('re-applies the snapshot stage pre-decide and keeps what the inline script set (reconcile)', async () => {
+    (window as Window).sentient = { ...CONFIG, stageAttributes: true };
+    document.documentElement.setAttribute('data-sentient-stage', 'carted');
+    (window as unknown as { __sntPP?: unknown }).__sntPP = {
+      v: 2, at: Date.now(), stamped: [], html: ['data-sentient-stage'], reordered: false, done: false, stop: vi.fn(),
+    };
+    writeSnapshot('pk_test', {
+      v: 1, persona: 'trial_user', band: 'medium', slots: {}, layoutOrder: null, savedAt: Date.now(), stage: 'carted',
+    });
+    mockInit.mockReturnValue({
+      decide: vi.fn().mockRejectedValue(new Error('offline')),
+      getPersona: vi.fn().mockReturnValue(null),
+    } as never);
+
+    await run();
+
+    expect(document.documentElement.getAttribute('data-sentient-stage')).toBe('carted');
+  });
+
+  it('ends the inline strong-intent hold once the decision is applied', async () => {
+    const reveal = vi.fn();
+    (window as unknown as { __sntPP?: unknown }).__sntPP = {
+      v: 2, at: Date.now(), stamped: [], html: [], reordered: false, done: false, held: true, stop: vi.fn(), reveal,
+    };
+    const decide = vi.fn().mockResolvedValue({
+      layoutOrder: null, assignments: {}, slots: { hero: { tone: 'urgent' } }, persona: 'admin', confidence: 0.8,
+    });
+    mockInit.mockReturnValue({ decide, getPersona: vi.fn().mockReturnValue(null) } as never);
+
+    await run();
+
+    expect(reveal).toHaveBeenCalled();
+    // The page already shows the decision when the hold ends.
+    expect(document.getElementById('hero')!.getAttribute('data-tone')).toBe('urgent');
+    expect(decide.mock.calls[0]![0]).toMatchObject({ pp: 2 });
+  });
+});
+
+describe('run — context preview (?sentient_context=)', () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute('data-sentient-stage');
+    window.history.pushState({}, '', '/');
+  });
+
+  function explainReturning(json: Record<string, unknown>) {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => json });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('simulates a visit in that context via /v1/explain, event-free, and says when it is not served yet', async () => {
+    window.history.pushState({}, '', '/?sentient_context=cart_recovery');
+    const fetchMock = explainReturning({
+      slots: {}, slotConfig: {}, persona: 'unknown', context: 'cart_recovery', contextServing: false,
+      personaAttributes: { persona: 'unknown', confidence: 'low' },
+    });
+    (window as Window).sentient = { apiKey: 'pk_test' }; // registry mode
+
+    await run();
+
+    expect(mockInit).not.toHaveBeenCalled();
+    expect(readSnapshot('pk_test')).toBeNull();
+    const [url, init] = fetchMock.mock.calls[0]! as [string, { body: string }];
+    expect(url).toContain('/v1/explain');
+    expect(JSON.parse(init.body)).toEqual({ persona: '', slotsFrom: 'registry', context: 'cart_recovery' });
+    const banner = document.getElementById('sentient-persona-preview-banner')!;
+    expect(banner.textContent).toContain('cart recovery visitors');
+    expect(banner.textContent).toContain('not served until stage serving is on');
+  });
+
+  it('combines with a persona, and drives the opt-in stage attribute (coarsened)', async () => {
+    window.history.pushState({}, '', '/?sentient_persona=admin&sentient_context=customer');
+    const fetchMock = explainReturning({
+      slots: {}, slotConfig: {}, persona: 'admin', personaDisplay: 'Admin', recognized: true, contextServing: true,
+      personaAttributes: { persona: 'admin', confidence: 'high' },
+    });
+    (window as Window).sentient = { apiKey: 'pk_test', stageAttributes: true };
+
+    await run();
+
+    expect(JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body)).toMatchObject({ persona: 'admin', context: 'customer' });
+    expect(document.documentElement.getAttribute('data-sentient-stage')).toBe('returning');
+    expect(document.getElementById('sentient-persona-preview-banner')!.textContent).toContain('Previewing as Admin · customer visitors');
+  });
+
+  it('rides along with a forced version preview so the rest of the page is in that context', async () => {
+    window.history.pushState({}, '', '/?sentient_preview=hero:cart&sentient_context=cart_recovery');
+    const fetchMock = explainReturning({ slots: { hero: 'cart' }, slotConfig: { hero: { kind: 'arms', target: '#hero', content: 'Saved' } } });
+    (window as Window).sentient = { apiKey: 'pk_test', slots: {} };
+
+    await run();
+
+    const sent = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(sent).toMatchObject({ force: { hero: 'cart' }, context: 'cart_recovery' });
+  });
+
+  it('ignores a value that could not be a context', () => {
+    expect(previewChunk.parseContextPreview('?sentient_context=%3Cscript%3E')).toBeNull();
+    expect(previewChunk.parseContextPreview('?sentient_context=cart_recovery')).toBe('cart_recovery');
+  });
+});

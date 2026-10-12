@@ -25,6 +25,7 @@ function validSnap(): DecisionSnapshot {
 function resetHtmlAttrs(): void {
   document.documentElement.removeAttribute('data-sentient-persona');
   document.documentElement.removeAttribute('data-sentient-confidence');
+  document.documentElement.removeAttribute('data-sentient-stage');
 }
 
 beforeEach(() => {
@@ -112,6 +113,41 @@ describe('renderPrePaintScript', () => {
     expect(script).not.toContain('`');        // survives template-literal renderers
     expect(script).toContain('\\u003c');      // '<' escaped via the JSON path
     expect(() => (0, eval)(script)).not.toThrow(); // still valid JS
+  });
+});
+
+describe('renderPrePaintScript — opt-in stage attribute', () => {
+  it('without the option the output is byte-identical and writes no stage', () => {
+    expect(renderPrePaintScript(API_KEY, {})).toBe(renderPrePaintScript(API_KEY));
+    writeSnapshot(API_KEY, { ...validSnap(), stage: 'carted' });
+    (0, eval)(renderPrePaintScript(API_KEY));
+    expect(document.documentElement.hasAttribute('data-sentient-stage')).toBe(false);
+  });
+
+  it('copies the snapshot stage pre-paint, even when an SSR persona is already set', () => {
+    document.documentElement.setAttribute('data-sentient-persona', 'evaluator');
+    writeSnapshot(API_KEY, { ...validSnap(), stage: 'returning' });
+    (0, eval)(renderPrePaintScript(API_KEY, { stage: true }));
+    expect(document.documentElement.getAttribute('data-sentient-stage')).toBe('returning');
+    expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('evaluator');
+  });
+
+  it('never overwrites a stage the server already wrote, and skips a snapshot without one', () => {
+    document.documentElement.setAttribute('data-sentient-stage', 'carted');
+    writeSnapshot(API_KEY, { ...validSnap(), stage: 'new' });
+    (0, eval)(renderPrePaintScript(API_KEY, { stage: true }));
+    expect(document.documentElement.getAttribute('data-sentient-stage')).toBe('carted');
+    resetHtmlAttrs();
+    writeSnapshot(API_KEY, validSnap());
+    (0, eval)(renderPrePaintScript(API_KEY, { stage: true }));
+    expect(document.documentElement.hasAttribute('data-sentient-stage')).toBe(false);
+  });
+
+  it('readSnapshot drops a non-string stage rather than rejecting the snapshot', () => {
+    localStorage.setItem(SNAPSHOT_STORAGE_KEY_PREFIX + API_KEY, JSON.stringify({ ...validSnap(), stage: 42 }));
+    const snap = readSnapshot(API_KEY);
+    expect(snap).not.toBeNull();
+    expect(snap).not.toHaveProperty('stage');
   });
 });
 

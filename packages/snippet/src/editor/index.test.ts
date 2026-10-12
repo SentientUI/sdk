@@ -549,6 +549,31 @@ describe('editor panel: text-test leaf guard', () => {
     expect(textBtn.disabled).toBe(false);
     expect(textBtn.title).toBe('');
   });
+
+  // The shape of nearly every real CTA (brucira.com's "Let's Collaborate ↗",
+  // 2026-10-04): one label beside an icon. The leaf-only guard refused it.
+  it('enables the text test for a label + icon CTA, previews without losing the icon, and Cancel restores it', async () => {
+    const { getButton, click, clickButton, mountEditor } = makeEditorHelpers();
+    document.body.innerHTML = '<a id="cta" href="/contact">\n  Let’s Collaborate\n  <svg id="arrow" viewBox="0 0 8 8"><path d="M0 0"/></svg>\n</a>';
+    await mountEditor();
+
+    const cta = document.getElementById('cta')!;
+    click(cta);
+    const textBtn = getButton('Test different text here');
+    expect(textBtn.disabled).toBe(false);
+    expect(textBtn.title).toBe('');
+
+    clickButton(textBtn);
+    const alt = document.querySelector<HTMLInputElement>('#sentient-editor-panel input[data-field="alt"]')!;
+    alt.value = 'Book a fintech sprint';
+    alt.dispatchEvent(new Event('input'));
+    expect(cta.textContent?.trim()).toBe('Book a fintech sprint');
+    expect(cta.querySelector('#arrow')).not.toBeNull();
+
+    clickButton(getButton('Cancel'));
+    expect(cta.textContent?.trim()).toBe('Let’s Collaborate');
+    expect(cta.querySelector('#arrow')).not.toBeNull();
+  });
 });
 
 describe('editor panel: style validation feedback', () => {

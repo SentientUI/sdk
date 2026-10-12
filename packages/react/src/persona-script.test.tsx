@@ -7,6 +7,7 @@ import { SentientPersonaScript, personaScriptBody } from './persona-script.js';
 function resetHtmlAttrs(): void {
   document.documentElement.removeAttribute('data-sentient-persona');
   document.documentElement.removeAttribute('data-sentient-confidence');
+  document.documentElement.removeAttribute('data-sentient-stage');
 }
 
 beforeEach(() => {
@@ -28,6 +29,31 @@ describe('personaScriptBody', () => {
     document.documentElement.setAttribute('data-sentient-confidence', 'low');
     (0, eval)(personaScriptBody({ apiKey: 'pk_x', persona: { persona: 'admin', confidence: 0.9 } }));
     expect(document.documentElement.getAttribute('data-sentient-persona')).toBe('evaluator');
+  });
+
+  it('writes a server-given stage, JSON-escaped, even when a persona is already set', () => {
+    document.documentElement.setAttribute('data-sentient-persona', 'evaluator');
+    const body = personaScriptBody({ apiKey: 'pk_x', persona: { persona: 'admin', confidence: 0.9 }, stage: 'x"</script>' });
+    expect(body).not.toContain('</');
+    (0, eval)(body);
+    expect(document.documentElement.getAttribute('data-sentient-stage')).toBe('x"</script>');
+  });
+
+  it('writes no stage attribute without one', () => {
+    const body = personaScriptBody({ apiKey: 'pk_x', persona: { persona: 'admin', confidence: 0.9 }, stageAttributes: true });
+    expect(body).not.toContain('data-sentient-stage');
+  });
+
+  it('the fallback copies the snapshot stage only with stageAttributes', () => {
+    localStorage.setItem(
+      '_snt_snap:pk_x',
+      JSON.stringify({ v: 1, persona: 'p', band: 'low', slots: {}, layoutOrder: null, savedAt: Date.now() - 1000, stage: 'returning' }),
+    );
+    (0, eval)(personaScriptBody({ apiKey: 'pk_x' }));
+    expect(document.documentElement.hasAttribute('data-sentient-stage')).toBe(false);
+    resetHtmlAttrs();
+    (0, eval)(personaScriptBody({ apiKey: 'pk_x', stageAttributes: true }));
+    expect(document.documentElement.getAttribute('data-sentient-stage')).toBe('returning');
   });
 
   it('falls back to the snapshot-reading pre-paint script when no SSR persona', () => {

@@ -1,5 +1,74 @@
 # @sentientui/react
 
+## 0.39.1
+
+### Patch Changes
+
+- 2dd1aa9: `<AdaptiveRoot>` without a `pk_` key (keyless local mode) no longer calls the hosted API from the server. It used to send the session upsert with the empty key on every request and log `session upsert failed (401)`, even though the browser was running on simulated decisions and never used the result. It now follows the client's rule: a `pk_` key or `localMode: false` means hosted, anything else means local.
+
+## 0.39.0
+
+### Minor Changes
+
+- 0e26ad9: Opt-in `data-sentient-stage` on `<html>`: the visitor's buying stage, for per-stage CSS (hide the first-order offer from people who have already bought). Turn it on with `stageAttributes: true` (core `init`, the React `AdaptiveProvider`/`AdaptiveRoot` prop, the snippet's `window.sentient`). Values are `new`, `browsing`, `carted` and `returning`; `stageAttributes: 'detailed'` shows `customer` and `lapsed` instead of `returning`. Set only for projects with stages turned on, never for the control group, and how the visitor arrived is never written to the page or to device storage. `AdaptiveRoot` writes it in the server HTML; the pre-paint scripts set it from the visitor's last visit and each decision corrects it. `DecideOutcome` and the SSR `DecideResult` gain the raw `stage` and `context`; `exposedStage()` gives the page-safe value.
+
+### Patch Changes
+
+- Updated dependencies [0e26ad9]
+  - @sentientui/core@0.38.0
+
+## 0.38.0
+
+### Minor Changes
+
+- ac4f748: The session upsert now sends the landing page's path (never its query string), so the server can recognise a paid click to a product page or a Shopify `/discount/` link from the first decision of a visit. Server-side: `landingPath` on the SSR helpers' options, and a `pathname` prop on `AdaptiveRoot` — server components cannot read their own URL, so pass it on landing pages that receive ad or email traffic.
+
+### Patch Changes
+
+- Updated dependencies [ac4f748]
+  - @sentientui/core@0.37.0
+
+## 0.37.5
+
+### Patch Changes
+
+- Updated dependencies [0bd0768]
+  - @sentientui/policy@0.16.0
+  - @sentientui/core@0.36.5
+
+## 0.37.4
+
+### Patch Changes
+
+- Updated dependencies [9357f9f]
+  - @sentientui/policy@0.15.0
+  - @sentientui/core@0.36.4
+
+## 0.37.3
+
+### Patch Changes
+
+- Updated dependencies [f684da5]
+  - @sentientui/policy@0.14.0
+  - @sentientui/core@0.36.3
+
+## 0.37.2
+
+### Patch Changes
+
+- Updated dependencies [3c77319]
+  - @sentientui/policy@0.13.1
+  - @sentientui/core@0.36.2
+
+## 0.37.1
+
+### Patch Changes
+
+- Updated dependencies [17b44e9]
+- Updated dependencies [5c8f59a]
+  - @sentientui/policy@0.13.0
+  - @sentientui/core@0.36.1
+
 ## 0.37.0
 
 ### Minor Changes

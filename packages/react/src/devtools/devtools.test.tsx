@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { AdaptiveDevtools } from './index';
+import { AdaptiveDevtools, previewContextParam } from './index';
 import {
   registerComponent,
   registerSlot,
@@ -196,6 +196,34 @@ describe('AdaptiveDevtools — keyed mode', () => {
     expect(w.__sentient_slot_overrides?.hero).toEqual({ tone: 'urgent' });
     expect(document.documentElement.dataset.sentientPersona).toBe('admin');
     expect(document.documentElement.dataset.sentientConfidence).toBe('high');
+  });
+
+  it('forwards ?sentient_context= to /v1/explain (the on-site context preview), and only a well-formed one', async () => {
+    w.__sentient_devtools_config = { apiKey: 'pk_test', apiBaseUrl: 'https://api.example.com/v1', isLocal: false };
+    registerSections(['hero', 'pricing']);
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/personas')) return { ok: false, json: async () => ({}) };
+      return { ok: true, json: async () => ({ personaAttributes: { persona: 'admin', confidence: 'high' } }) };
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    const explainBodies = () =>
+      (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls
+        .filter((c) => String(c[0]).endsWith('/explain'))
+        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as Record<string, unknown>);
+
+    history.replaceState(null, '', '/?sentient_context=cart_recovery');
+    try {
+      render(<AdaptiveDevtools />);
+      openPanel();
+      previewKey('admin');
+      await vi.waitFor(() => expect(explainBodies().length).toBe(1));
+      expect(explainBodies()[0]!.context).toBe('cart_recovery');
+
+      history.replaceState(null, '', '/?sentient_context=%3Cscript%3E');
+      expect(previewContextParam()).toBeNull();
+    } finally {
+      history.replaceState(null, '', '/');
+    }
   });
 
   it("renders the project's OWN vocabulary from /v1/personas, and invents none", async () => {

@@ -16,6 +16,12 @@ vi.mock('@sentientui/core', () => ({
   deriveSessionSegment: vi.fn(() => 'desktop:direct'),
   extractTrackedParams: vi.fn(() => ({ utmParams: {}, clickIds: {} })),
   renderPrePaintScript: vi.fn(() => '/* snapshot pre-paint */'),
+  // Same contract as core's: the allowlist + coarsening, so the suite checks
+  // what AdaptiveRoot writes rather than a passthrough.
+  exposedStage: vi.fn((s: unknown, m: unknown) =>
+    m && typeof s === 'string' && ['new', 'browsing', 'carted', 'customer', 'lapsed'].includes(s)
+      ? m !== 'detailed' && (s === 'customer' || s === 'lapsed') ? 'returning' : s
+      : null),
   matchedAgentToken: vi.fn((ua: string) => {
     const m = /GPTBot|ClaudeBot|Claude-User|PerplexityBot/i.exec(ua ?? '');
     return m ? m[0] : null;
@@ -299,6 +305,34 @@ describe('AdaptiveRoot — persona script + slots (adaptive ladder)', () => {
     expect((kids[0] as { props?: { dangerouslySetInnerHTML?: { __html?: string } } }).props?.dangerouslySetInnerHTML?.__html).toContain('data-sentient-persona');
   });
 
+  describe('stageAttributes (data-sentient-stage)', () => {
+    const scriptHtml = (el: unknown) =>
+      String((childrenOf(el as never)[0] as { props?: { dangerouslySetInnerHTML?: { __html?: string } } }).props?.dangerouslySetInnerHTML?.__html);
+
+    it('writes the coarsened stage from this request\'s decide into the server HTML', async () => {
+      mockedDecision.mockResolvedValue({ assignments: {}, layoutOrder: ['hero'], slots: {}, persona: 'admin', confidence: 0.8, stage: 'lapsed', context: 'retargeting', sessionId: 's' } as never);
+      const el = await AdaptiveRoot(baseProps({ sections: ['hero'], appOrigin: 'https://x.com', stageAttributes: true }));
+      const html = scriptHtml(el);
+      expect(html).toContain('"data-sentient-stage","returning"');
+      // The arrival context never reaches the page.
+      expect(html).not.toContain('retargeting');
+      expect(clientEl(el as never).props.stageAttributes).toBe(true);
+    });
+
+    it("'detailed' writes customer/lapsed as they are", async () => {
+      mockedDecision.mockResolvedValue({ assignments: {}, layoutOrder: ['hero'], slots: {}, persona: 'admin', confidence: 0.8, stage: 'lapsed', sessionId: 's' } as never);
+      const el = await AdaptiveRoot(baseProps({ sections: ['hero'], appOrigin: 'https://x.com', stageAttributes: 'detailed' }));
+      expect(scriptHtml(el)).toContain('"data-sentient-stage","lapsed"');
+    });
+
+    it('writes nothing without the opt-in, or when decide carried no stage (control group)', async () => {
+      mockedDecision.mockResolvedValue({ assignments: {}, layoutOrder: ['hero'], slots: {}, persona: 'admin', confidence: 0.8, stage: 'carted', sessionId: 's' } as never);
+      expect(scriptHtml(await AdaptiveRoot(baseProps({ sections: ['hero'], appOrigin: 'https://x.com' })))).not.toContain('data-sentient-stage');
+      mockedDecision.mockResolvedValue({ assignments: {}, layoutOrder: ['hero'], slots: {}, persona: 'admin', confidence: 0.8, sessionId: 's' } as never);
+      expect(scriptHtml(await AdaptiveRoot(baseProps({ sections: ['hero'], appOrigin: 'https://x.com', stageAttributes: true })))).not.toContain('data-sentient-stage');
+    });
+  });
+
   it('forwards slots to loadAdaptiveDecision and passes initialSlots/initialPersona to the provider', async () => {
     const el = await AdaptiveRoot(baseProps({ slots: SLOTS, appOrigin: 'https://x.com' }));
     expect(mockedDecision).toHaveBeenCalledOnce();
@@ -567,5 +601,28 @@ describe('AdaptiveRoot — Do Not Track / GPC', () => {
     );
     await AdaptiveRoot(baseProps({ appOrigin: 'https://acme.com' }));
     expect(mockedLog).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AdaptiveRoot — keyless local mode', () => {
+  // The browser runs keyless on simulated decisions; the server used to call
+  // the hosted API with the empty key anyway and log a 401 on every request.
+  it.each([
+    ['an empty key', { apiKey: '' }],
+    ['a non-pk_ key', { apiKey: 'not-a-key' }],
+    ['localMode: true with a real key', { localMode: true }],
+  ])('makes no hosted call with %s', async (_label, extra) => {
+    mockedHeaders.mockResolvedValue(headerStore({ host: 'acme.com', 'user-agent': 'GPTBot/1.2' }));
+    const el = await AdaptiveRoot(baseProps({ sections: ['hero'], appOrigin: 'https://acme.com', ...extra }));
+    expect(mockedDecision).not.toHaveBeenCalled();
+    expect(mockedAssign).not.toHaveBeenCalled();
+    expect(mockedLog).not.toHaveBeenCalled();
+    expect(clientEl(el as never).props.initialAssignments).toEqual({});
+  });
+
+  it('still calls the hosted API when localMode is false, even without a pk_ key', async () => {
+    // Mirrors the client: localMode: false is the opt-out from local mode.
+    await AdaptiveRoot(baseProps({ apiKey: '', localMode: false }));
+    expect(mockedAssign).toHaveBeenCalledOnce();
   });
 });

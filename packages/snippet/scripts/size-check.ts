@@ -264,7 +264,13 @@ for (const { name, file, limit } of bundles) {
 // the main reason the script exists. Measured 2662 raw / ~1.1 KiB over the wire.
 // The budget below is a drift guard, not a target: anything that grows this has
 // to justify itself, because every byte here is synchronous work in <head>.
-const PREPAINT_LIMIT = 3 * 1024;
+//
+// +704 (2026-10-09, v2, operator-approved): the strong-intent hold (plan 5.3 —
+// the click-ID / paid-or-email-medium / discount-link test, the per-target
+// hide and the 300 ms reveal), the opt-in `data-sentient-stage` with its
+// coarsening, and the widened QA gate (context preview, URL fragment, cached
+// editor session). The medium list was folded first. Measured 3771.
+const PREPAINT_LIMIT = 3 * 1024 + 704;
 const prePaintSize = Buffer.byteLength(renderSnippetPrePaintScript());
 const prePaintOk = prePaintSize <= PREPAINT_LIMIT;
 const prePaintMsg =

@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { detectFramework, detectPackageManager, installCommand, type Framework } from './detect.js';
-import { writeEnvFile, envVarName } from './env-file.js';
+import { writeEnvFile, envVarName, envFileName } from './env-file.js';
 import { scaffoldExample } from './scaffold.js';
 import { wrapSnippet, unknownInstructions, finale, consentNote, type ConsentPreset } from './snippets.js';
 import { assertPublishableKey } from './validate-key.js';
@@ -11,6 +11,8 @@ export type InitOptions = {
   key?: string;
   /** From --consent: the consent platform the printed snippet waits for. */
   consent?: ConsentPreset;
+  /** False with --no-install: print the install command instead of running it. */
+  install?: boolean;
   /** Injectable for tests. Defaults to execSync with stdio: 'inherit'. */
   exec?: (command: string, cwd: string) => void;
   /** Injectable for tests. Defaults to console.log. */
@@ -42,23 +44,32 @@ export function runInit(opts: InitOptions): { framework: Framework } {
   // only (never user input — --key goes to .env.local, not the shell), and a
   // shell is required on Windows to resolve npm.cmd/pnpm.cmd shims.
   const install = installCommand(pm, '@sentientui/react');
-  log(`[sentientui] installing @sentientui/react (${install})`);
-  exec(install, opts.cwd);
+  if (opts.install === false) {
+    // --no-install: for setups detection cannot get right (an unusual
+    // workspace layout, a registry proxy, offline CI). Running a guessed
+    // install in a workspace package is what broke `workspace:` deps before
+    // the lockfile walk-up existed — this is the escape hatch for the rest.
+    log(`[sentientui] skipped install (--no-install) — run it yourself: ${install}`);
+  } else {
+    log(`[sentientui] installing @sentientui/react (${install})`);
+    exec(install, opts.cwd);
+  }
 
   const envResult = writeEnvFile(opts.cwd, framework, opts.key);
+  const envFile = envFileName(framework);
   // The log must say what actually happened: it used to print `VAR=<key>` even
   // when writeEnvFile kept a different existing value, so `init --key pk_…` on
   // an initialized repo claimed the key was written while the app silently
   // stayed on the old assignment.
   if (envResult === 'kept') {
     log(
-      `[sentientui] .env.local kept: ${envVarName(framework)} is already set${
+      `[sentientui] ${envFile} kept: ${envVarName(framework)} is already set${
         opts.key ? ' to this key' : ''
       } — left untouched`,
     );
   } else {
     log(
-      `[sentientui] .env.local ${envResult}: ${envVarName(framework)}=${opts.key ?? '(empty — local mode)'}`,
+      `[sentientui] ${envFile} ${envResult}: ${envVarName(framework)}=${opts.key ?? '(empty — local mode)'}`,
     );
   }
 
@@ -75,6 +86,6 @@ export function runInit(opts: InitOptions): { framework: Framework } {
   log('');
   log(consentNote(opts.consent));
   log('');
-  log(`Then run your dev server and: ${finale(framework)}`);
+  log(`Mount <AdaptiveExampleHero /> on a page, then run your dev server and ${finale(framework)}`);
   return { framework };
 }

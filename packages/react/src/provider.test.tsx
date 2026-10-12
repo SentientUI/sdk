@@ -111,6 +111,25 @@ describe('AdaptiveProvider — consent=true', () => {
   });
 });
 
+describe('AdaptiveProvider — stageAttributes', () => {
+  it('hands the opt-in to the core client, which writes data-sentient-stage after decide', async () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as ReturnType<typeof init>);
+    const { result } = renderHook(() => useSentient(), {
+      wrapper: ({ children }) =>
+        createElement(AdaptiveProvider, {
+          apiKey: 'pk_test_key_1234',
+          consent: true,
+          stageAttributes: 'detailed',
+          enableGraph: false,
+          children,
+        }),
+    });
+    await waitFor(() => expect(result.current).not.toBeNull());
+    expect(mockedInit).toHaveBeenCalledWith(expect.objectContaining({ stageAttributes: 'detailed' }));
+  });
+});
+
 describe('AdaptiveProvider — preConsentBehavior', () => {
   it('calls init with preConsentBehavior when consent is false', async () => {
     const client = makeClient();

@@ -151,6 +151,26 @@ async function fetchPersonaVocabulary(
   }
 }
 
+/**
+ * `?sentient_context=<context>` on the page URL: the on-site context preview
+ * (a stage such as `carted`, or an arrival class such as `cart_recovery`).
+ * Forwarded to /v1/explain so a persona simulated from this panel is also
+ * simulated in that context — the API validates the value (400 on anything
+ * else) and applies it to the project's published (registry) versions:
+ * those restricted to the context become eligible and its pins win. Lives
+ * here, not in the provider: devtools is the React SDK's only explain-backed
+ * preview, and the main bundle pays for nothing it does not use.
+ * @internal Exported for tests.
+ */
+export function previewContextParam(): string | null {
+  try {
+    const v = new URLSearchParams(window.location.search).get('sentient_context');
+    return v && /^[a-z_]{1,40}$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Keyed mode: simulate via /v1/explain (read-only, event-free). Returns how
  *  the persona RESOLVED so the panel can say when the project didn't
  *  recognize it — the page then shows the default experience, and a silently
@@ -168,6 +188,7 @@ async function forcePersonaKeyed(
       sections: getRegisteredSections().map((id) => ({ id })),
       components: getRegistered().map((c) => ({ id: c.id, variantIds: c.variantIds })),
       slots: slotDecls(),
+      ...(previewContextParam() ? { context: previewContextParam() } : {}),
     }),
   });
   if (!res.ok) return null;

@@ -76,7 +76,7 @@ describe('renderSnippetPrePaintScript — string safety', () => {
   });
 
   it('pins the contract version', () => {
-    expect(SNIPPET_PREPAINT_VERSION).toBe(1);
+    expect(SNIPPET_PREPAINT_VERSION).toBe(2);
   });
 });
 
@@ -376,6 +376,208 @@ describe('section reorder', () => {
     document.body.appendChild(main);
     await parse('<section id="b"></section><section id="a"></section>', main);
     expect(Array.from(main.children).map((el) => el.id)).toEqual(['b', 'a']);
+  });
+});
+
+describe('v2 QA gates', () => {
+  afterEach(() => sessionStorage.clear());
+
+  for (const url of ['/?sentient_context=cart_recovery', '/#sentient_editor_code=abc', '/?x=1#sentient_preview_token=t.s']) {
+    it(`${url}`, () => {
+      history.replaceState(null, '', url);
+      seed({ apiKey: KEY, personaAttributes: true }, snapshot());
+      run();
+      expect(pp()).toBeUndefined();
+      expect(document.documentElement.hasAttribute('data-sentient-persona')).toBe(false);
+    });
+  }
+
+  it('a cached editor session (no URL marker at all)', () => {
+    sessionStorage.setItem('__snt_editor_token', 'tok');
+    seed({ apiKey: KEY, personaAttributes: true }, snapshot());
+    run();
+    expect(pp()).toBeUndefined();
+  });
+});
+
+describe('stage attribute (v2, opt-in stageAttributes)', () => {
+  afterEach(() => document.documentElement.removeAttribute('data-sentient-stage'));
+  const stage = () => document.documentElement.getAttribute('data-sentient-stage');
+
+  it('copies the snapshot stage and records it for the reconcile', () => {
+    seed({ apiKey: KEY, stageAttributes: true }, snapshot({ stage: 'carted' }));
+    run();
+    expect(stage()).toBe('carted');
+    expect(pp()!.html).toEqual(['data-sentient-stage']);
+  });
+
+  it("coarsens customer/lapsed unless the site asked for 'detailed'", () => {
+    seed({ apiKey: KEY, stageAttributes: true }, snapshot({ stage: 'lapsed' }));
+    run();
+    expect(stage()).toBe('returning');
+    pp()!.stop();
+    delete (window as unknown as { __sntPP?: unknown }).__sntPP;
+    document.documentElement.removeAttribute('data-sentient-stage');
+    seed({ apiKey: KEY, stageAttributes: 'detailed' }, snapshot({ stage: 'lapsed' }));
+    run();
+    expect(stage()).toBe('lapsed');
+  });
+
+  it('writes nothing without the opt-in, without a stored stage, or over a server-written one', () => {
+    seed({ apiKey: KEY }, snapshot({ stage: 'carted' }));
+    run();
+    expect(stage()).toBeNull();
+    pp()!.stop();
+    delete (window as unknown as { __sntPP?: unknown }).__sntPP;
+    seed({ apiKey: KEY, stageAttributes: true }, snapshot());
+    run();
+    expect(stage()).toBeNull();
+    pp()!.stop();
+    delete (window as unknown as { __sntPP?: unknown }).__sntPP;
+    document.documentElement.setAttribute('data-sentient-stage', 'new');
+    seed({ apiKey: KEY, stageAttributes: true }, snapshot({ stage: 'carted' }));
+    run();
+    expect(stage()).toBe('new');
+    expect(pp()!.html).toEqual([]);
+  });
+
+  it('sets persona and stage together', () => {
+    seed({ apiKey: KEY, personaAttributes: true, stageAttributes: true }, snapshot({ stage: 'new' }));
+    run();
+    expect(pp()!.html).toEqual(['data-sentient-persona', 'data-sentient-confidence', 'data-sentient-stage']);
+  });
+});
+
+describe('strong-intent hold (v2)', () => {
+  // A registry slot the visitor's snapshot knows about, plus a page-declared
+  // one (attribute rung) the hold must never touch.
+  const registrySnap = () =>
+    snapshot({
+      slots: { headline: 'cart_v1', decl: { tone: 'urgent' } },
+      slotConfig: { headline: { kind: 'arms', locator: { id: 'headline' } } },
+    });
+  const cfg = { apiKey: KEY, slots: { decl: { dims: { tone: ['urgent'] }, target: '#decl' } } };
+  const vis = (id: string) => (document.getElementById(id) as HTMLElement).style.visibility;
+
+  it('hides ONLY the registry targets as they parse, keeping layout, until the bundle reveals', async () => {
+    history.replaceState(null, '', '/products/shoe?gclid=abc');
+    seed(cfg, registrySnap());
+    run();
+    expect(pp()!.held).toBe(true);
+    await parse('<h1 id="headline" style="visibility: visible">Hi</h1><div id="decl"></div>');
+    expect(vis('headline')).toBe('hidden');
+    expect(vis('decl')).toBe('');
+    pp()!.reveal!();
+    // The merchant's own inline value comes back, not a blank.
+    expect(vis('headline')).toBe('visible');
+    expect(pp()!.held).toBe(false);
+  });
+
+  it('reveals on its own after 300 ms (the decide was slow)', async () => {
+    vi.useFakeTimers();
+    history.replaceState(null, '', '/?utm_source=klaviyo&utm_medium=email&utm_campaign=abandoned');
+    seed(cfg, registrySnap());
+    run();
+    await parse('<h1 id="headline">Hi</h1>');
+    expect(vis('headline')).toBe('hidden');
+    vi.advanceTimersByTime(299);
+    expect(vis('headline')).toBe('hidden');
+    vi.advanceTimersByTime(1);
+    expect(vis('headline')).toBe('');
+    expect(pp()!.held).toBe(false);
+  });
+
+  it('a stopped observer (the bundle booting) does not end the hold; reveal is idempotent', async () => {
+    history.replaceState(null, '', '/?ttclid=1');
+    seed(cfg, registrySnap());
+    run();
+    await parse('<h1 id="headline">Hi</h1>');
+    pp()!.stop();
+    expect(vis('headline')).toBe('hidden');
+    pp()!.reveal!();
+    pp()!.reveal!();
+    expect(vis('headline')).toBe('');
+  });
+
+  const strong = ['/?gclid=x', '/?gbraid=x', '/?wbraid=x', '/?msclkid=x', '/?twclid=x', '/?li_fat_id=x',
+    '/?utm_medium=cpc', '/?utm_medium=paid_social', '/?utm_medium=Paid-Search', '/?utm_medium=sms', '/discount/SPRING20'];
+  for (const url of strong) {
+    it(`holds for ${url}`, () => {
+      history.replaceState(null, '', url);
+      seed(cfg, registrySnap());
+      run();
+      expect(pp()!.held).toBe(true);
+    });
+  }
+
+  // Organic and unattributed visitors pay nothing. fbclid rides organic Meta
+  // clicks too; utm_medium=social is organic; an unknown medium is not paid.
+  const weak = ['/', '/?fbclid=x', '/?utm_source=google&utm_medium=organic', '/?utm_medium=social',
+    '/?utm_medium=cpcx', '/?ref=newsletter', '/products/shoe', '/?gclid'];
+  for (const url of weak) {
+    it(`does not hold for ${url}`, async () => {
+      history.replaceState(null, '', url);
+      seed(cfg, registrySnap());
+      run();
+      expect(pp()!.held).toBe(false);
+      await parse('<h1 id="headline">Hi</h1>');
+      expect(vis('headline')).toBe('');
+    });
+  }
+
+  it('holds nothing (and arms no timer) when the snapshot names no registry target on this page', () => {
+    const set = vi.spyOn(window, 'setTimeout');
+    history.replaceState(null, '', '/?gclid=x');
+    seed(cfg, snapshot({ slots: { decl: { tone: 'urgent' } } }));
+    run();
+    expect(pp()!.held).toBe(false);
+    expect(set.mock.calls.filter((c) => c[1] === 300)).toHaveLength(0);
+  });
+
+  it('never holds without a snapshot (a true first visit has no targets) — the script stays out entirely', () => {
+    history.replaceState(null, '', '/?gclid=x');
+    seed(cfg, null);
+    run();
+    expect(pp()).toBeUndefined();
+  });
+
+  it('never holds an ambiguous target', async () => {
+    history.replaceState(null, '', '/?gclid=x');
+    seed(cfg, snapshot({ slots: { h: 'a' }, slotConfig: { h: { kind: 'arms', target: '.dup' } } }));
+    run();
+    await parse('<p class="dup"></p><p class="dup"></p>');
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>('.dup'))) expect(el.style.visibility).toBe('');
+  });
+
+  for (const [name, setup] of [
+    ['consent: false', () => seed({ ...cfg, consent: false }, registrySnap())],
+    ['a consent platform', () => seed({ ...cfg, consentFrom: 'cookiebot' }, registrySnap())],
+  ] as Array<[string, () => void]>) {
+    it(`no hold under ${name}`, () => {
+      history.replaceState(null, '', '/?gclid=x');
+      setup();
+      run();
+      expect(pp()).toBeUndefined();
+    });
+  }
+
+  it('no hold under GPC', () => {
+    Object.defineProperty(navigator, 'globalPrivacyControl', { value: true, configurable: true });
+    try {
+      history.replaceState(null, '', '/?gclid=x');
+      seed(cfg, registrySnap());
+      run();
+      expect(pp()).toBeUndefined();
+    } finally {
+      Reflect.deleteProperty(navigator, 'globalPrivacyControl');
+    }
+  });
+
+  it('no hold in a preview, even on a strong-intent URL', () => {
+    history.replaceState(null, '', '/?gclid=x&sentient_preview=headline:cart_v1');
+    seed(cfg, registrySnap());
+    run();
+    expect(pp()).toBeUndefined();
   });
 });
 

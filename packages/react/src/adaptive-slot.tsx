@@ -212,7 +212,7 @@ export function AdaptiveSlot({
     warnedBlockedSlots.add(id);
     console.warn(
       `[sentient] <Adaptive id="${id}"> has results from its earlier variants experiment, so it is showing your ` +
-        `original until you migrate it: Components → "${id}" → Migrate. Deploying code never switches an experiment.`,
+        `original until you migrate it: Matrix → Components → "${id}" → Migrate. Deploying code never switches an experiment.`,
     );
   }, [config?.blocked, id]);
 
