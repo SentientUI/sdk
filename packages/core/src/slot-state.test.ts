@@ -311,6 +311,23 @@ describe('slotConfig / palette exposure', () => {
   });
 });
 
+describe('reportAgentData', () => {
+  it('sends the session with the report: without it the server can never store the data (agreement rule)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = init({ ...BASE_CONFIG });
+    fetchMock.mockClear();
+    client.reportAgentData?.('hero', 'authored.action', { cta: 'Do it' });
+    const reports = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/slots/observed'));
+    expect(reports).toHaveLength(1);
+    const body = JSON.parse(String(reports[0]![1]?.body));
+    expect(body.agentData).toEqual({ hero: { 'authored.action': { cta: 'Do it' } } });
+    expect(typeof body.sessionId).toBe('string');
+    expect(body.sessionId).toBe(client.getVisitorId?.());
+    client.destroy();
+  });
+});
+
 describe('reportSlots (first-seen registration)', () => {
   it('batches one POST per tick and never re-reports an id', async () => {
     vi.useFakeTimers();

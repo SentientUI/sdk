@@ -157,6 +157,8 @@ export function createLocalModeClient(config: SentientConfig): SentientClient {
       // Local mode has no server to register with.
     },
 
+    getVisitorId: () => null,
+
     getPersona() {
       const p = lastOutcome ?? seedPersona;
       if (!p) return null;

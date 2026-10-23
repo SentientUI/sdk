@@ -106,7 +106,11 @@ function ssrHeaders(config: ServerAssignConfig): Record<string, string> {
 /** componentId → assigned variantId */
 export type ServerAssignments = Record<string, string>;
 
-type AssignResult = { variantId: string; assignmentTtlMs: number };
+type AssignResult = { variantId: string; assignmentTtlMs: number; unified?: true };
+
+/** `preloadAssignmentsDetailed`'s answer: the assignments, plus the ids the
+ *  server handed back as moved to the shared track (only when asked). */
+export type ServerAssignmentsDetailed = { assignments: ServerAssignments; unified: string[] };
 
 const DEFAULT_TIMEOUT_MS = 1000;
 
@@ -146,8 +150,25 @@ export async function preloadAssignments(
   sessionId: string,
   config: ServerAssignConfig,
 ): Promise<ServerAssignments> {
+  return (await preloadAssignmentsDetailed(components, sessionId, config)).assignments;
+}
+
+/**
+ * `preloadAssignments`, and also which components were moved onto the shared
+ * track. With `opts.unified` each assign says the page can follow such a move:
+ * a moved id is then not assigned (nothing is recorded for it) and comes back
+ * in `unified`, for the page to render as a slot. Pass those ids to
+ * `<AdaptiveProvider initialUnified>`. Without it a moved id is served its
+ * frozen result read-only, as for any older SDK.
+ */
+export async function preloadAssignmentsDetailed(
+  components: Array<{ id: string; variantIds: string[] }>,
+  sessionId: string,
+  config: ServerAssignConfig,
+  opts?: { unified?: boolean },
+): Promise<ServerAssignmentsDetailed> {
   // Opted-out visitor (DNT/GPC): render defaults, mint no session (audit P4).
-  if (config.doNotTrack) return {};
+  if (config.doNotTrack) return { assignments: {}, unified: [] };
 
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const headers = ssrHeaders(config);
@@ -188,7 +209,11 @@ export async function preloadAssignments(
     components.map(async ({ id, variantIds }) => {
       const res = await fetchWithTimeout(
         `${config.baseUrl}/assign`,
-        { method: 'POST', headers, body: JSON.stringify({ sessionId, componentId: id, variantIds }) },
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ sessionId, componentId: id, variantIds, ...(opts?.unified ? { caps: { unified: true } } : {}) }),
+        },
         timeoutMs,
       );
       if (!res.ok) {
@@ -197,17 +222,21 @@ export async function preloadAssignments(
         return null;
       }
       const body = (await res.json()) as AssignResult;
-      return { id, variantId: body.variantId };
+      return { id, variantId: body.variantId, unified: opts?.unified === true && body.unified === true };
     }),
   );
 
   const assignments: ServerAssignments = {};
+  const unified: string[] = [];
   for (const result of results) {
     if (result.status === 'fulfilled' && result.value) {
-      assignments[result.value.id] = result.value.variantId;
+      // A moved id's variantId is only its declared baseline, not an
+      // assignment: seeding it would settle the page on the frozen run.
+      if (result.value.unified) unified.push(result.value.id);
+      else assignments[result.value.id] = result.value.variantId;
     }
   }
-  return assignments;
+  return { assignments, unified };
 }
 
 /**
@@ -251,6 +280,9 @@ export type DecideResult = {
   stage?: string;
   /** The visit's serving context. Never for the page. */
   context?: string;
+  /** Requested components moved onto the shared track (only with
+   *  `unifiedCaps`): not in `assignments`; render each as a slot. */
+  unified?: string[];
 };
 
 /**
@@ -285,9 +317,13 @@ export async function preloadDecisions(
      * is assumed to match; a real mismatch is reported from the browser as
      * drift. Declare `forms: false` for slots without an `onFormSubmit`, or a
      * form arm can be drawn that this page will refuse. Default per slot:
-     * `{ forms: true, compose: true }`.
+     * `{ forms: true, compose: true, ops: false }`.
      */
     renderCaps?: Record<string, Omit<RenderCaps, 'fp'>>;
+    /** The page renders a moved (unified) component on the shared track: such
+     *  ids in `components` come back in `unified` instead of `assignments`,
+     *  with nothing recorded. Without it they are served the frozen result. */
+    unifiedCaps?: boolean;
   },
   sessionId: string,
   config: ServerAssignConfig,
@@ -368,11 +404,15 @@ export async function preloadDecisions(
                 render: Object.fromEntries(
                   // compose: true — the React SDK (the SSR consumer) renders
                   // Redesign trees since native generation phase 2.
-                  registryIds.map((id) => [id, params.renderCaps?.[id] ?? { forms: true, compose: true }]),
+                  // ops: false — nothing here applies `ops`. Without it an
+                  // SSR'd <Adaptive id> matching a script-tag component was drawn
+                  // its ops-only version, rendered the original, and booked a trial.
+                  registryIds.map((id) => [id, params.renderCaps?.[id] ?? { forms: true, compose: true, ops: false }]),
                 ),
               }
             : {}),
           ...(config.persona ? { persona: config.persona } : {}),
+          ...(params.unifiedCaps ? { caps: { unified: true } } : {}),
         }),
       },
       timeoutMs,
@@ -393,6 +433,7 @@ export async function preloadDecisions(
       confidence?: number;
       stage?: unknown;
       context?: unknown;
+      unified?: unknown;
     };
 
     const slots: Record<string, SlotResult> = {};
@@ -423,9 +464,183 @@ export async function preloadDecisions(
       ...(data.vocabulary ? { vocabulary: data.vocabulary } : {}),
       ...(typeof data.stage === 'string' ? { stage: data.stage } : {}),
       ...(typeof data.context === 'string' ? { context: data.context } : {}),
+      ...(params.unifiedCaps && Array.isArray(data.unified)
+        ? { unified: data.unified.filter((id): id is string => typeof id === 'string') }
+        : {}),
     };
   } catch (err) {
     console.error('[SentientUI] preloadDecisions: decide threw', err);
     return fallback;
+  }
+}
+
+/**
+ * Fixed namespace for server-goal ids. It is public (it ships in this file), so
+ * it adds no secrecy: the id's uniqueness comes from the session id it hashes
+ * (see trackServerGoal). Never change it: a retried delivery must map to the
+ * same goal id.
+ */
+export const SERVER_GOAL_NAMESPACE = '3d8f5a21-7c64-4b19-8e0a-5f2c91d7b6e3';
+
+/**
+ * Pure-JS SHA-1 (FIPS 180-4) for runtimes without Web Crypto: Node 18 (our
+ * engines floor is 18.18) has no unflagged `globalThis.crypto`, and without
+ * this every server goal there would end 'failed'. @internal: exported for
+ * the test vector only; not re-exported from the entry.
+ */
+export function sha1Fallback(data: Uint8Array): Uint8Array {
+  const rotl = (x: number, n: number): number => (x << n) | (x >>> (32 - n));
+  const len = data.length;
+  const padded = new Uint8Array(((len + 8) >> 6) * 64 + 64);
+  padded.set(data);
+  padded[len] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(padded.length - 8, Math.floor((len * 8) / 0x100000000));
+  view.setUint32(padded.length - 4, (len * 8) >>> 0);
+  let h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476, h4 = 0xc3d2e1f0;
+  const w = new Array<number>(80);
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(off + i * 4);
+    for (let i = 16; i < 80; i++) w[i] = rotl(w[i - 3]! ^ w[i - 8]! ^ w[i - 14]! ^ w[i - 16]!, 1);
+    let a = h0, b = h1, c = h2, d = h3, e = h4;
+    for (let i = 0; i < 80; i++) {
+      const [f, k] =
+        i < 20 ? [(b & c) | (~b & d), 0x5a827999]
+        : i < 40 ? [b ^ c ^ d, 0x6ed9eba1]
+        : i < 60 ? [(b & c) | (b & d) | (c & d), 0x8f1bbcdc]
+        : [b ^ c ^ d, 0xca62c1d6];
+      const t = (rotl(a, 5) + f! + e + k! + w[i]!) | 0;
+      e = d; d = c; c = rotl(b, 30); b = a; a = t;
+    }
+    h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0; h4 = (h4 + e) | 0;
+  }
+  const out = new Uint8Array(20);
+  const ov = new DataView(out.buffer);
+  [h0, h1, h2, h3, h4].forEach((v, i) => ov.setUint32(i * 4, v >>> 0));
+  return out;
+}
+
+/**
+ * RFC-4122 v5 UUID (SHA-1 over namespace bytes + name), via Web Crypto so this
+ * file stays free of `node:` imports and `Buffer` (it also hosts the SSR
+ * helpers, which run on Edge and Deno). @internal: exported for the test vector.
+ */
+export async function uuidV5(name: string, namespace: string): Promise<string> {
+  const hex = namespace.replace(/-/g, '');
+  const nsBytes = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) nsBytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  const nameBytes = new TextEncoder().encode(name);
+  const input = new Uint8Array(16 + nameBytes.length);
+  input.set(nsBytes, 0);
+  input.set(nameBytes, 16);
+  const subtle = globalThis.crypto?.subtle;
+  const h = (subtle ? new Uint8Array(await subtle.digest('SHA-1', input)) : sha1Fallback(input)).slice(0, 16);
+  h[6] = (h[6]! & 0x0f) | 0x50;
+  h[8] = (h[8]! & 0x3f) | 0x80;
+  const x = Array.from(h, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;
+}
+
+const DEFAULT_GOAL_API_BASE = 'https://api.sentient-ui.com/v1';
+const DEFAULT_GOAL_TIMEOUT_MS = 5000;
+
+export type TrackServerGoalOptions = {
+  /** Project SECRET key (sk_...), from a server-only env var. */
+  serverKey: string;
+  /** The visitor's session id: `readSessionCookie(cookies, apiKey)` in the same
+   *  request, or the id you stored from `client.getVisitorId()`. Null/empty
+   *  means nobody to credit: nothing is sent. */
+  sessionId: string | null | undefined;
+  /** Goal name, as defined in your project (e.g. 'purchase'). */
+  name: string;
+  /** Your own id for this conversion (order id, Stripe event id, user id).
+   *  Calling again with the same session + name + dedupeKey counts once. */
+  dedupeKey: string;
+  value?: number;
+  currency?: string;
+  metadata?: Record<string, unknown>;
+  /** API base including `/v1`. Defaults to the hosted API. */
+  apiBaseUrl?: string;
+  fetch?: typeof fetch;
+  /** Give up after this many ms. Default 5000. */
+  timeoutMs?: number;
+};
+
+/**
+ * Records a conversion from your server (route handler, server action,
+ * webhook). Never throws; resolves 'recorded', 'skipped_no_visitor' (no
+ * session to credit, nothing sent) or 'failed'.
+ *
+ * Hand-rolling this (cookie, deterministic id, sk_ call) was the only way to
+ * count a webhook-confirmed conversion, and few customers would get the dedupe
+ * right: a random goal id per attempt counts a retried webhook twice. The id
+ * here is derived from session + name + dedupeKey, so replays collapse
+ * server-side; dedupeKey is also sent as externalId, which the API dedupes per
+ * (project, goal name) on its own.
+ */
+export async function trackServerGoal(
+  opts: TrackServerGoalOptions,
+): Promise<'recorded' | 'skipped_no_visitor' | 'failed'> {
+  // A secret key must never leave a browser (same rule as ssrHeaders).
+  if (typeof window !== 'undefined') {
+    console.error('[SentientUI] trackServerGoal is server-only: the secret key was not sent. Call it from a route handler, server action or webhook.');
+    return 'failed';
+  }
+  if (!opts.sessionId) return 'skipped_no_visitor';
+  // The id is derived from `${sessionId}:${name}:${dedupeKey}`, so a ':' in the
+  // name would let ('a:b','c') and ('a','b:c') collide on one goal id and
+  // silently merge two different conversions. Goal names never need one;
+  // refuse it.
+  if (opts.name.includes(':')) {
+    console.error('[SentientUI] trackServerGoal: goal names cannot contain ":" (nothing was sent).');
+    return 'failed';
+  }
+  const doFetch = opts.fetch ?? fetch;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('timeout'));
+      }, opts.timeoutMs ?? DEFAULT_GOAL_TIMEOUT_MS);
+    });
+    // Started before the (async) id hash so the budget covers the whole call;
+    // the no-op catch keeps an early expiry from being an unhandled rejection.
+    timedOut.catch(() => undefined);
+    // The session id is part of the hash because goal_events.goal_id is
+    // UNIQUE across ALL projects (migration 060) and the insert is a bare ON
+    // CONFLICT DO NOTHING: hashed from name + dedupeKey alone, two tenants that
+    // both send ('purchase', order #1001) derived the same id, and the second
+    // tenant's conversion was silently dropped while this call still returned
+    // 'recorded'; anyone with a pk_ could also pre-burn a guessable order id.
+    // The session id is an unguessable per-project visitor key, so the id is
+    // now unique per tenant. Retry dedupe does not depend on it alone: the
+    // dedupeKey also rides as externalId (unique per project + goal name).
+    const goalId = await uuidV5(`${opts.sessionId}:${opts.name}:${opts.dedupeKey}`, SERVER_GOAL_NAMESPACE);
+    // Raced as well as aborted: a fetch that ignores its signal must still
+    // not hold the caller (a webhook handler) past the timeout.
+    const res = await Promise.race([
+      doFetch(`${(opts.apiBaseUrl ?? DEFAULT_GOAL_API_BASE).replace(/\/+$/, '')}/goals`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${opts.serverKey}` },
+        body: JSON.stringify({
+          sessionId: opts.sessionId,
+          name: opts.name,
+          goalId,
+          externalId: opts.dedupeKey,
+          ...(opts.value !== undefined ? { value: opts.value } : {}),
+          ...(opts.currency !== undefined ? { currency: opts.currency } : {}),
+          ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
+        }),
+        signal: controller.signal,
+      }),
+      timedOut,
+    ]);
+    return res.ok ? 'recorded' : 'failed';
+  } catch {
+    return 'failed';
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

@@ -42,9 +42,29 @@ describe('loadAdaptiveAssignments', () => {
           sessionId: 'sess-1',
           componentId: 'hero_cta',
           variantIds: ['primary', 'accent'],
+          // React's SSR can render a moved component on the shared track.
+          caps: { unified: true },
         }),
       }),
     );
+  });
+
+  // Ruling C20: a moved component is answered `unified`, not assigned. Its
+  // variantId is only the declared baseline; seeding it as an assignment would
+  // settle the page on the frozen variants experiment.
+  it('returns moved components in `unified`, never as assignments', async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch
+      .mockResolvedValueOnce({ ok: true } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ variantId: 'primary', assignmentTtlMs: 0, unified: true }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ variantId: 'b', assignmentTtlMs: 0 }) } as Response);
+    const cookies = { get: (name: string) => (name === '_snt_uid' ? { value: 'sess-u' } : undefined) };
+    const result = await loadAdaptiveAssignments(
+      [{ id: 'hero_cta', variantIds: ['primary', 'accent'] }, { id: 'pricing', variantIds: ['a', 'b'] }],
+      { cookies, apiKey: API_KEY, baseUrl: BASE_URL },
+    );
+    expect(result.unified).toEqual(['hero_cta']);
+    expect(result.assignments).toEqual({ pricing: 'b' });
   });
 
   // The client writes the per-project SUFFIXED cookie (sessionCookieName).
@@ -81,6 +101,8 @@ describe('loadAdaptiveAssignments', () => {
           sessionId: 'sess-returning',
           componentId: 'hero_cta',
           variantIds: ['primary', 'accent'],
+          // React's SSR can render a moved component on the shared track.
+          caps: { unified: true },
         }),
       }),
     );
@@ -291,5 +313,39 @@ describe('loadAdaptiveDecision — slots forwarding', () => {
     // Scoped to the page's ids — an unscoped registry decide is a close-out
     // trial for every published slot on every page.
     expect(body.registrySlotIds).toEqual(['hero']);
+  });
+
+  it('forwards per-slot renderCaps into the decide `render` field, defaulting the rest', async () => {
+    // A hybrid <Adaptive variants>{children}</Adaptive> decided in SSR: without
+    // its authored keys in `render`, the server cannot draw `authored.*` arms,
+    // so the SSR page could only ever be served the original or a generated
+    // version — never the hand-written ones (Task 5 review, pre-existing gap).
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) } as Response); // sessions
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ slots: {} }) } as Response);
+
+    const { loadAdaptiveDecision } = await import('./server.js');
+    await loadAdaptiveDecision({
+      slotsFrom: 'registry',
+      registrySlotIds: ['hero', 'pricing'],
+      renderCaps: { hero: { forms: false, compose: true, ops: false, authored: ['action', 'social'], children: true } },
+      components: [],
+      cookies: { get: () => ({ value: 'sess-registry' }) },
+      apiKey: API_KEY,
+      baseUrl: BASE_URL,
+    });
+
+    const decideCall = mockFetch.mock.calls.find(([u]) => String(u).endsWith('/decide'));
+    const body = JSON.parse((decideCall![1] as RequestInit).body as string) as { render: Record<string, unknown> };
+    expect(body.render.hero).toEqual({ forms: false, compose: true, ops: false, authored: ['action', 'social'], children: true });
+    expect(body.render.pricing).toEqual({ forms: true, compose: true, ops: false });
+  });
+});
+
+describe('server entry re-exports', () => {
+  it('exposes trackServerGoal and readSessionCookie next to the preload helpers', async () => {
+    const mod = await import('./server.js');
+    expect(typeof mod.trackServerGoal).toBe('function');
+    expect(typeof mod.readSessionCookie).toBe('function');
   });
 });

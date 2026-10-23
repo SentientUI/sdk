@@ -94,6 +94,68 @@ describe('init() assign() fallback on server errors', () => {
   });
 });
 
+// One component model (ruling C1). A caller that can render a migrated
+// component on the slot path says so with `caps.unified`; the server answers
+// `unified: true` for such an id and books nothing. That answer is not an
+// assignment: caching it would make every later page read the placeholder
+// variant as a settled assignment and expose it on the frozen variant ledger.
+describe('init() assign() with the unified cap', () => {
+  it('sends caps.unified only when asked, does not cache a unified answer, and answers repeats without a request', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/assign')) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        bodies.push(body);
+        return { ok: true, json: async () => ({ variantId: 'A', assignmentTtlMs: 0, unified: true }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    }));
+    const client = init({ ...BASE_CONFIG, apiKey: 'pk_unified_cap1' });
+    const first = await client.assign('uni_hero', ['A', 'B'], undefined, undefined, { unified: true });
+    expect(first).toMatchObject({ variantId: 'A', unified: true });
+    expect(bodies[0]!.caps).toEqual({ unified: true });
+    const again = await client.assign('uni_hero', ['A', 'B'], undefined, undefined, { unified: true });
+    expect(again).toMatchObject({ unified: true });
+    expect(bodies).toHaveLength(1);
+
+    // Nothing was cached: a caller without the cap still asks the server
+    // (which serves it read-only), and sends no cap.
+    await client.assign('uni_hero', ['A', 'B']);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]!.caps).toBeUndefined();
+    client.destroy();
+  });
+});
+
+// Ruling C20: a page that knows a component moved (an SSR preload's
+// `initialUnified`) must never settle it on an assignment cached before the
+// move — that renders and exposes a variant of a frozen experiment.
+describe('init() initialUnified', () => {
+  it('ignores a cached (or seeded) assignment for a moved component and reports it as unified', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ variantId: 'B', assignmentTtlMs: 30000 }) })));
+    // A visit before the move left an assignment in the persisted cache.
+    const before = init({ ...BASE_CONFIG, apiKey: 'pk_unified_seed1', initialAssignments: { moved_hero: 'B', plain: 'A' }, sessionSegment: 'desktop:direct' });
+    before.dispose();
+    // Control: a page that doesn't know about the move still reads it.
+    const unaware = init({ ...BASE_CONFIG, apiKey: 'pk_unified_seed1', sessionSegment: 'desktop:direct' });
+    expect(unaware.getAssignment('moved_hero', 'desktop:direct')?.variantId).toBe('B');
+    unaware.dispose();
+    const client = init({
+      ...BASE_CONFIG,
+      apiKey: 'pk_unified_seed1',
+      initialUnified: ['moved_hero'],
+      sessionSegment: 'desktop:direct',
+    });
+    expect(client.getAssignment('moved_hero', 'desktop:direct')).toBeNull();
+    expect(client.isUnified?.('moved_hero')).toBe(true);
+    expect(client.isUnified?.('plain')).toBe(false);
+    expect(client.getAssignment('plain', 'desktop:direct')?.variantId).toBe('A');
+    const answer = await client.assign('moved_hero', ['A', 'B'], undefined, undefined, { unified: true });
+    expect(answer).toMatchObject({ unified: true });
+    client.dispose();
+  });
+});
+
 describe('init() with consent: false', () => {
   it('returns no-op client when consent is false and no preConsentBehavior', async () => {
     const client = init({ ...BASE_CONFIG, consent: false });
@@ -1456,5 +1518,24 @@ describe('client.flush()', () => {
       () => expect(vi.mocked(fetch).mock.calls.some(([url]) => url === BASE_CONFIG.ingestUrl)).toBe(true),
       { timeout: 10_000, interval: 10 },
     );
+  });
+});
+
+describe('getVisitorId()', () => {
+  it('is null before consent and the session id after consent is granted', () => {
+    const client = init({ ...BASE_CONFIG, consent: false });
+    expect(client.getVisitorId?.()).toBeNull();
+    grantConsent();
+    const id = client.getVisitorId?.();
+    expect(typeof id).toBe('string');
+    expect(id).toBeTruthy();
+    client.destroy();
+  });
+
+  it('equals the session id of a consented client and is null after destroy', () => {
+    const client = init({ ...BASE_CONFIG, ssrSessionId: 'sess-from-ssr' });
+    expect(client.getVisitorId?.()).toBe('sess-from-ssr');
+    client.destroy();
+    expect(client.getVisitorId?.()).toBeNull();
   });
 });

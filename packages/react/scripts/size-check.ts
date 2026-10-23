@@ -49,7 +49,21 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // +256 (same day, SDK regrades 5-6): held conversions handed from the
     // gated client to the tracking one and dropped on a refusal (F2/F-R1).
     // Measured 19477.
-    limit: 19_712,
+    //
+    // +1192 (2026-10-22, one-component-model branch; ruling C26): rebaselined
+    // to the measured size plus ~2% headroom. What grew it, all on the render
+    // path and so in the SSR pass:
+    // - Slot-path prop parity: `agentData`/`agentDataByVariant`,
+    //   `microSignalGoals`, `clientOnly` and `funnel` on a hybrid. These were
+    //   silently ignored before.
+    // - Unified routing for moved components: `AdaptiveVariantsOrUnified`, the
+    //   `onUnified` hand-off in useAssignment/useVariantComponent,
+    //   `initialUnified`, and the variant dev-override bridge for a migrated
+    //   component.
+    // `registrySlots` belongs to the same work but lives in `./next`, which is
+    // rebaselined below; it adds nothing here. Measured 20493 against the
+    // 19712 limit.
+    limit: 19_712 + 1_192,
   },
   {
     name: '@sentientui/react/server',
@@ -69,7 +83,13 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // +512 (2026-09-24, same operator OK): AdaptiveRoot forwards the server
     // decision's site styles (initialVocabulary). Without them an approved
     // redesign rendered live on Bodyshop with no site classes. Measured 3608.
-    limit: 4_096,
+    // +256 (2026-10-22, one-component-model Task 7): `registrySlots`. It sends
+    // a hybrid's authored keys as render caps on the SSR decide. Without them
+    // the server could not draw a hand-written version on first paint, and the
+    // version swapped in after mount. Measured 3999 → 4127. Trimming took it
+    // from +159 to +128. This entry is the Server Component, so none of these
+    // bytes reach a browser.
+    limit: 4_352,
   },
 ];
 

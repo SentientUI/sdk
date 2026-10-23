@@ -227,6 +227,21 @@ describe('applyRegistrySlots (registry mode — server-owned config)', () => {
     expect(document.querySelector('style[data-sentient-ops]')!.textContent).toContain('color:#0B5 !important');
   });
 
+  it('renders arm `content` on a located single-text-node element exactly as ops.text did', () => {
+    // Scan suggestions moved from ops.text to content (+ origin:'audit'). A code
+    // project's located element must render the same text either way, or the
+    // switch would silently stop suggestions from showing.
+    const html = '<a id="cta"><span class="icon"></span>old</a>';
+    document.body.innerHTML = html;
+    applyRegistrySlots({ s: 'b' }, { s: { kind: 'arms', locator: { id: 'cta' }, ops: { text: 'X' } } }, document);
+    const viaOps = document.getElementById('cta')!.innerHTML;
+    document.body.innerHTML = html;
+    applyRegistrySlots({ s: 'b' }, { s: { kind: 'arms', locator: { id: 'cta' }, content: 'X' } }, document);
+    const viaContent = document.getElementById('cta')!.innerHTML;
+    expect(document.getElementById('cta')!.textContent).toBe('X');
+    expect(viaContent).toBe(viaOps);
+  });
+
   it('applies nothing and reports a miss when the compound locator is ambiguous', () => {
     document.body.innerHTML = '<a class="x"></a><a class="x"></a>';
     const missed = applyRegistrySlots({ hero: 'urgent' }, { hero: { kind: 'arms', locator: { selector: '.x' } } }, document);

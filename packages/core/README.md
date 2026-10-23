@@ -57,6 +57,7 @@ Reading a consent platform yourself: `import { consentWatcher } from '@sentientu
 | `localMode` | `'auto' \| boolean` | Keyless local engine. `'auto'` (default) enables it only under the `development` export condition; production builds without a key short-circuit to defaults with one `console.error`. |
 | `initialSlots` | `Record<string, string \| Record<string, string>>` | SSR-preloaded slot results (from `preloadDecisions`/`loadAdaptiveDecision`). |
 | `initialPersona` | `{ persona: string; confidence: number }` | SSR-preloaded persona, so client and server agree on first paint. |
+| `initialUnified` | `string[]` | Component ids the SSR preload reported as moved onto the shared track (the `unified` field of `preloadAssignmentsDetailed` / `preloadDecisions`). Their cached assignments are ignored and the page renders them as slots. |
 
 ### `client.assign(componentId, variantIds?)` → `Promise<AssignResult | null>`
 
@@ -105,6 +106,10 @@ client.componentGoal('hero_headline', 'hero_contact', {
 
 No-ops (with a `debug` warning) if the component has not been assigned yet — render its `<Adaptive>` / call `assign()` first. Prefer this over a hand-rolled `client.track({ eventType: 'goal_achieved', … })`, which requires you to thread the `variantId` through yourself. In React, use the [`useAdaptiveGoal`](../react/README.md#useadaptivegoalcomponentid) hook.
 
+### `client.getVisitorId()` → `string | null`
+
+The visitor id to carry to your server for a later conversion (see "Record a conversion from your server"). `null` before the visitor has agreed to tracking, and after forget-me.
+
 ### `client.identify(userId)`
 
 Attaches a stable user ID to the session. On the link, the server copies the highest-reliability portrait from the user's other sessions onto this one, so portraits and cluster assignment carry forward across devices for the same `userId`.
@@ -112,6 +117,10 @@ Attaches a stable user ID to the session. On the link, the server copies the hig
 ### `client.getAssignment(componentId, segment)`
 
 Synchronously returns the cached assignment, or `null` if not yet assigned. Use when you need a non-async lookup.
+
+### `client.isUnified(componentId)` → `boolean`
+
+True once this page knows the component was moved onto the shared track (from `initialUnified` or an assign answer), so you render it as a slot instead of a variant.
 
 ### `client.getGraph()`
 
@@ -130,6 +139,8 @@ Everything `dispose()` does, plus **deletion of the visitor identity** — the 3
 What applications may rely on across minor versions:
 
 - `init(config)` → `SentientClient`, and every `SentientClient` method documented above
+- `client.getVisitorId()` — the visitor id to pass to `trackServerGoal`; `null` without consent
+- `trackServerGoal(options)` (from `@sentientui/core/server`) — record a conversion from your server
 - `grantConsent(apiKey?)` — upgrade a client created with `consent: false`
 - `isDoNotTrackEnabled()` — whether DNT/GPC gates tracking in this browser
 - `deriveSessionSegment({ userAgent, referer, appOrigin })` — the `device:source` segment key
@@ -137,6 +148,7 @@ What applications may rely on across minor versions:
 - `renderPrePaintScript(apiKey)` — the inline pre-paint script (see "Decision snapshot"); render it only once consent is known
 - `forgetVisitor(apiKey)` — delete everything the SDK stores for this visitor, with or without a
   live client (a refusal recorded before any grant; `client.destroy()` does the same for a client)
+- `urlMatches(pattern, url)` / `normalizeUrlPattern(pattern)` — the page-visit goal URL matcher the dashboard, API and snippet share
 - the subpath entries `/server`, `/graph`, `/consent`, and every exported **type**
 
 Everything else the root entry exports (block vocabularies, snapshot I/O, agent-UA tables,
@@ -144,13 +156,41 @@ Everything else the root entry exports (block vocabularies, snapshot I/O, agent-
 `@sentientui/snippet`. It carries no semver promise and leaves the root entry at 1.0.
 `src/public-surface.test.ts` classifies every export, so the list can't grow silently.
 
+## Record a conversion from your server
+
+Some conversions happen where the browser can't see them: a payment confirmed by a webhook, an order saved by a server action. `trackServerGoal` records one with your secret key (`sk_…`, server-only).
+
+**Same request** (the visitor's browser made the request, so their cookie is there):
+
+```ts
+import { cookies } from 'next/headers';
+import { readSessionCookie, trackServerGoal } from '@sentientui/core/server';
+
+const sessionId = readSessionCookie(await cookies(), process.env.NEXT_PUBLIC_SENTIENT_API_KEY!);
+await trackServerGoal({
+  serverKey: process.env.SENTIENT_SECRET_KEY!,
+  sessionId,
+  name: 'purchase',
+  dedupeKey: order.id,        // your own id for this conversion
+  value: order.total,
+  currency: 'USD',
+});
+```
+
+**Later, from a webhook** (Stripe, Clerk, a queue: no cookie in sight). Save the visitor id when the visitor acts, then use it when the confirmation arrives:
+
+1. In the browser, read `client.getVisitorId()` and send it along with the checkout or sign-up (for example in its metadata). It is `null` until the visitor has agreed to tracking, so nothing is saved for people who haven't.
+2. In your webhook handler, read that id back from the event and pass it as `sessionId`.
+
+`trackServerGoal` resolves `'recorded'`, `'skipped_no_visitor'` (no id, so nothing is sent) or `'failed'`. It never throws. Sending the same `name` and `dedupeKey` for the same visitor again, for example when a webhook is redelivered, counts once. The id is scoped to the visitor's session, so another site using the same order number never collides with yours. It refuses to run in a browser and never sends the secret key there.
+
 ## SSR helpers
 
 ```ts
 import { preloadAssignments, readSessionCookie } from '@sentientui/core/server';
 
 // In your server loader / getServerSideProps / Server Component.
-// `cookies` must expose `get(name)` — Next.js `req.cookies`, `headers().cookies()`, or any
+// `cookies` must expose `get(name)` — Next.js `req.cookies`, `cookies()` from `next/headers`, or any
 // object with the same shape.
 const sessionId = readSessionCookie(cookies) ?? crypto.randomUUID();
 
@@ -176,6 +216,8 @@ const initialAssignments = await preloadAssignments(
 Pass `initialAssignments` and the same `sessionSegment` to `init()` on the client to prevent hydration mismatches.
 
 For pages with a section layout, use `preloadDecisions` instead — same options, plus a `sections: string[]` request field. The return value carries both `assignments` and `layoutOrder`.
+
+`preloadAssignmentsDetailed(components, sessionId, config, { unified: true })` is `preloadAssignments` that also returns `unified`: the components you moved onto the shared track. They are left out of `assignments` (nothing is recorded for them); pass the ids to `init({ initialUnified })`. On `preloadDecisions`, set `unifiedCaps: true` for the same behaviour.
 
 ## decide() — slots, layout, and persona in one call
 

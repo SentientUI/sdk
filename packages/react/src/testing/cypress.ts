@@ -27,6 +27,7 @@ export function mockSentientCypress(cy: Cy, scenario: SentientScenario = {}): vo
   const overrides = scenario.variants ?? {};
   const layout = scenario.layout ?? null;
   const slots = scenario.slots ?? null;
+  const slotConfig = scenario.slotConfig ?? null;
   const persona = scenario.persona ?? null;
   const confidence = scenario.confidence ?? 1;
 
@@ -34,6 +35,9 @@ export function mockSentientCypress(cy: Cy, scenario: SentientScenario = {}): vo
     win.__sentient_overrides = overrides;
     if (layout) win.__sentient_layout_override = layout;
     if (slots) win.__sentient_slot_overrides = slots;
+    // A forced registry arm needs its config too. Without it, forcing a
+    // hybrid's `authored.<key>` rendered the original (see mockSentient).
+    if (slotConfig) win.__sentient_slot_config_overrides = slotConfig;
     if (persona) {
       win.__sentient_persona_override = { persona, confidence };
       try {

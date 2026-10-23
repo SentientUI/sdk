@@ -1,5 +1,40 @@
 # @sentientui/core
 
+## 0.39.1
+
+### Patch Changes
+
+- 89da17f: `<Adaptive>` agent data reports now carry the visitor's session id. The API stores a slot version's agent data only once visitors on several networks report the same value, and a report without its session never counts.
+
+  Upgrade to keep slot agent data current: reports from earlier versions no longer change what agents are served.
+
+## 0.39.0
+
+### Minor Changes
+
+- 451fe0b: `assign()` takes a fifth argument, `{ unified: true }`, for callers that can render a component that has moved to the shared track. The request then carries `caps: { unified: true }`. When the operator has moved that component off its variants experiment, the server answers `unified: true` and books nothing instead of returning a variant. `AssignResult.unified` reports this.
+
+  A `unified` answer is never cached as an assignment. It is remembered for the page, so a repeat ask makes no request.
+
+  New `initialUnified` init option and `isUnified(id)`. Once the client knows an id has moved, any assignment cached for it before the move is ignored.
+
+  The SSR helpers can hand moved components back instead of assigning them:
+  - `preloadAssignmentsDetailed(…, { unified: true })` returns `{ assignments, unified }`.
+  - `preloadDecisions({ unifiedCaps: true })` returns `unified`. When the component is registered, the same request also decides it on the shared track, and the result arrives in `slots`/`slotConfig`.
+
+  Callers that don't opt in see no change: for a moved component the server keeps serving them the frozen result read-only.
+
+- 451fe0b: New `trackServerGoal()` in `@sentientui/core/server`: record a conversion from your own server (route handler, server action, webhook) with your secret key. The goal id is derived from the visitor's session id, the goal name and your `dedupeKey`, and `dedupeKey` is also sent as the conversion's external id, so a retried webhook counts once and two different sites using the same order number never overwrite each other. It never throws, gives up after `timeoutMs` (default 5000), returns `'skipped_no_visitor'` without a request when there is no session to credit, and refuses to run in a browser so the secret key is never sent there. `SERVER_GOAL_NAMESPACE` is exported alongside it.
+
+  New `client.getVisitorId()`: the visitor id to save with a checkout or sign-up so a later webhook can credit the right visitor. It returns `null` until the visitor has agreed to tracking, and after forget-me.
+
+- 451fe0b: `<Adaptive>` on the slot path (children, with or without `variants`) now supports `funnel`, `microSignalGoals`, `agentData`, `agentDataByVariant` and `clientOnly`, with the same meaning as on a variants-only `<Adaptive>`. They were silently ignored on a hybrid (a dev-build warning only). `agentDataByVariant` is keyed by the authored key for a hand-written arm and by arm id for a generated one. When `agentDataByVariant` is given it alone decides (an arm missing from it sends nothing, as on a variants-only component); `agentData` alone covers every served arm. Core adds `reportAgentData` to send the served arm's agent data.
+
+### Patch Changes
+
+- 451fe0b: `RenderCaps.ops`: a client that cannot apply ops declares `ops: false` so the server never draws it an ops-only version. `preloadDecisions` (the SSR path) now sends `ops: false` for registry ids by default.
+- 451fe0b: Export `urlMatches` and `normalizeUrlPattern` so server-side page-visit goal matching and the snippet share one definition.
+
 ## 0.38.0
 
 ### Minor Changes

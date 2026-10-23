@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { preloadAssignments, readSessionCookie } from './server.js';
+import { preloadAssignments, readSessionCookie, trackServerGoal, SERVER_GOAL_NAMESPACE, uuidV5, sha1Fallback } from './server.js';
 
 const BASE_URL = 'https://api.example.com/v1';
 const API_KEY = 'pk_test_key';
@@ -430,7 +430,7 @@ describe('preloadDecisions — registry mode (slotConfig/palette)', () => {
     await callRegistry({ layoutOrder: [], assignments: {}, slots: {}, persona: 'unknown', confidence: 0 }, ['hero']);
     const decideCall = vi.mocked(fetch).mock.calls.find(([u]) => String(u).endsWith('/decide'));
     const body = JSON.parse((decideCall![1] as RequestInit).body as string) as Record<string, unknown>;
-    expect(body.render).toEqual({ hero: { forms: true, compose: true } });
+    expect(body.render).toEqual({ hero: { forms: true, compose: true, ops: false } });
   });
 
   it('an empty id list is a valid scope ("nothing published is on this page")', async () => {
@@ -492,5 +492,170 @@ describe('serverKey (X-Sentient-Server-Key)', () => {
     for (const [, init] of vi.mocked(fetch).mock.calls) {
       expect((init?.headers as Record<string, string>)['X-Sentient-Server-Key']).toBeUndefined();
     }
+  });
+});
+
+describe('trackServerGoal', () => {
+  const SK = 'sk_test_secret';
+  const base = { serverKey: SK, sessionId: 'sess-1', name: 'purchase', dedupeKey: 'order_42' };
+  const UUID_V5 = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+  beforeEach(() => {
+    // The suite runs under jsdom; a server has no window.
+    vi.stubGlobal('window', undefined);
+  });
+
+  function okFetch() {
+    return vi.fn().mockResolvedValue({ ok: true, status: 200 } as Response);
+  }
+  function bodyOf(f: ReturnType<typeof vi.fn>, i = 0) {
+    return JSON.parse((f.mock.calls[i]![1] as RequestInit).body as string);
+  }
+
+  it('uuidV5 matches the standard RFC-4122 vector (DNS namespace, python.org)', async () => {
+    expect(await uuidV5('python.org', '6ba7b810-9dad-11d1-80b4-00c04fd430c8')).toBe('886313e1-3b8a-5372-9b90-0c9aee199e5d');
+  });
+
+  it('pure-JS SHA-1 fallback gives the same RFC vector and matches Web Crypto on odd lengths', async () => {
+    const ns = Uint8Array.from('6ba7b8109dad11d180b400c04fd430c8'.match(/../g)!.map((h) => parseInt(h, 16)));
+    const name = new TextEncoder().encode('python.org');
+    const input = new Uint8Array(ns.length + name.length);
+    input.set(ns); input.set(name, ns.length);
+    const h = sha1Fallback(input).slice(0, 16);
+    h[6] = (h[6]! & 0x0f) | 0x50; h[8] = (h[8]! & 0x3f) | 0x80;
+    const x = Array.from(h, (b) => b.toString(16).padStart(2, '0')).join('');
+    expect(`${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`).toBe('886313e1-3b8a-5372-9b90-0c9aee199e5d');
+    // Node 18 (engines floor 18.18) has no unflagged globalThis.crypto, so an
+    // unguarded loop threw there and failed the suite on the very runtime the
+    // fallback exists for. The RFC vector above still pins the fallback.
+    if (globalThis.crypto?.subtle) {
+      for (const n of [0, 1, 55, 56, 63, 64, 65, 200]) {
+        const buf = new Uint8Array(n).map((_, i) => (i * 7 + 3) & 255);
+        const web = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-1', buf));
+        expect(Array.from(sha1Fallback(buf))).toEqual(Array.from(web));
+      }
+    }
+  });
+
+  it('with no globalThis.crypto, trackServerGoal still sends the same goalId', async () => {
+    const f1 = okFetch();
+    await trackServerGoal({ ...base, fetch: f1 as unknown as typeof fetch });
+    vi.stubGlobal('crypto', undefined);
+    const f2 = okFetch();
+    expect(await trackServerGoal({ ...base, fetch: f2 as unknown as typeof fetch })).toBe('recorded');
+    expect(bodyOf(f2).goalId).toBe(bodyOf(f1).goalId);
+  });
+
+  it('a goal name containing ":" is failed with no request (id separator would collide)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const f = okFetch();
+    expect(await trackServerGoal({ ...base, name: 'a:b', fetch: f as unknown as typeof fetch })).toBe('failed');
+    expect(f).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('exports a namespace uuid', () => {
+    expect(SERVER_GOAL_NAMESPACE).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('goalId is v5 over session:name:dedupeKey in the fixed namespace (pinned vector)', async () => {
+    // Pinned so a change to the id derivation is a deliberate, visible break:
+    // every stored server goal id is this hash, and a silent change would make
+    // a retried webhook look like a new conversion to the goal_id check.
+    const f = okFetch();
+    await trackServerGoal({ ...base, fetch: f as unknown as typeof fetch });
+    expect(bodyOf(f).goalId).toBe('8e95944e-57c0-5463-b417-1fd90aa76e05');
+    expect(bodyOf(f).goalId).toBe(await uuidV5('sess-1:purchase:order_42', SERVER_GOAL_NAMESPACE));
+  });
+
+  it('two sessions with the same name + dedupeKey get different goalIds (cross-tenant collision)', async () => {
+    // goal_events.goal_id is UNIQUE across every project and the insert is ON
+    // CONFLICT DO NOTHING: when the id was hashed from name + dedupeKey only,
+    // a second shop's order #1001 collided with the first shop's and was
+    // silently dropped while still reporting 'recorded'.
+    const f = okFetch();
+    await trackServerGoal({ ...base, sessionId: 'shop-a-visitor', dedupeKey: '1001', fetch: f as unknown as typeof fetch });
+    await trackServerGoal({ ...base, sessionId: 'shop-b-visitor', dedupeKey: '1001', fetch: f as unknown as typeof fetch });
+    expect(bodyOf(f, 0).goalId).toMatch(UUID_V5);
+    expect(bodyOf(f, 1).goalId).toMatch(UUID_V5);
+    expect(bodyOf(f, 0).goalId).not.toBe(bodyOf(f, 1).goalId);
+    // Retry dedupe for the same conversion still rides on externalId.
+    expect(bodyOf(f, 0).externalId).toBe('1001');
+  });
+
+  it('same session + name + dedupeKey gives the same valid v5 goalId; different key differs', async () => {
+    const f = okFetch();
+    await trackServerGoal({ ...base, fetch: f as unknown as typeof fetch });
+    await trackServerGoal({ ...base, fetch: f as unknown as typeof fetch });
+    await trackServerGoal({ ...base, dedupeKey: 'order_43', fetch: f as unknown as typeof fetch });
+    expect(bodyOf(f, 0).goalId).toMatch(UUID_V5);
+    expect(bodyOf(f, 0).goalId).toBe(bodyOf(f, 1).goalId);
+    expect(bodyOf(f, 2).goalId).not.toBe(bodyOf(f, 0).goalId);
+  });
+
+  it('posts the documented body with the server key as Bearer', async () => {
+    const f = okFetch();
+    const r = await trackServerGoal({
+      ...base, value: 49.5, currency: 'USD', metadata: { plan: 'pro' },
+      apiBaseUrl: 'https://api.example.com/v1', fetch: f as unknown as typeof fetch,
+    });
+    expect(r).toBe('recorded');
+    const [url, init] = f.mock.calls[0]!;
+    expect(url).toBe('https://api.example.com/v1/goals');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(((init as RequestInit).headers as Record<string, string>).Authorization).toBe(`Bearer ${SK}`);
+    expect(bodyOf(f)).toEqual({
+      sessionId: 'sess-1', name: 'purchase', goalId: expect.stringMatching(UUID_V5),
+      externalId: 'order_42', value: 49.5, currency: 'USD', metadata: { plan: 'pro' },
+    });
+  });
+
+  it('defaults to the production API base and omits unset optionals', async () => {
+    const f = okFetch();
+    await trackServerGoal({ ...base, fetch: f as unknown as typeof fetch });
+    expect(f.mock.calls[0]![0]).toBe('https://api.sentient-ui.com/v1/goals');
+    expect(Object.keys(bodyOf(f)).sort()).toEqual(['externalId', 'goalId', 'name', 'sessionId']);
+  });
+
+  it.each([null, undefined, ''])('sessionId %j is skipped_no_visitor with no request', async (sid) => {
+    const f = okFetch();
+    const r = await trackServerGoal({ ...base, sessionId: sid as string | null, fetch: f as unknown as typeof fetch });
+    expect(r).toBe('skipped_no_visitor');
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('non-2xx is failed; a throwing fetch is failed (never throws)', async () => {
+    const bad = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response);
+    expect(await trackServerGoal({ ...base, fetch: bad as unknown as typeof fetch })).toBe('failed');
+    const boom = vi.fn().mockRejectedValue(new Error('net'));
+    expect(await trackServerGoal({ ...base, fetch: boom as unknown as typeof fetch })).toBe('failed');
+  });
+
+  it('a fetch that never resolves is failed within timeoutMs', async () => {
+    vi.useFakeTimers();
+    try {
+      const hang = vi.fn((_u: string, init: RequestInit) =>
+        new Promise<Response>((_res, rej) => {
+          init.signal?.addEventListener('abort', () => rej(new Error('aborted')));
+        }));
+      const p = trackServerGoal({ ...base, timeoutMs: 200, fetch: hang as unknown as typeof fetch });
+      await vi.advanceTimersByTimeAsync(250);
+      expect(await p).toBe('failed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('in a browser: failed, no request, key never sent, one console.error', async () => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal('window', {});
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const f = okFetch();
+    const r = await trackServerGoal({ ...base, fetch: f as unknown as typeof fetch });
+    expect(r).toBe('failed');
+    expect(f).not.toHaveBeenCalled();
+    expect(err).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(err.mock.calls)).not.toContain(SK);
+    err.mockRestore();
   });
 });

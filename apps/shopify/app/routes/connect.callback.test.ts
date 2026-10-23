@@ -52,6 +52,19 @@ describe('connect/callback (audit H11)', () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  it("answers under remix-serve's fetch globals, whose Response has no static json()", async () => {
+    // Production 500'd every connect with "Response.json is not a function";
+    // Node's native Response (what the other tests run on) has it.
+    vi.stubGlobal('Response', class extends Response { static json = undefined as never });
+    try {
+      const res = await call({ state: signConnectState('x.myshopify.com', SECRET), ...keys });
+      expect(res.status).toBe(200);
+      expect((await call({ state: 'forged', ...keys })).status).toBe(400);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('refuses a shop that is not installed — there is no admin to confirm in', async () => {
     findFirst.mockResolvedValue(null);
     expect((await call({ state: signConnectState('x.myshopify.com', SECRET), ...keys })).status).toBe(404);

@@ -1,5 +1,11 @@
 # @sentientui/snippet
 
+## 0.33.1
+
+### Patch Changes
+
+- 451fe0b: Import `urlMatches` from `@sentientui/core` instead of keeping a private copy.
+
 ## 0.33.0
 
 ### Minor Changes

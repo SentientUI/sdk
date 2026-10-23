@@ -146,6 +146,12 @@ export type SentientConfig = {
    */
   initialAssignments?: Record<string, string>;
   /**
+   * Component ids an SSR preload found moved onto the shared track
+   * (`preloadAssignmentsDetailed` / `preloadDecisions` with the unified cap).
+   * Their cached assignments are ignored and `isUnified` reports them.
+   */
+  initialUnified?: string[];
+  /**
    * Segment used for SSR preload (`device:source`). When set with `initialAssignments`,
    * seeds the assignment cache under this key so hydration matches the server bandit row.
    */
@@ -254,7 +260,20 @@ export type SentientConfig = {
   stageAttributes?: StageAttributes;
 };
 
-export type AssignResult = { variantId: string; assignmentTtlMs: number; content?: string };
+export type AssignResult = {
+  variantId: string;
+  assignmentTtlMs: number;
+  content?: string;
+  /** The operator migrated this component onto the shared track (one
+   *  component model). Only answered to a request that sent `{ unified: true }`;
+   *  nothing was assigned — `variantId` is only the declared baseline. */
+  unified?: true;
+};
+/** What the caller of `assign` can do with the answer. */
+export type AssignOptions = {
+  /** Can render this component on the shared track (decide it as a slot). */
+  unified?: boolean;
+};
 
 export type { SlotDeclInput, SlotResult };
 export { armOfResult, baselineResultFor, baselineSlots, toWireSlot } from './slots.js';
@@ -267,6 +286,7 @@ export {
 } from './snapshot.js';
 export type { DecisionSnapshot, SlotConfigEntry, SlotOps, CompoundLocator } from './snapshot.js';
 export { pageScopeMatches, PAGE_SCOPE_RE } from './page-scope.js';
+export { urlMatches, normalizeUrlPattern } from './url-match.js';
 export { exposedStage, setStageAttribute, STAGE_ATTRIBUTE } from './stage-attribute.js';
 export type { StageAttributes } from './stage-attribute.js';
 export * from './blocks.js';
@@ -409,9 +429,29 @@ export type SentientClient = {
    */
   componentGoal(componentId: string, goalType: string, opts?: ComponentGoalOptions): void;
   identify(userId: string): void;
+  /**
+   * The visitor id (session id) for carrying a conversion to your server
+   * later: store it with the order/sign-up, then pass it to `trackServerGoal`.
+   * Null until the client is tracking with consent, and after forget-me.
+   * Optional only so hand-rolled clients (test doubles) keep type-checking;
+   * every client the SDK creates implements it.
+   */
+  getVisitorId?(): string | null;
   getAssignment(componentId: string, segment: string): Assignment | null;
-  /** Server-side variant assignment. Caches the result locally per (component, segment). */
-  assign(componentId: string, variantIds?: string[], agentData?: unknown, agentDataByVariant?: Record<string, unknown>): Promise<AssignResult | null>;
+  /** True once this page knows the component was moved onto the shared track
+   *  (SSR preload or a `unified` assign answer). */
+  isUnified?(componentId: string): boolean;
+  /** Server-side variant assignment. Caches the result locally per (component, segment).
+   *  `opts.unified`: the caller can render a migrated component on the shared
+   *  track; the server may then answer `{ unified: true }` (nothing assigned,
+   *  nothing cached) and the caller decides it as a slot instead. */
+  assign(
+    componentId: string,
+    variantIds?: string[],
+    agentData?: unknown,
+    agentDataByVariant?: Record<string, unknown>,
+    opts?: AssignOptions,
+  ): Promise<AssignResult | null>;
   /**
    * Single-roundtrip decision for layout sections, component variants, and
    * adaptive slots. Awaits the session upsert (like `assign`) so the server
@@ -445,6 +485,11 @@ export type SentientClient = {
    *  (registered before skeletons existed). Once per id per client; the server
    *  stores it only while the slot has none. Optional for hand-rolled clients. */
   reportSkeleton?(slotId: string, skeleton: SkeletonReport): void;
+  /** Agent-readable data for the arm a slot served (`agentData` /
+   *  `agentDataByVariant` on a slot-path <Adaptive>). Once per (slot, arm) per
+   *  client, fire-and-forget; the server stores it against that arm so
+   *  /sentient.json shows what visitors are shown. Optional for hand-rolled clients. */
+  reportAgentData?(slotId: string, armId: string, data: unknown): void;
   /** A served Rewrite arm could not be applied because the region's markup no
    *  longer matches the skeleton it was written for. Batched, deduped per
    *  (slot, fingerprint), never throws. Enough distinct visitors reporting the
@@ -827,6 +872,7 @@ const SSR_CLIENT: SentientClient = {
   getSitePalette: () => null,
   reportSlots: () => undefined,
   getPersona: () => null,
+  getVisitorId: () => null,
   fetchWeights: () => Promise.resolve([]),
   getGraph: () => ({ pageNodes: [], capturedAt: 0 }),
   flush: () => undefined,
@@ -989,6 +1035,7 @@ function createPreConsentProxy(config: SentientConfig, neverUpgrades: boolean): 
     getSitePalette: () => null,
     reportSlots: () => undefined,
     getPersona: () => null,
+    getVisitorId: () => null,
     getGraph: () => ({ pageNodes: [], capturedAt: 0 }),
     flush: () => undefined,
     dispose: () => undefined,
@@ -1085,7 +1132,8 @@ function createPreConsentProxy(config: SentientConfig, neverUpgrades: boolean): 
     componentGoal: (c, g, o) => inner.componentGoal(c, g, o),
     identify: (u) => inner.identify(u),
     getAssignment: (c, s) => inner.getAssignment(c, s),
-    assign: (c, v, a, av) => inner.assign(c, v, a, av),
+    isUnified: (c) => inner.isUnified?.(c) ?? false,
+    assign: (c, v, a, av, o) => inner.assign(c, v, a, av, o),
     decide: (i) =>
       upgraded
         ? inner.decide(i)
@@ -1103,6 +1151,7 @@ function createPreConsentProxy(config: SentientConfig, neverUpgrades: boolean): 
     getStyleVocabulary: () => inner.getStyleVocabulary?.() ?? null,
     reportSlots: (ids, texts, skels, authored) => inner.reportSlots(ids, texts, skels, authored),
     reportSkeleton: (id, sk) => inner.reportSkeleton?.(id, sk),
+    reportAgentData: (id, arm, data) => inner.reportAgentData?.(id, arm, data),
     reportDrift: (id, e, o, r) => inner.reportDrift?.(id, e, o, r),
     // Pre-consent: queue mounted slots and hold listeners, then hand both to
     // the real client on upgrade. A grantConsent() upgrade swaps the client in
@@ -1121,6 +1170,7 @@ function createPreConsentProxy(config: SentientConfig, neverUpgrades: boolean): 
     },
     onSlotsChanged: (l) => (slotListeners.add(l), () => void slotListeners.delete(l)),
     getPersona: () => inner.getPersona(),
+    getVisitorId: () => inner.getVisitorId?.() ?? null,
     fetchWeights: () => inner.fetchWeights(),
     getGraph: () => inner.getGraph(),
     flush: () => inner.flush(),
@@ -1299,8 +1349,18 @@ export function init(config: SentientConfig): SentientClient {
   const createdGen = forgetGeneration(config.apiKey);
   const mayPersist = (): boolean => !forgottenHere && forgetGeneration(config.apiKey) === createdGen;
   // Same rule as the snapshot write: nothing is cached for a forgotten visitor.
+  // Component ids the server said are unified (migrated onto the shared track):
+  // from an SSR preload (`initialUnified`) or a `unified` assign answer this
+  // page. Kept apart from the assignment cache on purpose: a `unified` answer
+  // is not an assignment, and caching it as one would make the next mount read
+  // its placeholder variantId as a settled assignment and expose it on the
+  // frozen variant ledger. For the same reason a cached assignment for such an
+  // id (from before the move) is never read again: the cache answers null.
+  // Memory only: a full page load re-asks once, and that ask books nothing.
+  const unifiedComponents = new Set<string>(config.initialUnified ?? []);
   const assignmentCache: typeof rawCache = {
     ...rawCache,
+    get: (componentId, segment) => (unifiedComponents.has(componentId) ? null : rawCache.get(componentId, segment)),
     set: (...a) => {
       if (mayPersist()) rawCache.set(...a);
     },
@@ -1391,6 +1451,7 @@ export function init(config: SentientConfig): SentientClient {
   // Drift: once per (slot, expected fp) per client.
   const reportedDrift = new Set<string>();
   const reportedAuthored = new Set<string>();
+  const reportedAgentData = new Set<string>();
   let slotReportTimer: ReturnType<typeof setTimeout> | null = null;
   // Mirror of the server's slot-id rule (apps/api/src/routes/slots-observed.ts):
   // the server 400s the WHOLE batch when any one id fails it, and every
@@ -1811,9 +1872,16 @@ export function init(config: SentientConfig): SentientClient {
       return assignmentCache.get(componentId, segment);
     },
 
-    async assign(componentId, variantIds, agentData?, agentDataByVariant?) {
+    isUnified: (componentId) => unifiedComponents.has(componentId),
+
+    async assign(componentId, variantIds, agentData?, agentDataByVariant?, opts?) {
       const sid = session.getSessionId();
       if (!sid) return null;
+
+      const wantsUnified = opts?.unified === true;
+      if (wantsUnified && unifiedComponents.has(componentId)) {
+        return { variantId: variantIds?.[0] ?? '', assignmentTtlMs: 0, unified: true };
+      }
 
       const cached = assignmentCache.get(componentId, sessionSegment);
       // When variantIds are provided (A/B code variant), a cache hit is always final.
@@ -1830,8 +1898,10 @@ export function init(config: SentientConfig): SentientClient {
       }
 
       // Coalesce concurrent assigns for the same component (e.g. several
-      // mounted slots sharing one id) into a single network request.
-      return coalesce(inflightAssigns, componentId, async () => {
+      // mounted slots sharing one id) into a single network request. Keyed on
+      // the cap too: a caller without it must never be handed a `unified`
+      // answer it cannot follow (it would render the placeholder as settled).
+      return coalesce(inflightAssigns, wantsUnified ? `${componentId}\u0000unified` : componentId, async () => {
         // Bounded: see SESSION_WAIT_MS. null = the caller keeps its fallback.
         if (!(await settlesWithin(sessionReady, SESSION_WAIT_MS))) return null;
         // Torn down or forgotten while waiting for the session: never send —
@@ -1842,6 +1912,7 @@ export function init(config: SentientConfig): SentientClient {
           const body: Record<string, unknown> = { sessionId: sid, componentId, variantIds };
           if (agentDataByVariant !== undefined) body.agentDataByVariant = agentDataByVariant;
           else if (agentData !== undefined) body.agentData = agentData;
+          if (wantsUnified) body.caps = { unified: true };
           // Sent = booked: /v1/assign records the exposure at draw time, so
           // like decide it is never cut short on latency (DECIDE_TIMEOUT_MS
           // frees a dead connection only; a slow answer is still applied).
@@ -1853,6 +1924,14 @@ export function init(config: SentientConfig): SentientClient {
           });
           if (!res.ok) return null;
           const result = (await res.json()) as AssignResult;
+          if (result.unified === true) {
+            // Not an assignment (see unifiedComponents), so never cached as
+            // one. Honoured only when asked for — the server answers it to no
+            // one else; a caller that cannot follow keeps its fallback.
+            if (!wantsUnified) return null;
+            unifiedComponents.add(componentId);
+            return { variantId: result.variantId, assignmentTtlMs: 0, unified: true };
+          }
           assignmentCache.set(componentId, sessionSegment, {
             variantId: result.variantId,
             assignedAt: Date.now(),
@@ -2203,6 +2282,29 @@ export function init(config: SentientConfig): SentientClient {
       }).catch(() => undefined);
     },
 
+    reportAgentData(slotId, armId, data) {
+      const key = `${slotId}|${armId}`;
+      if (!SLOT_ID_RE.test(slotId) || reportedAgentData.has(key)) return;
+      reportedAgentData.add(key);
+      void fetch(`${baseUrl}/slots/observed`, {
+        method: 'POST',
+        headers: authHeaders,
+        // A hand-written arm is declared in the SAME request: the server only
+        // keeps agent data for arms in the slot's space, and the authored-arm
+        // report is a separate fetch that may not have landed yet (key only —
+        // the server fills text/skeleton from the real report, first writer wins).
+        body: JSON.stringify({
+          slotIds: [slotId],
+          agentData: { [slotId]: { [armId]: data } },
+          ...(armId.startsWith('authored.') ? { authoredArms: { [slotId]: [{ key: armId.slice('authored.'.length) }] } } : {}),
+          // Agent data is stored only once visitors on several networks agree
+          // (server, migration 210), and a report counts only with the session
+          // it came from — without one it can never be stored.
+          ...(session.getSessionId() ? { sessionId: session.getSessionId() } : {}),
+        }),
+      }).catch(() => undefined);
+    },
+
     reportDrift(slotId, expectedFp, observedFp, reason) {
       // Once per (slot, fingerprint) per client — that dedupe bounds volume,
       // so no batching timer. The server applies the visitors-and-rate rule.
@@ -2333,6 +2435,8 @@ export function init(config: SentientConfig): SentientClient {
     getSitePalette() {
       return sitePalette;
     },
+
+    getVisitorId: () => (mayPersist() ? session.getSessionId() : null),
 
     getPersona() {
       if (!personaState) return null;

@@ -46,7 +46,17 @@ export type AssignmentState = {
  * on the next render. Subsequent paints read synchronously from cache —
  * no flicker, no loading state after first paint.
  */
-export function useAssignment(componentId: string, variantIds: string[], agentData?: unknown, agentDataByVariant?: Record<string, unknown>): AssignmentState {
+export function useAssignment(
+  componentId: string,
+  variantIds: string[],
+  agentData?: unknown,
+  agentDataByVariant?: Record<string, unknown>,
+  /** `onUnified`: the caller can render this component on the shared track.
+   *  The assign then carries the unified cap, and a `unified` answer calls this
+   *  INSTEAD of settling — it is not an assignment, and settling on its
+   *  placeholder would expose that variant on a frozen ledger. */
+  opts?: { onUnified?: () => void },
+): AssignmentState {
   const initialAssignments = useInitialAssignments();
   const ssrFallback = useSsrFallback();
   const client = useSentient();
@@ -168,9 +178,17 @@ export function useAssignment(componentId: string, variantIds: string[], agentDa
     // the placeholder. Bounding lateness happens before the request instead
     // (core's SESSION_WAIT_MS: an assign that would start late isn't sent).
     let cancelled = false;
-    void client.assign(componentId, variantIds, agentData, agentDataByVariant).then((result: AssignResult | null) => {
+    const onUnified = opts?.onUnified;
+    const request = onUnified
+      ? client.assign(componentId, variantIds, agentData, agentDataByVariant, { unified: true })
+      : client.assign(componentId, variantIds, agentData, agentDataByVariant);
+    void request.then((result: AssignResult | null) => {
       if (cancelled) return;
       if (!result) return;
+      if (result.unified === true) {
+        onUnified?.();
+        return;
+      }
       // Allow the result if it's a known code variant OR a managed text variant (has content).
       if (!variantIds.includes(result.variantId) && !result.content) return;
       setState({ variantId: result.variantId, content: result.content ?? null, isLoading: false, settled: true });

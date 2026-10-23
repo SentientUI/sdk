@@ -34,6 +34,7 @@ describe('mockSentient (playwright)', () => {
       overrides: { hero: 'b' },
       layout: ['pricing', 'hero'],
       slots: null,
+      slotConfig: null,
       persona: null,
       confidence: 1,
     });
@@ -62,6 +63,37 @@ describe('mockSentient (playwright)', () => {
 });
 
 describe('mockSentient — slots + persona (adaptive ladder)', () => {
+  it('forces a registry slot config too, so a hybrid <Adaptive> version can be forced', async () => {
+    // The scenario type declared `slotConfig` and applyScenario (RTL) honoured
+    // it, but mockSentient dropped it. A forced arm id with no config resolves
+    // nothing, so a Playwright test forcing `authored.social` on a hybrid
+    // quietly asserted the original.
+    let initFn: (a: unknown) => void = () => undefined;
+    let initArg: unknown;
+    const page = {
+      addInitScript: async (fn: (a: unknown) => void, arg: unknown) => { initFn = fn; initArg = arg; },
+      route: async () => {},
+    };
+    await mockSentient(page as never, {
+      slots: { hero_cta: 'authored.social' },
+      slotConfig: { hero_cta: { kind: 'arms' } },
+    });
+    expect(initArg).toMatchObject({ slotConfig: { hero_cta: { kind: 'arms' } } });
+
+    const g = globalThis as unknown as { window?: Record<string, unknown> };
+    const had = 'window' in g;
+    const prev = g.window;
+    g.window = {};
+    try {
+      initFn(initArg);
+      expect(g.window.__sentient_slot_overrides).toEqual({ hero_cta: 'authored.social' });
+      expect(g.window.__sentient_slot_config_overrides).toEqual({ hero_cta: { kind: 'arms' } });
+    } finally {
+      if (had) g.window = prev;
+      else delete g.window;
+    }
+  });
+
   it('forwards slots/persona in init data and serves slots from /v1/decide', async () => {
     let initArg: unknown;
     let routeHandler: (r: FakeRoute) => unknown = () => undefined;

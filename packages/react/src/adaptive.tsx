@@ -2,9 +2,10 @@
 
 // `type JSX` from react, not the global namespace removed in @types/react@19
 // (peers allow react >=18) — see adaptive-text.tsx.
-import { memo, useEffect, useState, type JSX, type ReactNode, type Ref } from 'react';
+import { memo, useCallback, useEffect, useState, type JSX, type ReactNode, type Ref } from 'react';
 import { useVariantComponent, type MicroSignalGoals } from './use-variant-component.js';
 import { AdaptiveSlot, type AdaptiveSlotProps } from './adaptive-slot.js';
+import { useInitialUnified, useSentient } from './provider.js';
 
 export type {
   ScrollDepthGoal,
@@ -87,7 +88,7 @@ export type AdaptiveGeneratedProps = Omit<AdaptiveSlotProps, 'children'> & {
 
 export type AdaptiveProps = AdaptiveVariantsProps | AdaptiveGeneratedProps;
 
-function AdaptiveImpl(props: AdaptiveVariantsProps): JSX.Element | null {
+function AdaptiveImpl(props: AdaptiveVariantsProps & { onUnified?: () => void }): JSX.Element | null {
   // Exposure, funnel, goal listeners, cursor + micro-signals all live in the
   // engine shared with useAdaptive, so a gate added for one applies to both.
   const { client, variantId, content, ref } = useVariantComponent(props.id, props.variants, {
@@ -97,6 +98,7 @@ function AdaptiveImpl(props: AdaptiveVariantsProps): JSX.Element | null {
     agentData: props.agentData,
     agentDataByVariant: props.agentDataByVariant,
     cursorSignal: true,
+    onUnified: props.onUnified,
   });
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
@@ -146,6 +148,7 @@ const AdaptiveVariants = memo(AdaptiveImpl, (prev, next) => {
   if (prev.as !== next.as || prev.className !== next.className) return false;
   if (prev.agentData !== next.agentData) return false;
   if (prev.agentDataByVariant !== next.agentDataByVariant) return false;
+  if (prev.onUnified !== next.onUnified) return false;
   if (prev.variants === next.variants) return true;
   const prevKeys = Object.keys(prev.variants);
   const nextKeys = Object.keys(next.variants);
@@ -168,23 +171,56 @@ export function Adaptive(props: AdaptiveProps): JSX.Element | null {
   if (v.children != null) {
     // Hybrid: authored arms + your original + generated versions on ONE slot
     // ledger — never the variant bandit too, which would book two trials per
-    // impression (CONTRACTS §2). Variants-only props have no slot equivalent.
-    if (isDevBuild()) warnIgnoredVariantProps(v);
-    const { funnel: _f, microSignalGoals: _m, agentData: _a, agentDataByVariant: _ab, clientOnly: _c, variants, ...slotProps } = v;
+    // impression (CONTRACTS §2). funnel, microSignalGoals, agentData,
+    // agentDataByVariant and clientOnly carry over: the slot path implements
+    // each, so a hand-written component keeps them when it gains children.
+    const { variants, ...slotProps } = v;
     return <AdaptiveSlot {...(slotProps as Omit<AdaptiveSlotProps, 'variants'>)} children={v.children} variants={variants} />;
   }
-  // Variants only: the variant ledger, unchanged. Moving it onto the slot
-  // ledger is the operator's Migrate action, never an SDK upgrade (§7.5).
-  return <AdaptiveVariants {...v} />;
+  // Variants only: the variant ledger — unless the operator migrated this id.
+  // Moving it is the operator's Migrate action, never an SDK upgrade (§7.5);
+  // the SDK only follows it (ruling C1).
+  return <AdaptiveVariantsOrUnified {...v} />;
 }
 
-const warnedIgnoredProps = new Set<string>();
-function warnIgnoredVariantProps(p: AdaptiveVariantsProps): void {
-  const ignored = (['funnel', 'microSignalGoals', 'agentData', 'agentDataByVariant', 'clientOnly'] as const).filter((k) => p[k] !== undefined);
-  if (ignored.length === 0 || warnedIgnoredProps.has(p.id)) return;
-  warnedIgnoredProps.add(p.id);
-  console.warn(
-    `[sentient] <Adaptive id="${p.id}"> has both variants and children, so it runs as one experiment with your ` +
-      `original and generated versions. These props only apply to a variants-only component and are ignored here: ${ignored.join(', ')}.`,
+/**
+ * A variants-only `<Adaptive>`: the variant experiment it always ran, until
+ * /v1/assign answers `unified: true` for its id (the operator migrated it —
+ * CONTRACTS §2 "A unified component is a slot"). From then on it renders
+ * through the slot path: its keys are the authored versions, it has no
+ * children, so the FIRST key is the control (exactly as variantIds[0] is in
+ * variants mode), and generated versions can join it. Without this an upgraded
+ * page kept asking for a frozen variant experiment and learned nothing.
+ *
+ * It may already know before asking (ruling C20): an SSR preload lists the
+ * moved ids (`initialUnified`, so the server HTML is already the slot path —
+ * AdaptiveRoot `components`, the hero), or the client learned it earlier this
+ * page. Then the variant path never mounts: an assignment cached before the
+ * move would otherwise settle it, render a frozen variant and expose it.
+ *
+ * Only this component asks with the cap: useAdaptive has no slot path, so it
+ * keeps being served the frozen run read-only (it warns in dev).
+ */
+function AdaptiveVariantsOrUnified(props: AdaptiveVariantsProps): JSX.Element | null {
+  // Keyed on the id: a mounted element whose id changes is a different
+  // component, and must ask again rather than inherit the old answer.
+  const [unifiedId, setUnifiedId] = useState<string | null>(null);
+  const { id } = props;
+  const onUnified = useCallback(() => setUnifiedId(id), [id]);
+  const client = useSentient();
+  // initialUnified is in the SSR render and the first client render alike;
+  // the client only exists after hydration, so neither can mismatch.
+  const known = useInitialUnified().includes(id) || client?.isUnified?.(id) === true;
+  if (unifiedId !== id && !known) return <AdaptiveVariants {...props} onUnified={onUnified} />;
+  const { variants, children: _children, ...rest } = props;
+  const first = Object.keys(variants)[0];
+  return (
+    <AdaptiveSlot
+      {...(rest as Omit<AdaptiveSlotProps, 'variants' | 'children'>)}
+      variants={variants}
+      variantsOnly
+    >
+      {first !== undefined ? variants[first] : null}
+    </AdaptiveSlot>
   );
 }

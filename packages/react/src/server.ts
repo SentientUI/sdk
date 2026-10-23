@@ -3,12 +3,14 @@
  */
 import {
   preloadAssignments,
+  preloadAssignmentsDetailed,
   readSessionCookie,
+  trackServerGoal,
   type ServerAssignConfig,
   type ServerAssignments,
 } from '@sentientui/core/server';
 
-export { preloadAssignments, readSessionCookie };
+export { preloadAssignments, readSessionCookie, trackServerGoal };
 export type { ServerAssignConfig, ServerAssignments };
 
 /** Return value of `loadAdaptiveAssignments` — includes the session ID used for SSR. */
@@ -16,6 +18,9 @@ export type LoadAdaptiveAssignmentsResult = {
   assignments: ServerAssignments;
   /** The session ID used for SSR assignment. Pass as `ssrSessionId` to `<AdaptiveProvider>`. */
   sessionId: string;
+  /** Components the operator moved onto the shared track: not in
+   *  `assignments`. Pass as `initialUnified` to `<AdaptiveProvider>`. */
+  unified: string[];
 };
 
 export type LoadAdaptiveAssignmentsOptions = {
@@ -79,7 +84,10 @@ export async function loadAdaptiveAssignments(
     options.createSessionId?.() ??
     defaultSessionId();
 
-  const assignments = await preloadAssignments(components, sessionId, {
+  // With the unified cap: a moved component is not assigned (nothing is
+  // recorded) and comes back in `unified`, so the page renders it on the
+  // shared track instead of seeding the frozen variant it would otherwise get.
+  const { assignments, unified } = await preloadAssignmentsDetailed(components, sessionId, {
     apiKey: options.apiKey,
     baseUrl: options.baseUrl,
     origin: options.origin,
@@ -91,9 +99,9 @@ export async function loadAdaptiveAssignments(
     doNotTrack: options.doNotTrack,
     timeoutMs: options.timeoutMs,
     persona: options.persona,
-  });
+  }, { unified: true });
 
-  return { assignments, sessionId };
+  return { assignments, sessionId, unified };
 }
 
 export { preloadDecisions } from '@sentientui/core/server';
@@ -126,6 +134,13 @@ export type LoadAdaptiveDecisionOptions = LoadAdaptiveAssignmentsOptions & {
    * recording a close-out trial for every published slot on every page.
    */
   registrySlotIds?: string[];
+  /**
+   * Registry mode: what each slot on this page can render, keyed by slot id
+   * (see `preloadDecisions`). Ids without an entry get core's default caps.
+   * A hybrid `<Adaptive variants>{children}</Adaptive>` needs its entry: the
+   * server draws `authored.<key>` only for keys the page declares here.
+   */
+  renderCaps?: Record<string, Omit<import('@sentientui/core').RenderCaps, 'fp'>>;
 };
 
 /**
@@ -212,6 +227,10 @@ export async function loadAdaptiveDecision(
       slots: options.slots ?? [],
       slotsFrom: options.slotsFrom,
       registrySlotIds: options.registrySlotIds,
+      ...(options.renderCaps ? { renderCaps: options.renderCaps } : {}),
+      // Moved components come back in `unified`, not as assignments (see
+      // loadAdaptiveAssignments). Pass them as `initialUnified`.
+      unifiedCaps: true,
     },
     sessionId,
     {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo } from 'react';
 import type { ComponentGoalOptions } from '@sentientui/core';
 import { isDevBuild, type GoalConfig } from './adaptive-shared.js';
 import { useVariantComponent, type MicroSignalGoals } from './use-variant-component.js';
+import { useInitialUnified } from './provider.js';
 
 export type UseAdaptiveBind = {
   ref: (el: HTMLElement | null) => void;
@@ -18,6 +19,7 @@ export type UseAdaptiveResult<T> = {
 };
 
 const warnedUnbound = new Set<string>();
+const warnedUnified = new Set<string>();
 
 /**
  * Rung 2 — headless, measurement-complete variant swap. Supersedes
@@ -66,6 +68,20 @@ export function useAdaptive<T>(
   // hook always hands back a value: the first key until a variant resolves.
   const variant = variantId ?? variantIds[0] ?? '';
   const value = config.variants[variant] as T;
+
+  // A moved component (CONTRACTS §2 "A unified component is a slot") has no
+  // headless slot path yet: the hook keeps being served the frozen variants
+  // result read-only, and nothing it shows is learned from. Said once, in dev,
+  // rather than failing silently.
+  const knownUnified = useInitialUnified().includes(id) || client?.isUnified?.(id) === true;
+  useEffect(() => {
+    if (!knownUnified || !isDevBuild() || warnedUnified.has(id)) return;
+    warnedUnified.add(id);
+    console.warn(
+      `[sentient] useAdaptive("${id}"): this component was moved to the shared track, which useAdaptive cannot render yet. ` +
+        `It keeps showing the frozen result and learns nothing — render it with <Adaptive id="${id}" variants={...}> instead.`,
+    );
+  }, [knownUnified, id]);
 
   // Dev warning: bind never attached shortly after mount → exposures would
   // never fire and the slot cannot learn. Once per slot id.

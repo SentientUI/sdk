@@ -25,6 +25,10 @@ export type VariantComponentOptions = {
   agentDataByVariant?: Record<string, unknown>;
   /** Emit `cursor_signal` after 800 ms of continuous hover (<Adaptive> only). */
   cursorSignal?: boolean;
+  /** <Adaptive> only: called when the server says this id was migrated onto
+   *  the shared track (see useAssignment). Without it the hook never sends the
+   *  unified cap — useAdaptive has no slot path to move to. */
+  onUnified?: () => void;
 };
 
 export type VariantComponentState = {
@@ -72,6 +76,7 @@ export function useVariantComponent(
     variantIds,
     opts.agentData,
     opts.agentDataByVariant,
+    opts.onUnified ? { onUnified: opts.onUnified } : undefined,
   );
 
   // Callback ref + state, not a plain useRef: useAdaptive's bind target is the

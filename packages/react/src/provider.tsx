@@ -73,6 +73,8 @@ type AdaptiveContextValue = {
   // not the project UUID. Field renamed for clarity.
   apiKey: string;
   initialAssignments: Record<string, string>;
+  /** Components an SSR preload found moved onto the shared track. */
+  initialUnified: readonly string[];
   sessionSegment: string;
   ssrFallback: SsrFallback;
   onAssignment: ((componentId: string, variantId: string) => void) | undefined;
@@ -90,6 +92,7 @@ const AdaptiveContext = createContext<AdaptiveContextValue>({
   client: null,
   apiKey: '',
   initialAssignments: {},
+  initialUnified: [],
   sessionSegment: 'desktop:direct',
   ssrFallback: 'first',
   onAssignment: undefined,
@@ -117,6 +120,14 @@ export type AdaptiveProviderProps = {
    * the first paint see real content (recommended for SEO).
    */
   initialAssignments?: Record<string, string>;
+  /**
+   * Component ids the SSR preload found moved onto the shared track (the
+   * `unified` of `loadAdaptiveAssignments()` / `loadAdaptiveDecision()`;
+   * `<AdaptiveRoot>` passes it for you). A variants-only `<Adaptive>` with one
+   * of these ids renders on the shared track from the server HTML on, and an
+   * assignment cached before the move is ignored.
+   */
+  initialUnified?: string[];
   /**
    * Bandit segment from SSR (`device:source`). Keeps cache, assign, and worker
    * weights on one row — must match `loadAdaptiveAssignments` / session upsert.
@@ -533,6 +544,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       context: props.context,
       debug: props.debug,
       initialAssignments: props.initialAssignments,
+      initialUnified: props.initialUnified,
       sessionSegment,
       consent,
       preConsentBehavior: props.preConsentBehavior,
@@ -807,6 +819,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       client: exposedClient,
       apiKey: props.apiKey,
       initialAssignments: props.initialAssignments ?? {},
+      initialUnified: props.initialUnified ?? NO_UNIFIED,
       sessionSegment,
       ssrFallback,
       onAssignment: props.onAssignment,
@@ -823,6 +836,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       exposedClient,
       props.apiKey,
       props.initialAssignments,
+      props.initialUnified,
       sessionSegment,
       ssrFallback,
       props.onAssignment,
@@ -860,6 +874,13 @@ export function useAdaptiveApiKey(): string {
 /** Internal: SSR-preloaded assignments for hydration-safe first render. */
 export function useInitialAssignments(): Record<string, string> {
   return useContext(AdaptiveContext).initialAssignments;
+}
+
+const NO_UNIFIED: readonly string[] = [];
+
+/** Internal. Ids the SSR preload found moved onto the shared track. */
+export function useInitialUnified(): readonly string[] {
+  return useContext(AdaptiveContext).initialUnified;
 }
 
 /** The `device:source` segment this provider decides and caches under —

@@ -1,6 +1,6 @@
 import { deriveSessionSegment, exposedStage, extractTrackedParams, matchedAgentToken } from '@sentientui/core';
 import { consentFromCookies } from '@sentientui/core/consent';
-import type { SlotDeclInput, SlotResult } from '@sentientui/core';
+import type { RenderCaps, SlotDeclInput, SlotResult } from '@sentientui/core';
 import { cookies, headers } from 'next/headers';
 // `type JSX` from react, not the global namespace removed in @types/react@19
 // (peers allow react >=18) — see adaptive-text.tsx.
@@ -32,6 +32,15 @@ export type { AgentFeed } from '../agent-feed.js';
 const DEFAULT_API_BASE_URL = 'https://api.sentient-ui.com/v1';
 
 export type PreloadComponent = { id: string; variantIds: string[] };
+
+/** A registry `<Adaptive id>` declared with what it can render — see `AdaptiveRootProps.registrySlots`. */
+export type RegistrySlotDecl = {
+  id: string;
+  /** The `variants` keys of a hybrid `<Adaptive variants>{children}</Adaptive>`. */
+  authored?: string[];
+  /** The `<Adaptive>` has an `onFormSubmit`. @default true */
+  forms?: boolean;
+};
 
 export type AdaptiveRootProps = Omit<
   AdaptiveProviderProps,
@@ -114,6 +123,24 @@ export type AdaptiveRootProps = Omit<
    * @example registrySlotIds={['hero-headline', 'pricing-cta']}
    */
   registrySlotIds?: string[];
+  /**
+   * Like `registrySlotIds`, for `<Adaptive id>`s that need to tell the server
+   * more than their id. Most often that is a hybrid —
+   * `<Adaptive id variants={{ a, b }}>{original}</Adaptive>`. List its
+   * `variants` keys as `authored`, or the SSR decide cannot draw them. In that
+   * case the first paint can only be the original or a generated version, and
+   * the hand-written ones appear only on pages the browser decides.
+   *
+   * `forms`: whether the `<Adaptive>` has an `onFormSubmit`. Declare
+   * `forms: false` when it has none, or SSR can draw a generated form version
+   * that the page then refuses. The default is `true`, the same as a bare
+   * `registrySlotIds` entry.
+   *
+   * You may list an id in both props: it is decided once, with these caps.
+   *
+   * @example registrySlots={[{ id: 'hero_cta', authored: ['action', 'social'], forms: false }]}
+   */
+  registrySlots?: RegistrySlotDecl[];
   /** App origin — must be in the project's `allowed_origins`. */
   appOrigin?: string;
   /**
@@ -238,7 +265,8 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
     components = [],
     sections,
     slots,
-    registrySlotIds,
+    registrySlotIds: registrySlotIdsProp,
+    registrySlots,
     appOrigin,
     searchParams,
     pathname,
@@ -339,6 +367,10 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   }
 
   let initialAssignments: ServerAssignments;
+  // SSR-declared components the operator moved onto the shared track: the
+  // client renders them as slots (children:false, first variant key = the
+  // original) instead of seeding a frozen variant (ruling C20).
+  let initialUnified: string[] | undefined;
   let initialLayoutOrder: string[] | null = null;
   let initialSlots: Record<string, SlotResult> | undefined;
   let initialSlotConfig: LoadAdaptiveDecisionResult['slotConfig'];
@@ -349,9 +381,27 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   let initialStage: string | null = null;
   let ssrSessionId: string | undefined;
 
+  // One decided id list from both props, each id once. The caps come only from
+  // `registrySlots` entries: a bare id keeps core's default.
+  const registrySlotIds = [...new Set([...(registrySlotIdsProp ?? []), ...(registrySlots ?? []).map((d) => d.id)])];
+  // The caps a mounted AdaptiveSlot sends, minus the fingerprint (it needs a
+  // DOM).
+  // - `ops: false`: React never applies ops (see core's preloadDecisions).
+  // - `children: true`: a hybrid's original is a real arm, so the server keeps
+  //   drawing `baseline` next to `authored.*`. A migrated variants-only
+  //   component's `children: false` comes from the decide's handed-off path,
+  //   not from here.
+  const renderCaps: Record<string, Omit<RenderCaps, 'fp'>> | undefined = registrySlots?.length
+    ? Object.fromEntries(registrySlots.map((d) => [d.id, {
+        forms: d.forms ?? true,
+        compose: true,
+        ops: false,
+        ...(d.authored?.length ? { authored: d.authored, children: true } : {}),
+      }]))
+    : undefined;
   // Registry mode only when ids were declared: an unscoped registry decide
   // records a close-out trial for every published slot on every page.
-  const registry = !!registrySlotIds?.length;
+  const registry = registrySlotIds.length > 0;
 
   if (initialAssignmentsOverride) {
     initialAssignments = initialAssignmentsOverride;
@@ -370,7 +420,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       sections: sections ?? [],
       components,
       slots,
-      ...(registry ? { slotsFrom: 'registry' as const, registrySlotIds } : {}),
+      ...(registry ? { slotsFrom: 'registry' as const, registrySlotIds, ...(renderCaps ? { renderCaps } : {}) } : {}),
       cookies: cookieStore,
       apiKey: providerProps.apiKey,
       baseUrl,
@@ -387,6 +437,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       persona: providerProps.persona,
     });
     initialAssignments = decision.assignments;
+    initialUnified = decision.unified;
     initialLayoutOrder = decision.layoutOrder;
     initialSlots = decision.slots;
     initialSlotConfig = decision.slotConfig;
@@ -421,6 +472,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       persona: providerProps.persona,
     });
     initialAssignments = result.assignments;
+    initialUnified = result.unified;
     ssrSessionId = result.sessionId;
   }
 
@@ -450,6 +502,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       // not start gated and re-resolve the same cookie on mount.
       consent={consent}
       initialAssignments={initialAssignments}
+      initialUnified={initialUnified}
       initialLayoutOrder={initialLayoutOrder}
       // Declared regardless of what came back, so devtools can preview layout on
       // a page whose decision was gated or timed out.
@@ -482,7 +535,18 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
   // '<' so page content cannot break out of the <script> element.
   const feed = buildAgentFeed({
     page: agentPath,
-    blocks: assignmentsToBlocks(initialAssignments),
+    blocks: [
+      ...assignmentsToBlocks(initialAssignments),
+      // A moved component is not in initialAssignments (it was handed back to
+      // be decided as a slot), so without this the JSON-LD dropped it — the
+      // hero, for a crawler. Its decided arm, else the control: the first
+      // variant key, as the page renders it (children:false).
+      ...(initialUnified ?? []).map((id): AgentBlock => {
+        const decided = initialSlots?.[id];
+        const first = components.find((c) => c.id === id)?.variantIds[0];
+        return { id, variant: typeof decided === 'string' ? decided : first !== undefined ? `authored.${first}` : '' };
+      }),
+    ],
     layoutOrder: initialLayoutOrder ?? undefined,
     content: agentFeed.content,
   });

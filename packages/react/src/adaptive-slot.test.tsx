@@ -5,7 +5,8 @@ import { applyScenario, resetScenario } from './testing/scenario.js';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AdaptiveProvider } from './provider.js';
 import { AdaptiveSlot } from './adaptive-slot.js';
-import { init } from '@sentientui/core';
+import { init, attachMicroSignalDetectors } from '@sentientui/core';
+import { __resetFunnelDeclarations } from './adaptive-shared.js';
 
 vi.mock('@sentientui/core', () => ({
   // AdaptiveSlot imports `reveal` from core. These mocks are deliberately
@@ -13,6 +14,7 @@ vi.mock('@sentientui/core', () => ({
   // import the rendered tree makes has to be listed here.
   reveal: vi.fn(),
   init: vi.fn(),
+  attachMicroSignalDetectors: vi.fn(() => () => undefined),
   detectDeviceClass: () => 'desktop',
   detectTrafficSource: () => 'direct',
   armOfResult: (r: string | Record<string, string>) =>
@@ -29,6 +31,7 @@ vi.mock('@sentientui/core', () => ({
 vi.mock('@sentientui/core/engagement', () => ({ startEngagementCapture: vi.fn() }));
 
 const mockedInit = vi.mocked(init);
+const mockedMicro = vi.mocked(attachMicroSignalDetectors);
 
 const BLOCK_TREE = {
   type: 'stack',
@@ -67,6 +70,7 @@ function makeClient(overrides: Record<string, unknown> = {}) {
     identify: vi.fn(),
     getGraph: vi.fn().mockReturnValue({ pageNodes: [], capturedAt: 0 }),
     fetchWeights: vi.fn().mockResolvedValue([]),
+    reportAgentData: vi.fn(),
     ...overrides,
   };
 }
@@ -86,6 +90,7 @@ function wrapperWith(props: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  __resetFunnelDeclarations();
   mockedInit.mockReturnValue(makeClient() as never);
 });
 
@@ -548,7 +553,7 @@ describe('<Adaptive> without variants is the slot', () => {
     const [ids, texts, extras] = requestSlots.mock.calls[0]!;
     expect(ids).toEqual(['hero-cta']);
     expect(texts).toEqual({ 'hero-cta': 'Start free trial' });
-    expect((extras as { render: Record<string, unknown> }).render['hero-cta']).toMatchObject({ forms: false, compose: true, content: true });
+    expect((extras as { render: Record<string, unknown> }).render['hero-cta']).toMatchObject({ forms: false, compose: true, content: true, ops: false });
   });
 
   it('renders the served dashboard version in place of the children', async () => {
@@ -626,7 +631,7 @@ describe('Rewrite (edits) arms', () => {
       render: Record<string, { fp: string; forms: boolean; content: boolean }>;
       skeletons: Record<string, { leaves: string[] }>;
     };
-    expect(extras.render.cta).toEqual({ fp: await fpOf(CTA), forms: false, compose: true, content: false });
+    expect(extras.render.cta).toEqual({ fp: await fpOf(CTA), forms: false, compose: true, content: false, ops: false });
     expect(extras.skeletons.cta.leaves).toEqual(['Get in touch', 'WhatsApp photos']);
   });
 
@@ -781,6 +786,229 @@ describe('hybrid <Adaptive> (authored arms)', () => {
     rerender(createElement(Wrapper, null, el));
     const call = vi.mocked(client.reportSlots).mock.calls.find((c) => c[3] !== undefined);
     expect(call![3]).toMatchObject({ hero: [{ key: 'quote', text: 'Get a quote' }] });
+  });
+});
+
+// One component model, Task 2: the props a variants-only <Adaptive> always had
+// must mean the same thing on the slot path, because a migrated component (and
+// a hybrid) now renders there. Each test mirrors an AdaptiveVariants assertion.
+describe('prop parity with the variants path', () => {
+  const served = (arm: string) =>
+    wrapperWith({ initialSlotConfig: { hero: { kind: 'arms' } }, initialSlots: { hero: arm } });
+  const eventsOf = (client: ReturnType<typeof makeClient>, type: string) =>
+    client.track.mock.calls.filter(([e]) => (e as { eventType: string }).eventType === type);
+
+  it('agentDataByVariant: an authored arm is looked up by its authored key', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = served('authored.action');
+    const el = (
+      <AdaptiveSlot id="hero" variants={{ action: <b>a</b> }} agentDataByVariant={{ action: { cta: 'Do it' }, other: { cta: 'no' } }} agentData={{ cta: 'fallback' }}>
+        <b>base</b>
+      </AdaptiveSlot>
+    );
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    expect(client.reportAgentData).toHaveBeenCalledTimes(1);
+    expect(client.reportAgentData).toHaveBeenCalledWith('hero', 'authored.action', { cta: 'Do it' });
+  });
+
+  it('agentDataByVariant: a generated arm is looked up by its arm id', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({ initialSlotConfig: { hero: { kind: 'arms', content: 'New words' } }, initialSlots: { hero: 'gen_v1' } });
+    const el = (
+      <AdaptiveSlot id="hero" agentDataByVariant={{ gen_v1: { cta: 'Gen' } }}>
+        <b>base</b>
+      </AdaptiveSlot>
+    );
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    expect(client.reportAgentData).toHaveBeenCalledWith('hero', 'gen_v1', { cta: 'Gen' });
+  });
+
+  it('agentData alone covers any served arm; when agentDataByVariant is given it ALONE decides (as /v1/assign); nothing when neither', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = served('authored.action');
+    const withData = (
+      <AdaptiveSlot id="hero" variants={{ action: <b>a</b> }} agentData={{ cta: 'fallback' }}>
+        <b>base</b>
+      </AdaptiveSlot>
+    );
+    const { rerender } = render(createElement(Wrapper, null, withData));
+    rerender(createElement(Wrapper, null, withData));
+    expect(client.reportAgentData).toHaveBeenCalledWith('hero', 'authored.action', { cta: 'fallback' });
+
+    const clientMap = makeClient();
+    mockedInit.mockReturnValue(clientMap as never);
+    const mapped = (
+      <AdaptiveSlot id="hero" variants={{ action: <b>a</b> }} agentDataByVariant={{ other: 1 }} agentData={{ cta: 'fallback' }}>
+        <b>base</b>
+      </AdaptiveSlot>
+    );
+    const rm = render(createElement(served('authored.action'), null, mapped));
+    rm.rerender(createElement(served('authored.action'), null, mapped));
+    expect(clientMap.reportAgentData).not.toHaveBeenCalled();
+
+    const client2 = makeClient();
+    mockedInit.mockReturnValue(client2 as never);
+    const bare = (
+      <AdaptiveSlot id="hero" variants={{ action: <b>a</b> }}>
+        <b>base</b>
+      </AdaptiveSlot>
+    );
+    const r2 = render(createElement(served('authored.action'), null, bare));
+    r2.rerender(createElement(served('authored.action'), null, bare));
+    expect(client2.reportAgentData).not.toHaveBeenCalled();
+  });
+
+  it('agentData is not sent for a forced (override) arm', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith({ initialSlotConfig: { hero: { kind: 'arms' } }, initialSlots: { hero: 'authored.action' } });
+    (window as unknown as Record<string, unknown>).__sentient_slot_config_overrides = { hero: { kind: 'arms' } };
+    (window as unknown as Record<string, unknown>).__sentient_slot_overrides = { hero: 'authored.action' };
+    try {
+      const el = <AdaptiveSlot id="hero" variants={{ action: <b>a</b> }} agentData={{ cta: 'x' }}><b>base</b></AdaptiveSlot>;
+      const { rerender } = render(createElement(Wrapper, null, el));
+      rerender(createElement(Wrapper, null, el));
+      expect(client.reportAgentData).not.toHaveBeenCalled();
+    } finally {
+      delete (window as unknown as Record<string, unknown>).__sentient_slot_config_overrides;
+      delete (window as unknown as Record<string, unknown>).__sentient_slot_overrides;
+    }
+  });
+
+  it('agentData is not sent for an unserved slot (the baseline is not an assigned arm)', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    render(createElement(wrapperWith(), null, <AdaptiveSlot id="hero" agentData={{ cta: 'x' }}><b>base</b></AdaptiveSlot>));
+    expect(client.reportAgentData).not.toHaveBeenCalled();
+  });
+
+  it('clientOnly renders nothing in SSR HTML and the slot once mounted with a client', () => {
+    const Wrapper = served('authored.action');
+    const el = (
+      <AdaptiveSlot id="hero" clientOnly variants={{ action: <b className="a">a</b> }}>
+        <b>base</b>
+      </AdaptiveSlot>
+    );
+    expect(renderToString(createElement(Wrapper, null, el))).not.toContain('data-sentient-slot');
+    const { container } = render(createElement(Wrapper, null, el));
+    expect(container.querySelector('b.a')).not.toBeNull();
+  });
+
+  it('clientOnly: the first slot request waits for the wrapper, so it carries the baseline text', () => {
+    const requestSlots = vi.fn();
+    const client = makeClient({ requestSlots, onSlotsChanged: vi.fn(() => () => undefined) });
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = wrapperWith();
+    const el = <AdaptiveSlot id="hero" clientOnly><a href="/s">Start free trial</a></AdaptiveSlot>;
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    expect(requestSlots).toHaveBeenCalledTimes(1);
+    expect(requestSlots.mock.calls[0]![1]).toEqual({ hero: 'Start free trial' });
+  });
+
+  it('clientOnly renders nothing when there is no client (consent withheld)', () => {
+    const Wrapper = wrapperWith({ consent: false });
+    const { container } = render(createElement(Wrapper, null, <AdaptiveSlot id="hero" clientOnly><b>base</b></AdaptiveSlot>));
+    expect(container.querySelector('[data-sentient-slot]')).toBeNull();
+  });
+
+  it('clientOnly still wires the goal once the wrapper appears', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = served('authored.action');
+    const { container } = render(
+      createElement(Wrapper, null,
+        <AdaptiveSlot id="hero" clientOnly goal="click" variants={{ action: <button className="a">a</button> }}>
+          <b>base</b>
+        </AdaptiveSlot>),
+    );
+    fireEvent.click(container.querySelector('button.a')!);
+    expect(client.componentGoal).toHaveBeenCalledWith('hero', 'click');
+  });
+
+  it('microSignalGoals: a mapped signal records micro_signal on the served arm and one session goal', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    let emit: ((s: string, extra?: Record<string, unknown>) => void) | undefined;
+    mockedMicro.mockImplementation(((e: typeof emit) => { emit = e; return () => undefined; }) as never);
+    render(
+      createElement(served('authored.action'), null,
+        <AdaptiveSlot id="hero" goal="click" variants={{ action: <b>a</b> }} microSignalGoals={{ rage_click: 'confused_by_hero' }}>
+          <b>base</b>
+        </AdaptiveSlot>),
+    );
+    expect(mockedMicro).toHaveBeenCalled();
+    emit!('rage_click');
+    emit!('rage_click');
+    expect(client.goal).toHaveBeenCalledWith(
+      'confused_by_hero',
+      expect.objectContaining({ metadata: expect.objectContaining({ signalType: 'rage_click', componentId: 'hero' }), weight: 1.0, stepIndex: 0 }),
+    );
+    expect(client.goal.mock.calls.filter((c) => c[0] === 'confused_by_hero')).toHaveLength(1);
+    // Session goal only: componentGoal would feed slot credit and reward the arm for a rage click.
+    expect(client.componentGoal).not.toHaveBeenCalled();
+    expect(eventsOf(client, 'micro_signal')[0]![0]).toMatchObject({ componentId: 'hero', variantId: 'authored.action' });
+  });
+
+  it('microSignalGoals: the once-only latch survives an arm change (re-attach does not re-fire)', () => {
+    const stableCfg = { kind: 'arms' };
+    let current = 'authored.a';
+    const client = makeClient({
+      getSlotConfig: vi.fn(() => stableCfg),
+      getSlotResult: vi.fn(() => current),
+    });
+    mockedInit.mockReturnValue(client as never);
+    let emit: ((s: string) => void) | undefined;
+    mockedMicro.mockImplementation(((e: typeof emit) => { emit = e; return () => undefined; }) as never);
+    const Wrapper = wrapperWith();
+    const el = (
+      <AdaptiveSlot id="hero" variants={{ a: <b>a</b>, b: <i>b</i> }} microSignalGoals={{ rage_click: 'confused' }}><b>base</b></AdaptiveSlot>
+    );
+    const { rerender, container } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el)); // client lands after provider init
+    expect(container.querySelector('[data-sentient-arm="authored.a"]')).not.toBeNull();
+    emit!('rage_click');
+    current = 'authored.b';
+    rerender(createElement(Wrapper, null, <AdaptiveSlot id="hero" variants={{ a: <b>a</b>, b: <i>b</i> }} microSignalGoals={{ rage_click: 'confused' }} className="x"><b>base</b></AdaptiveSlot>));
+    expect(container.querySelector('[data-sentient-arm="authored.b"]')).not.toBeNull();
+    emit!('rage_click');
+    expect(client.goal.mock.calls.filter((c) => c[0] === 'confused')).toHaveLength(1);
+  });
+
+  it('microSignalGoals: nothing is attached for an unserved slot (no arm was shown)', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    render(createElement(wrapperWith(), null, <AdaptiveSlot id="hero" microSignalGoals={{ rage_click: 'x' }}><b>base</b></AdaptiveSlot>));
+    expect(mockedMicro).not.toHaveBeenCalled();
+  });
+
+  it('funnel: declares membership once, under the slot id', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    const Wrapper = served('authored.action');
+    const el = (
+      <AdaptiveSlot id="hero" goal="click" funnel="checkout" variants={{ action: <b>a</b> }}>
+        <b>base</b>
+      </AdaptiveSlot>
+    );
+    const { rerender } = render(createElement(Wrapper, null, el));
+    rerender(createElement(Wrapper, null, el));
+    const decl = eventsOf(client, 'funnel_declared');
+    expect(decl).toHaveLength(1);
+    expect(decl[0]![0]).toMatchObject({ componentId: 'hero', payload: { funnelId: 'checkout' } });
+  });
+
+  it('funnel: no prop, no declaration', () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
+    render(createElement(served('authored.action'), null,
+      <AdaptiveSlot id="hero" goal="click" variants={{ action: <b>a</b> }}><b>base</b></AdaptiveSlot>));
+    expect(eventsOf(client, 'funnel_declared')).toHaveLength(0);
   });
 });
 

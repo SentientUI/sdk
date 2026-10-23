@@ -7,6 +7,8 @@ import { isDevBuild } from './adaptive-shared.js';
 
 // Warn once per slot id per page lifetime, not per render.
 const warnedUnservedSlots = new Set<string>();
+// One shared object: a fresh one per render would read as a config change.
+const FORCED_ARM_CONFIG: SlotConfigEntry = { kind: 'arms' };
 
 declare global {
   interface Window {
@@ -50,6 +52,15 @@ export function useSlotConfig(
     /** Capture the region's skeleton. Only called while the wrapper shows the
      *  developer's children — never an arm's rendering of them. */
     skeleton?: () => SkeletonReport | null;
+    /** Hold the request until false. A clientOnly slot has no wrapper element on
+     *  its first commit, so asking then sent no baseline text or skeleton — and
+     *  the ask is deduped forever per id, so they were never sent. */
+    defer?: boolean;
+    /** A forced arm from the VARIANT dev-override channel, already mapped to
+     *  its arm id (`authored.<key>`) — a migrated variants-only <Adaptive>
+     *  (ruling C24). Resolves as source 'override': rendered, never exposed,
+     *  never decided, exactly like a forced slot config. */
+    forcedArm?: string | null;
   },
 ): SlotConfigResolution {
   const client = useSentient();
@@ -111,6 +122,9 @@ export function useSlotConfig(
     if (overrideConfig !== undefined) {
       return { config: overrideConfig, arm: armOf(overrideResult), palette, vocabulary: getVocabularyOverride() ?? vocabulary, source: 'override' };
     }
+    if (opts?.forcedArm) {
+      return { config: FORCED_ARM_CONFIG, arm: opts.forcedArm, palette, vocabulary, source: 'override' };
+    }
     if (preloaded !== undefined) {
       return { config: preloaded, arm: armOf(initialSlots[slotId] ?? client?.getSlotResult(slotId)), palette, vocabulary, source: 'preloaded' };
     }
@@ -136,9 +150,10 @@ export function useSlotConfig(
   // ask: the snapshot is the last visit's answer, and this session needs its
   // own decision (or to learn the slot was unpublished). Preloaded and forced
   // slots already have this session's answer.
+  const deferred = opts?.defer === true;
   const settled = resolution.source === 'preloaded' || resolution.source === 'override';
   useEffect(() => {
-    if (!client || client.isLocal === true || settled) return;
+    if (!client || client.isLocal === true || settled || deferred) return;
     // Children are on screen only while unserved — that is the only moment the
     // wrapper's text is the baseline generation should be grounded in.
     const unserved = resolution.source === 'none';
@@ -165,7 +180,8 @@ export function useSlotConfig(
     // Unmounted before the batch was sent (redirecting route, StrictMode
     // probe): withdraw it — a slot that is not on the page is not a trial.
     return () => client.cancelSlots?.([slotId]);
-  }, [client, settled, resolution.source, slotId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, settled, resolution.source, slotId, deferred]);
 
   // Dev-only: local/keyless mode has no registry, so an unserved slot renders
   // its children all session and looks identical to a healthy holdout.

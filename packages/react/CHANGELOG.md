@@ -1,5 +1,56 @@
 # @sentientui/react
 
+## 0.40.1
+
+### Patch Changes
+
+- Updated dependencies [89da17f]
+  - @sentientui/core@0.39.1
+
+## 0.40.0
+
+### Minor Changes
+
+- 451fe0b: `<AdaptiveRoot>` takes a new `registrySlots` prop. Use it for a server-decided `<Adaptive id>` that has to tell the server more than its id, e.g. `registrySlots={[{ id: 'hero_cta', authored: ['action', 'social'], forms: false }]}`.
+
+  - **`authored`**: the `variants` keys of a hybrid (`<Adaptive variants={…}>{original}</Adaptive>`). Before this, AdaptiveRoot sent no authored keys for a hybrid. The SSR decide could then draw only the original or a generated version, so the hand-written versions appeared only after the browser had decided, which meant a swap after first paint.
+  - **`forms`**: whether the `<Adaptive>` has an `onFormSubmit`. Default `true`, the same as `registrySlotIds`.
+
+  Ids in `registrySlots` are decided together with `registrySlotIds`, each id once. `loadAdaptiveDecision` also forwards a new `renderCaps` option to `preloadDecisions`.
+
+  The testing helpers `mockSentient` (Playwright) and `mockSentientCypress` now apply `scenario.slotConfig`, as `renderWithSentient` already did. Without it, forcing a hybrid's `authored.<key>` arm rendered the original.
+
+  A hybrid `<Adaptive>` (with `variants` and children) now honours `?sentient_variant=`, the devtools variant switch, and `variants:` test scenarios.
+  - **Forced key:** a `variants` key renders that version (`authored.<key>`). `baseline` renders your original. Any other key renders the original too.
+  - **Recording:** a forced preview records nothing (no exposure, no goal, no agent data) and asks the server for nothing. This matches `useAdaptiveGoal`, which already recorded nothing while an override was set.
+  - **Before:** a hybrid ignored these overrides and kept serving, and crediting, the decided version.
+  - **Moved variants-only components:** with an unknown key they now show their first version as the same silent preview.
+
+- 451fe0b: A variants-only `<Adaptive>` follows its component when the operator moves it to the shared track (Components → Migrate). It renders through the slot path: your variant keys are the versions, the first key is the original, and dashboard and AI versions can join them. Before this, an upgraded page kept asking for the frozen variants experiment, and nothing it showed was learned from.
+
+  How the page finds out:
+  - Client-side, `/v1/assign` answers with the unified cap.
+  - Server-side, `loadAdaptiveAssignments` / `loadAdaptiveDecision` return the moved ids as `unified`. `<AdaptiveRoot>` passes them to the new `initialUnified` provider prop. When the SSR decide also decides the component on the shared track (it has been registered), the server HTML already shows the version this visitor gets, and the browser doesn't ask again.
+  - AdaptiveRoot's agent JSON-LD keeps a moved component, with the version decided for that visitor.
+  - `?sentient_variant=` and `__sentient_overrides` still force one of its variants.
+
+  An assignment cached before the move is ignored. Nothing changes until the operator migrates.
+
+  `useAdaptive` has no shared-track path yet. For a moved component it keeps the frozen result and warns once in development.
+
+- 451fe0b: `<Adaptive>` on the slot path (children, with or without `variants`) now supports `funnel`, `microSignalGoals`, `agentData`, `agentDataByVariant` and `clientOnly`, with the same meaning as on a variants-only `<Adaptive>`. They were silently ignored on a hybrid (a dev-build warning only). `agentDataByVariant` is keyed by the authored key for a hand-written arm and by arm id for a generated one. When `agentDataByVariant` is given it alone decides (an arm missing from it sends nothing, as on a variants-only component); `agentData` alone covers every served arm. Core adds `reportAgentData` to send the served arm's agent data.
+- 451fe0b: `@sentientui/react/server` now also exports `trackServerGoal` (record a conversion from your server) next to `readSessionCookie`.
+
+### Patch Changes
+
+- 451fe0b: `<Adaptive>` declares `ops: false`, so it is never served a script-tag component's ops-only version (it would render the original while a trial is booked).
+- Updated dependencies [451fe0b]
+- Updated dependencies [451fe0b]
+- Updated dependencies [451fe0b]
+- Updated dependencies [451fe0b]
+- Updated dependencies [451fe0b]
+  - @sentientui/core@0.39.0
+
 ## 0.39.1
 
 ### Patch Changes

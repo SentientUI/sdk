@@ -150,7 +150,18 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // +64 (2026-10-09, operator-approved): the opt-in `stageAttributes` theme
     // attribute (plan 5.4) — the post-decide write, the coarsened snapshot
     // field and the pre-paint fallback's stage line. Measured 17725.
-    limit: 16 * 1024 + 1280 + 64,
+    //
+    // +720 (2026-10-22, one-component-model branch; ruling C22): rebaselined
+    // to the measured size plus ~2% headroom. What grew it, all on the serving
+    // path: `urlMatches`/`normalizeUrlPattern` (server url goals share the
+    // matcher with the snippet), `RenderCaps.ops` (a React page declares it
+    // cannot apply ops, so it is never drawn an ops-only version it would
+    // book and not show), slot-path prop parity (`reportAgentData`), and the
+    // unified caps/routing — `assign(…, { unified })`, the never-cached
+    // `unified` answer, `initialUnified`/`isUnified` and the cache gate that
+    // stops a moved component settling on a pre-move assignment. Measured
+    // 18088 against 17728.
+    limit: 16 * 1024 + 1280 + 64 + 720,
   },
   {
     name: '@sentientui/core/graph (with shared chunks)',
@@ -215,7 +226,12 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     //
     // +96 (2026-10-09, operator-approved): the same `stageAttributes` code as
     // the lean entry above. Measured 22620.
-    limit: 17 * 1024 + 3584 + 1280 + 256 + 96,
+    //
+    // +800 (2026-10-22, ruling C22): the same shared-chunk growth as the lean
+    // entry above (urlMatches/normalizeUrlPattern, RenderCaps.ops, slot-path
+    // agent data, the unified caps/routing), measured size plus ~2%. Measured
+    // 22958 against 22624.
+    limit: 17 * 1024 + 3584 + 1280 + 256 + 96 + 800,
   },
 ];
 

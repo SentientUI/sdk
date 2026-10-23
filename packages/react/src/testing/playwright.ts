@@ -6,6 +6,7 @@ type InitData = {
   overrides: Record<string, string>;
   layout: string[] | null;
   slots: Record<string, string | Record<string, string>> | null;
+  slotConfig: Record<string, unknown> | null;
   persona: string | null;
   confidence: number;
 };
@@ -39,6 +40,7 @@ export async function mockSentient(
     overrides: scenario.variants ?? {},
     layout: scenario.layout ?? null,
     slots: scenario.slots ?? null,
+    slotConfig: scenario.slotConfig ?? null,
     persona: scenario.persona ?? null,
     confidence: scenario.confidence ?? 1,
   };
@@ -47,6 +49,11 @@ export async function mockSentient(
     w.__sentient_overrides = data.overrides;
     if (data.layout) w.__sentient_layout_override = data.layout;
     if (data.slots) w.__sentient_slot_overrides = data.slots;
+    // A forced registry arm (an <Adaptive id>) needs its config as well as its
+    // arm id. Without the config, the SDK resolved nothing, so forcing a
+    // hybrid's `authored.<key>` rendered the original. applyScenario already
+    // set this.
+    if (data.slotConfig) w.__sentient_slot_config_overrides = data.slotConfig;
     if (data.persona) {
       w.__sentient_persona_override = { persona: data.persona, confidence: data.confidence };
       try {

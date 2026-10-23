@@ -77,6 +77,19 @@ afterEach(() => {
   delete window.__sentient_overrides;
 });
 
+// Ruling C20: useAdaptive has no slot path, so on a moved component it keeps
+// the frozen result and learns nothing. That must be said, not silent.
+describe('useAdaptive on a moved (unified) component', () => {
+  it('warns once in dev', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockedInit.mockReturnValue(makeClient({ isUnified: vi.fn((id: string) => id === 'moved-box') }) as never);
+    const { rerender } = render(createElement(BuyBox, { id: 'moved-box' }), { wrapper });
+    rerender(createElement(BuyBox, { id: 'moved-box' }));
+    await waitFor(() => expect(warn.mock.calls.filter((c) => String(c[0]).includes('moved to the shared track'))).toHaveLength(1));
+    warn.mockRestore();
+  });
+});
+
 describe('useAdaptive â€” dev override suppresses tracking', () => {
   it('wires no exposure, goal, or micro-signal tracking while a variant is forced', () => {
     window.__sentient_overrides = { 'buy-box': 'urgent' };

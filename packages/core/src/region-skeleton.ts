@@ -50,6 +50,7 @@ export type RenderCaps = {
   compose: boolean;     // phase 2; always false in phase 1
   authored?: string[];  // phase 3
   content?: boolean;    // false = a content arm cannot land (0 or >1 text leaves). Omitted = true.
+  ops?: boolean;        // false = cannot apply ops (React). Omitted = true.
   children?: boolean;   // phase 3: false = no children to render, the first authored key is the baseline. Omitted = true.
 };
 /** How the server serves an `edits` arm (SlotConfigEntry.edits). */

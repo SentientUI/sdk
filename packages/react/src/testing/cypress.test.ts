@@ -27,4 +27,22 @@ describe('mockSentientCypress', () => {
     expect(replied!.statusCode).toBe(200);
     expect((replied!.body as { layoutOrder: string[] }).layoutOrder).toEqual(['a', 'b']);
   });
+
+  it('forces a registry slot config with its arm, so a hybrid <Adaptive> version can be forced', () => {
+    // Same gap as mockSentient: `slotConfig` was dropped, so a forced
+    // `authored.<key>` resolved nothing and the original rendered.
+    let winCb: ((win: Record<string, unknown>) => void) | undefined;
+    const cy = {
+      on: (event: string, cb: (win: Record<string, unknown>) => void) => { if (event === 'window:before:load') winCb = cb; },
+      intercept: () => undefined,
+    };
+    mockSentientCypress(cy as never, {
+      slots: { hero_cta: 'authored.social' },
+      slotConfig: { hero_cta: { kind: 'arms' } },
+    });
+    const win: Record<string, unknown> = {};
+    winCb!(win);
+    expect(win.__sentient_slot_overrides).toEqual({ hero_cta: 'authored.social' });
+    expect(win.__sentient_slot_config_overrides).toEqual({ hero_cta: { kind: 'arms' } });
+  });
 });

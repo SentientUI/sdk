@@ -150,6 +150,21 @@ describe('AdaptiveRoot (Server Component)', () => {
     expect(clientEl(el as never).props.ssrSessionId).toBe('sess-2');
   });
 
+  // Ruling C20: an SSR-declared component the operator moved to the shared
+  // track comes back unassigned and listed; the client must be told, or the
+  // page renders it on the frozen variant path for every visitor.
+  it('forwards the ids the SSR decide/assign found moved as initialUnified', async () => {
+    mockedDecision.mockResolvedValueOnce({
+      layoutOrder: ['hero'], assignments: {}, slots: {}, persona: 'unknown', confidence: 0, sessionId: 'sess-u', unified: ['hero_cta'],
+    } as never);
+    const viaDecide = await AdaptiveRoot(baseProps({ sections: ['hero'], appOrigin: 'https://shop.example.com' }));
+    expect(clientEl(viaDecide as never).props.initialUnified).toEqual(['hero_cta']);
+
+    mockedAssign.mockResolvedValueOnce({ assignments: {}, sessionId: 'sess-v', unified: ['hero_cta'] } as never);
+    const viaAssign = await AdaptiveRoot(baseProps({ appOrigin: 'https://shop.example.com' }));
+    expect(clientEl(viaAssign as never).props.initialUnified).toEqual(['hero_cta']);
+  });
+
   it('threads the default API base URL into the SSR decide/assign calls', async () => {
     await AdaptiveRoot(baseProps({ sections: ['hero'], appOrigin: 'https://shop.example.com' }));
     expect(mockedDecision.mock.calls[0]![0]).toMatchObject({ baseUrl: 'https://api.sentient-ui.com/v1' });
@@ -244,6 +259,27 @@ describe('AdaptiveRoot (Server Component)', () => {
     expect(body).toContain('Pricing — Acme');
     // The client provider is still rendered alongside it.
     expect(childrenOf(el as never).some((c) => (c as { type?: unknown }).type === AdaptiveRootClient)).toBe(true);
+  });
+
+  // Ruling C24 (Minor 1): a moved component is handed back unassigned, so the
+  // JSON-LD built from assignments dropped it. It lists its decided arm, or the
+  // control (first variant key) when the SSR decide did not decide it.
+  it('agent JSON-LD keeps moved components: decided arm, else the control', async () => {
+    const jsonLd = (el: unknown) => (childrenOf(el as never).find(
+      (c) => (c as { type?: unknown }).type === 'script' && (c as unknown as { props: { type?: string } }).props.type === 'application/ld+json',
+    ) as unknown as { props: { dangerouslySetInnerHTML: { __html: string } } }).props.dangerouslySetInnerHTML.__html;
+    mockedDecision.mockResolvedValueOnce({
+      layoutOrder: ['hero'], assignments: {}, slots: { hero_cta: 'authored.accent' }, persona: 'unknown', confidence: 0, sessionId: 's', unified: ['hero_cta'],
+    } as never);
+    const decided = await AdaptiveRoot(baseProps({ sections: ['hero'], appOrigin: 'https://shop.example.com', agentFeed: { path: '/' } }));
+    expect(jsonLd(decided)).toContain('hero_cta');
+    expect(jsonLd(decided)).toContain('authored.accent');
+
+    mockedDecision.mockResolvedValueOnce({
+      layoutOrder: ['hero'], assignments: {}, slots: {}, persona: 'unknown', confidence: 0, sessionId: 's', unified: ['hero_cta'],
+    } as never);
+    const undecided = await AdaptiveRoot(baseProps({ sections: ['hero'], appOrigin: 'https://shop.example.com', agentFeed: { path: '/' } }));
+    expect(jsonLd(undecided)).toContain('authored.default');
   });
 
   it('does not inject an agent block when agentFeed is absent (returns the client directly)', async () => {
@@ -370,6 +406,58 @@ describe('AdaptiveRoot — persona script + slots (adaptive ladder)', () => {
     // The site styles served Redesign trees borrow must reach the page, or an
     // SSR site renders a redesign with no site classes (Bodyshop, 2026-09-24).
     expect(client.props.initialVocabulary).toMatchObject({ rev: 'r1', entries: [{ id: 'button-primary', classes: 'btn btn-blue' }] });
+  });
+
+  it('declares a hybrid registry slot with its authored keys, so SSR can draw them', async () => {
+    // AdaptiveRoot never sent renderCaps, so an SSR'd hybrid
+    // (<Adaptive variants>{children}</Adaptive>) was decided with the default
+    // caps — no `authored` — and the server could only draw the original or a
+    // generated version there. The hand-written versions then appeared only on
+    // pages the client decided, i.e. after a first-paint swap.
+    await AdaptiveRoot(baseProps({
+      components: [],
+      sections: ['demo', 'faq'],
+      registrySlotIds: ['pricing-cta'],
+      registrySlots: [{ id: 'hero_cta_v4', authored: ['action', 'social'], forms: false }],
+      appOrigin: 'https://x.com',
+    }));
+    expect(mockedDecision).toHaveBeenCalledOnce();
+    const args = mockedDecision.mock.calls[0]![0] as Record<string, unknown>;
+    expect(args.slotsFrom).toBe('registry');
+    expect(args.registrySlotIds).toEqual(['pricing-cta', 'hero_cta_v4']);
+    expect(args.renderCaps).toEqual({
+      // Same caps the mounted AdaptiveSlot sends for this hybrid (minus the
+      // fingerprint, which needs a DOM): children: true — the original is a
+      // real arm, so the server keeps drawing `baseline` next to authored.*.
+      hero_cta_v4: { forms: false, compose: true, ops: false, authored: ['action', 'social'], children: true },
+    });
+  });
+
+  it('a registrySlots entry alone switches on registry mode, deduped against registrySlotIds', async () => {
+    await AdaptiveRoot(baseProps({
+      components: [],
+      registrySlotIds: ['hero_cta_v4'],
+      registrySlots: [{ id: 'hero_cta_v4', authored: ['action'] }],
+      appOrigin: 'https://x.com',
+    }));
+    const args = mockedDecision.mock.calls[0]![0] as Record<string, unknown>;
+    expect(args.registrySlotIds).toEqual(['hero_cta_v4']);
+    // forms defaults to true, as it does for a bare registrySlotIds entry.
+    expect(args.renderCaps).toEqual({
+      hero_cta_v4: { forms: true, compose: true, ops: false, authored: ['action'], children: true },
+    });
+
+    vi.clearAllMocks();
+    await AdaptiveRoot(baseProps({ components: [], registrySlots: [{ id: 'banner' }], appOrigin: 'https://x.com' }));
+    const solo = mockedDecision.mock.calls[0]![0] as Record<string, unknown>;
+    expect(solo).toMatchObject({ slotsFrom: 'registry', registrySlotIds: ['banner'] });
+    // No authored keys: a plain registry slot, so no `authored`/`children` caps.
+    expect(solo.renderCaps).toEqual({ banner: { forms: true, compose: true, ops: false } });
+  });
+
+  it('sends no renderCaps when only registrySlotIds are declared (core default applies)', async () => {
+    await AdaptiveRoot(baseProps({ registrySlotIds: ['hero-headline'], appOrigin: 'https://x.com' }));
+    expect(mockedDecision.mock.calls[0]![0]).not.toHaveProperty('renderCaps');
   });
 
   it('never sends slotsFrom: registry without ids (an unscoped decide trials every published slot)', async () => {

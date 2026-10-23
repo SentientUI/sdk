@@ -45,8 +45,9 @@ export function createPreviewClient(inner: SentientClient): SentientClient {
     identify: () => undefined,
     fetchWeights: () => Promise.resolve([]),
     getAssignment: (componentId, segment) => inner.getAssignment(componentId, segment),
-    assign: (componentId, variantIds, agentData, agentDataByVariant) =>
-      inner.assign(componentId, variantIds, agentData, agentDataByVariant),
+    isUnified: (componentId) => inner.isUnified?.(componentId) ?? false,
+    assign: (componentId, variantIds, agentData, agentDataByVariant, opts) =>
+      inner.assign(componentId, variantIds, agentData, agentDataByVariant, opts),
     // Reads pass through; decide is a write (slot decisions persist server-side)
     // so preview mode never issues it.
     decide: () => Promise.resolve(null),

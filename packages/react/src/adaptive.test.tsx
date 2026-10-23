@@ -1,6 +1,7 @@
 import { render, fireEvent, waitFor } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 import { createElement, useState, type ReactNode } from 'react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AdaptiveProvider } from './provider.js';
 import { Adaptive } from './adaptive.js';
 import { subscribeRegistry } from './devtools-registry.js';
@@ -13,6 +14,8 @@ vi.mock('@sentientui/core', () => ({
   reveal: vi.fn(),
   init: vi.fn(),
   attachMicroSignalDetectors: vi.fn(() => () => undefined),
+  // A served slot arm (the unified-routing tests) resolves through it.
+  armOfResult: (r: unknown) => (typeof r === 'string' ? r : ''),
 }));
 vi.mock('@sentientui/core/engagement', () => ({ startEngagementCapture: vi.fn() }));
 vi.mock('./segment.js', () => ({ detectSegment: () => 'desktop:direct' }));
@@ -380,6 +383,8 @@ describe('Adaptive â€” agentData prop', () => {
       expect.any(Array),
       { headline: 'Ship faster', cta: 'Try free' },
       undefined,
+      // <Adaptive variants> can follow a migrated id onto the slot path.
+      { unified: true },
     );
   });
 
@@ -406,6 +411,7 @@ describe('Adaptive â€” agentData prop', () => {
       expect.any(Array),
       undefined,
       undefined,
+      { unified: true },
     );
   });
 });
@@ -844,16 +850,246 @@ describe('<Adaptive> hybrid routing', () => {
     expect(requestSlots).not.toHaveBeenCalled();
   });
 
-  it('warns once that variants-only props are ignored on a hybrid', () => {
+  it('variants-only props carry over to a hybrid instead of being ignored (no warning)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as never);
     render(
       <Adaptive id="h2" goal="cta" funnel="checkout" variants={{ q: <b>q</b> }}>
         <b>base</b>
       </Adaptive>,
       { wrapper },
     );
-    expect(warn.mock.calls.some((c) => String(c[0]).includes('funnel'))).toBe(true);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('are ignored here'))).toBe(false);
+    const decl = client.track.mock.calls.filter(([e]) => (e as { eventType: string }).eventType === 'funnel_declared');
+    expect(decl).toHaveLength(1);
     warn.mockRestore();
+  });
+});
+
+// One component model (ruling C1): a variants-only <Adaptive> whose id the
+// operator migrated learns it from /v1/assign (`unified: true`, answered only
+// to a request that says it can follow) and moves onto the slot path with its
+// variant keys as the authored keys and NO children — the first key is the
+// control. Before this an upgraded page kept serving the frozen variant
+// experiment and nothing it showed was ever learned from.
+describe('<Adaptive> variants-only on a migrated (unified) id', () => {
+  it('asks assign with the unified cap, then renders through the slot path with the first key as baseline', async () => {
+    const requestSlots = vi.fn();
+    const client = makeClient({
+      getAssignment: vi.fn().mockReturnValue(null),
+      assign: vi.fn().mockResolvedValue({ variantId: 'a', assignmentTtlMs: 0, unified: true }),
+      requestSlots,
+      onSlotsChanged: vi.fn(() => () => undefined),
+    });
+    mockedInit.mockReturnValue(client as never);
+    const { findByText, container } = render(
+      <Adaptive id="hero" goal="cta" variants={{ a: <b>Version A</b>, b: <b>Version B</b> }} />,
+      { wrapper },
+    );
+    await waitFor(() => expect(requestSlots).toHaveBeenCalled());
+    expect(client.assign).toHaveBeenCalledWith('hero', ['a', 'b'], undefined, undefined, { unified: true });
+    const extras = requestSlots.mock.calls[0]![2] as { render: Record<string, { authored?: string[]; children?: boolean }> };
+    expect(extras.render.hero).toMatchObject({ authored: ['a', 'b'], children: false });
+    // Undecided: the first key (the control) is what shows, on the slot wrapper.
+    expect(await findByText('Version A')).toBeTruthy();
+    expect(container.querySelector('[data-sentient-slot="hero"]')).not.toBeNull();
+    // The variant path never exposed anything: an exposure under the bare key
+    // would be a variant trial on a frozen ledger.
+    const exposures = client.track.mock.calls.filter(([e]) => (e as { eventType: string }).eventType === 'variant_assigned');
+    expect(exposures).toHaveLength(0);
+  });
+
+  it('a served authored arm renders that key', async () => {
+    // Stable references: useSyncExternalStore re-renders on every new snapshot.
+    const config = { kind: 'arms' };
+    const client = makeClient({
+      getAssignment: vi.fn().mockReturnValue(null),
+      assign: vi.fn().mockResolvedValue({ variantId: 'a', assignmentTtlMs: 0, unified: true }),
+      requestSlots: vi.fn(),
+      onSlotsChanged: vi.fn(() => () => undefined),
+      getSlotConfig: vi.fn((id: string) => (id === 'hero' ? config : null)),
+      getSlotResult: vi.fn((id: string) => (id === 'hero' ? 'authored.b' : null)),
+    });
+    mockedInit.mockReturnValue(client as never);
+    const { findByText } = render(
+      <Adaptive id="hero" goal="cta" variants={{ a: <b>Version A</b>, b: <b>Version B</b> }} />,
+      { wrapper },
+    );
+    expect(await findByText('Version B')).toBeTruthy();
+  });
+
+  it('an id that is not migrated stays on the variant path (the cap changes nothing)', async () => {
+    const requestSlots = vi.fn();
+    const client = makeClient({
+      getAssignment: vi.fn().mockReturnValue(null),
+      assign: vi.fn().mockResolvedValue({ variantId: 'b', assignmentTtlMs: 0 }),
+      requestSlots,
+    });
+    mockedInit.mockReturnValue(client as never);
+    const { findByText } = render(
+      <Adaptive id="pricing" goal="cta" variants={{ a: <b>Version A</b>, b: <b>Version B</b> }} />,
+      { wrapper },
+    );
+    expect(await findByText('Version B')).toBeTruthy();
+    expect(client.assign).toHaveBeenCalledWith('pricing', ['a', 'b'], undefined, undefined, { unified: true });
+    expect(requestSlots).not.toHaveBeenCalled();
+  });
+});
+
+// Ruling C20: a component an SSR preload found moved (AdaptiveRoot
+// `components`, the hero) renders on the slot path from the server HTML on,
+// and a cached pre-move assignment never puts it back on the variant path.
+describe('<Adaptive> variants-only, known moved before mount', () => {
+  it('SSR: an id in initialUnified renders the slot wrapper with the first key, server and client alike', () => {
+    const el = (
+      <AdaptiveProvider apiKey="pk_test_key_1234" consent enableGraph={false} initialUnified={['hero']}>
+        <Adaptive id="hero" goal="cta" variants={{ a: <b>Version A</b>, b: <b>Version B</b> }} />
+      </AdaptiveProvider>
+    );
+    const html = renderToString(el);
+    expect(html).toContain('data-sentient-slot="hero"');
+    expect(html).toContain('Version A');
+    expect(html).not.toContain('data-sentient-variant');
+  });
+
+  // Ruling C24: the SSR decide decides the moved component as a slot in the
+  // same request, so the server HTML already shows its arm (no LCP swap) and
+  // the client, holding this session's answer, never asks again.
+  it('SSR: a decided moved component renders its decided arm in the server HTML, and the client never re-decides it', async () => {
+    const ssrProps = {
+      apiKey: 'pk_test_key_1234', consent: true, enableGraph: false,
+      initialUnified: ['hero'],
+      initialSlots: { hero: 'authored.b' },
+      initialSlotConfig: { hero: { kind: 'arms' as const } },
+    };
+    const tree = <Adaptive id="hero" goal="cta" variants={{ a: <b>Version A</b>, b: <b>Version B</b> }} />;
+    const html = renderToString(<AdaptiveProvider {...ssrProps}>{tree}</AdaptiveProvider>);
+    expect(html).toContain('Version B');
+    expect(html).not.toContain('Version A');
+    expect(html).toContain('data-sentient-arm="authored.b"');
+
+    const requestSlots = vi.fn();
+    const client = makeClient({ getAssignment: vi.fn().mockReturnValue(null), requestSlots, onSlotsChanged: vi.fn(() => () => undefined) });
+    mockedInit.mockReturnValue(client as never);
+    const { findByText } = render(<AdaptiveProvider {...ssrProps}>{tree}</AdaptiveProvider>);
+    expect(await findByText('Version B')).toBeTruthy();
+    await waitFor(() => expect(client.track.mock.calls.some(([e]) => (e as { eventType: string }).eventType === 'variant_assigned')).toBe(true));
+    expect(requestSlots).not.toHaveBeenCalled();
+    expect(client.assign).not.toHaveBeenCalled();
+  });
+
+  // Ruling C24 (Minor 7): tests and devtools force a variant with
+  // ?sentient_variant= / __sentient_overrides. On a moved component that is
+  // its authored arm — rendered, recorded nowhere, and never decided.
+  it('a variant dev override still forces the version on a moved component, and records nothing', async () => {
+    window.__sentient_overrides = { hero: 'b' };
+    try {
+      const requestSlots = vi.fn();
+      const client = makeClient({ getAssignment: vi.fn().mockReturnValue(null), requestSlots, onSlotsChanged: vi.fn(() => () => undefined) });
+      mockedInit.mockReturnValue(client as never);
+      const { findByText, container } = render(
+        <AdaptiveProvider apiKey="pk_test_key_1234" consent enableGraph={false} initialUnified={['hero']}>
+          <Adaptive id="hero" goal="cta" variants={{ a: <b>Version A</b>, b: <b>Version B</b> }} />
+        </AdaptiveProvider>,
+      );
+      expect(await findByText('Version B')).toBeTruthy();
+      expect(container.querySelector('[data-sentient-arm="authored.b"]')).not.toBeNull();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(requestSlots).not.toHaveBeenCalled();
+      expect(client.track.mock.calls.filter(([e]) => (e as { eventType: string }).eventType === 'variant_assigned')).toHaveLength(0);
+    } finally {
+      delete window.__sentient_overrides;
+    }
+  });
+
+  // Ruling C27 (I1): a hybrid (variants + children, e.g. the sentient-ui.com
+  // hero) ignored every variant dev override — only the moved variants-only
+  // path above read it — so `?sentient_variant=hero_cta_v4:action`, the
+  // devtools switch and `variants:` scenarios silently showed the decided arm,
+  // while useAdaptiveGoal (which DOES read the override) dropped the
+  // component's goals. Preview and recording disagreed.
+  describe('hybrid <Adaptive> answers the variant dev override (C27)', () => {
+    const hybrid = (
+      <Adaptive id="hero_cta_v4" goal="cta" variants={{ action: <b>Start free — no card</b>, social: <b>Create your free account</b> }}>
+        <b>Start free</b>
+      </Adaptive>
+    );
+    function renderHybrid() {
+      const requestSlots = vi.fn();
+      const client = makeClient({ getAssignment: vi.fn().mockReturnValue(null), requestSlots, onSlotsChanged: vi.fn(() => () => undefined) });
+      mockedInit.mockReturnValue(client as never);
+      const utils = render(
+        <AdaptiveProvider apiKey="pk_test_key_1234" consent enableGraph={false}>
+          {hybrid}
+        </AdaptiveProvider>,
+      );
+      return { ...utils, client, requestSlots };
+    }
+    async function expectSilent(client: ReturnType<typeof makeClient>, requestSlots: ReturnType<typeof vi.fn>, container: HTMLElement) {
+      await new Promise((r) => setTimeout(r, 20));
+      // A preview: never decided, never exposed, never credited.
+      expect(requestSlots).not.toHaveBeenCalled();
+      expect(client.track).not.toHaveBeenCalled();
+      fireEvent.click(container.querySelector('b')!);
+      expect(client.componentGoal).not.toHaveBeenCalled();
+      expect(client.goal).not.toHaveBeenCalled();
+    }
+    afterEach(() => {
+      delete window.__sentient_overrides;
+      window.history.replaceState(null, '', '/');
+    });
+
+    it('forces a hand-written version: hero_cta_v4:action → authored.action', async () => {
+      window.__sentient_overrides = { hero_cta_v4: 'action' };
+      const { findByText, container, client, requestSlots } = renderHybrid();
+      expect(await findByText('Start free — no card')).toBeTruthy();
+      expect(container.querySelector('[data-sentient-arm="authored.action"]')).not.toBeNull();
+      await expectSilent(client, requestSlots, container);
+    });
+
+    it('forces the original with `baseline` (via ?sentient_variant=)', async () => {
+      window.history.replaceState(null, '', '/?sentient_variant=hero_cta_v4:baseline');
+      const { findByText, container, client, requestSlots } = renderHybrid();
+      expect(await findByText('Start free')).toBeTruthy();
+      expect(container.querySelector('[data-sentient-arm="baseline"]')).not.toBeNull();
+      await expectSilent(client, requestSlots, container);
+    });
+
+    it('an unknown key previews the original and records nothing — as useAdaptiveGoal does', async () => {
+      // A stale `default` (the hero's pre-hybrid control) still counts as "an
+      // override is active" to useAdaptiveGoal, which then records nothing; the
+      // slot must not go on deciding and crediting behind a preview.
+      window.__sentient_overrides = { hero_cta_v4: 'default' };
+      const { findByText, container, client, requestSlots } = renderHybrid();
+      expect(await findByText('Start free')).toBeTruthy();
+      expect(container.querySelector('[data-sentient-arm="baseline"]')).not.toBeNull();
+      await expectSilent(client, requestSlots, container);
+    });
+  });
+
+  it('a stale cached pre-move assignment is ignored: no assign, no variant exposure, the slot is requested', async () => {
+    const requestSlots = vi.fn();
+    const client = makeClient({
+      // The pre-move cache still holds 'b' — it must not be what renders.
+      getAssignment: vi.fn().mockReturnValue({ variantId: 'b', assignedAt: Date.now(), segment: 'desktop:direct', confidence: 1 }),
+      isUnified: vi.fn((id: string) => id === 'hero'),
+      requestSlots,
+      onSlotsChanged: vi.fn(() => () => undefined),
+    });
+    mockedInit.mockReturnValue(client as never);
+    const { findByText, queryByText } = render(
+      <Adaptive id="hero" goal="cta" variants={{ a: <b>Version A</b>, b: <b>Version B</b> }} />,
+      { wrapper },
+    );
+    expect(await findByText('Version A')).toBeTruthy();
+    await waitFor(() => expect(requestSlots).toHaveBeenCalled());
+    expect(queryByText('Version B')).toBeNull();
+    expect(client.assign).not.toHaveBeenCalled();
+    const exposures = client.track.mock.calls.filter(([e]) => (e as { eventType: string }).eventType === 'variant_assigned');
+    expect(exposures).toHaveLength(0);
+    const extras = requestSlots.mock.calls[0]![2] as { render: Record<string, { authored?: string[]; children?: boolean }> };
+    expect(extras.render.hero).toMatchObject({ authored: ['a', 'b'], children: false });
   });
 });
 

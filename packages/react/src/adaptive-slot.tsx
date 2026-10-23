@@ -1,6 +1,7 @@
 'use client';
-import { useEffect, useMemo, useRef, type JSX, type ReactNode, type Ref } from 'react';
-import { containsFormBlock, reveal, type RenderCaps, type SkeletonReport } from '@sentientui/core';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX, type ReactNode, type Ref } from 'react';
+import { attachMicroSignalDetectors, containsFormBlock, reveal, type RenderCaps, type SkeletonReport } from '@sentientui/core';
+import type { MicroSignalGoals } from './use-variant-component.js';
 import { captureRegionSkeleton } from '@sentientui/core/region';
 import { useAdaptiveApiKey, useSentient } from './provider.js';
 import { useSlotConfig } from './use-slot-config.js';
@@ -11,6 +12,7 @@ import {
   goalLabelOf,
   goalValueOf,
   isDevBuild,
+  maybeDeclareFunnel,
   normalizeGoal,
   trackExposure,
   type AdaptiveElement,
@@ -18,6 +20,8 @@ import {
 } from './adaptive-shared.js';
 import { registerSlot } from './devtools-registry.js';
 import { submitRegionRefresh, takeRegionRefresh } from './cell-preview.js';
+import { subscribeOverridesChanged } from './override-events.js';
+import { getDevOverride } from './dev-override.js';
 
 // Warn once per slot id per page lifetime, not per render.
 const warnedFormSlots = new Set<string>();
@@ -46,6 +50,29 @@ export type AdaptiveSlotProps = {
    *  replace. Set false for a slot wrapping personalized or account content —
    *  the text of THIS region is all that is ever read, never the page. */
   reportBaselineText?: boolean;
+  /** Funnel this component serves (stable funnel id). Same meaning as on a
+   *  variants-only `<Adaptive>`: declares membership (and, for a
+   *  weighted_composite goal, the funnel's steps) once per page load. */
+  funnel?: string;
+  /** Also record a named goal when a passive micro-signal fires here (e.g.
+   *  rage_click → 'confused_by_hero'). Recorded only for a served arm, and
+   *  credited to the component like `goal`. */
+  microSignalGoals?: MicroSignalGoals;
+  /** Render nothing during SSR and before client hydration. */
+  clientOnly?: boolean;
+  /** Per-arm structured data for AI agents, keyed by the authored key for a
+   *  hand-written arm and by arm id for a generated one. Only the served arm's
+   *  entry is sent. Captured at MOUNT, like on a variants-only `<Adaptive>`. */
+  agentDataByVariant?: Record<string, unknown>;
+  /** @deprecated Use agentDataByVariant. Sent for any served arm that has no
+   *  entry of its own. Captured at MOUNT. */
+  agentData?: unknown;
+  /** @internal Set by `<Adaptive variants>` (no children) once the server says
+   *  its id was migrated onto the shared track. `children` is then the FIRST
+   *  variant, not an original: the page tells decide it has no children, so
+   *  the first authored key is the control and the 'baseline' arm — which
+   *  would render that same first variant under another id — is never drawn. */
+  variantsOnly?: boolean;
 };
 
 /**
@@ -70,10 +97,23 @@ export function AdaptiveSlot({
   className,
   as: Tag = 'div',
   reportBaselineText = true,
-}: AdaptiveSlotProps): JSX.Element {
+  funnel,
+  microSignalGoals,
+  clientOnly,
+  agentDataByVariant,
+  agentData,
+  variantsOnly = false,
+}: AdaptiveSlotProps): JSX.Element | null {
   const client = useSentient();
   const apiKey = useAdaptiveApiKey();
   const nodeRef = useRef<HTMLElement | null>(null);
+  // clientOnly renders nothing in SSR HTML and until a client exists. Every
+  // effect that binds to the wrapper element lists `hidden` in its deps: they
+  // ran once against a null node on the first commit and, without it, never
+  // re-ran when the wrapper appeared — a clientOnly slot with no goal wiring.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  const hidden = clientOnly === true && (!mounted || !client);
   // What this region can render (CONTRACTS §2), from the element tree so it
   // is known before any DOM exists. No reachable text → a fingerprint no real
   // skeleton has: no Rewrite arm can land here, so none may be drawn.
@@ -90,9 +130,13 @@ export function AdaptiveSlot({
       // draw them for this page (CONTRACTS §2).
       compose: true,
       content: countTextLeaves(children) === 1,
-      ...(authoredKey !== '' ? { authored: authoredKey.split('|'), children: true } : {}),
+      // React never applies `ops`. Without this, an <Adaptive id> matching a
+      // script-tag component was drawn its ops version, rendered the original,
+      // and booked a trial for a version nobody saw.
+      ops: false,
+      ...(authoredKey !== '' ? { authored: authoredKey.split('|'), children: !variantsOnly } : {}),
     }),
-    [childFp, children, onFormSubmit, authoredKey],
+    [childFp, children, onFormSubmit, authoredKey, variantsOnly],
   );
   // The region's skeleton, read from the DOM while it shows the developer's
   // children. Tied to the ELEMENT TREE by a parity check: edits are addressed
@@ -119,12 +163,41 @@ export function AdaptiveSlot({
       }
     );
   };
+  // Any <Adaptive> with `variants` answers the variant dev-override channels:
+  // ?sentient_variant=id:key, __sentient_overrides (devtools, the
+  // Playwright/Cypress helpers).
+  // - Moved variants-only components (ruling C24): without this, moving a
+  //   component broke every test that forced one of its variants.
+  // - Hybrids with children (ruling C27): the sentient-ui.com hero ignored
+  //   ?sentient_variant= and kept deciding and crediting. Meanwhile
+  //   useAdaptiveGoal, which does read the override, dropped its goals. The
+  //   preview and the recording disagreed.
+  // How a forced key maps to an arm:
+  // - a `variants` key → `authored.<key>`;
+  // - `baseline` → the original (hybrids only; variants-only has none);
+  // - any other key → the control. An override is still active, so this
+  //   stays a silent preview, as useAdaptiveGoal treats it.
+  // The server snapshot is null, so SSR never reads window (see dev-override.ts).
+  const forcedKey = useSyncExternalStore(
+    subscribeOverridesChanged,
+    () => (variants ? getDevOverride(id) : null),
+    () => null,
+  );
+  const forcedArm = forcedKey === null || !variants
+    ? null
+    : Object.prototype.hasOwnProperty.call(variants, forcedKey)
+      ? `${AUTHORED_PREFIX}${forcedKey}`
+      : variantsOnly
+        ? `${AUTHORED_PREFIX}${Object.keys(variants)[0]}`
+        : 'baseline';
   const { config, arm, palette, vocabulary, source } = useSlotConfig(id, {
+    forcedArm,
     // Only ever read when the slot is unserved — at that moment the wrapper
     // contains exactly the baseline children this slot exists to replace.
     baselineText: reportBaselineText ? () => nodeRef.current?.textContent ?? null : undefined,
     render: () => caps,
     skeleton: captureSkeleton,
+    defer: hidden,
   });
 
   const tree = arm !== '' ? config?.blocks?.[arm] : undefined;
@@ -231,7 +304,7 @@ export function AdaptiveSlot({
       [id]: [{ key: authoredOnScreen, ...(text ? { text } : {}), ...(sk ? { skeleton: sk } : {}) }],
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authoredOnScreen, client, id]);
+  }, [authoredOnScreen, client, id, hidden]);
 
   // A served Rewrite arm this page couldn't apply. The decide normally
   // excludes it up front (the page sends its fingerprint), so this fires for
@@ -256,7 +329,7 @@ export function AdaptiveSlot({
     const sk = captureSkeleton();
     if (sk) client?.reportSkeleton?.(id, sk);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config?.needsSkeleton, showsChildren, id, client]);
+  }, [config?.needsSkeleton, showsChildren, id, client, hidden]);
 
   // "Refresh from page" (operator, editor-token link): the trusted overwrite.
   // The preview module forced the original on screen; capture it here, where
@@ -268,7 +341,7 @@ export function AdaptiveSlot({
     const sk = captureSkeleton();
     submitRegionRefresh(r, sk && 'status' in sk ? { status: sk.status } : { skeleton: sk });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, showsChildren]);
+  }, [id, showsChildren, hidden]);
 
   useEffect(() => {
     if (!textBlocked || !isDevBuild() || warnedOpaqueSlots.has(id)) return;
@@ -374,7 +447,87 @@ export function AdaptiveSlot({
       label,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, id, goalKey, arm, source, armBlocked, armCreditable, goalArm]);
+  }, [client, id, goalKey, arm, source, armBlocked, armCreditable, goalArm, hidden]);
+
+  // Funnel membership — the declaration is about the COMPONENT, not an arm, so
+  // it needs no served arm (an unpublished component still belongs to its
+  // funnel); a forced preview must not declare anything, as on the variants
+  // path. Needs a goal: the declaration carries the goal's steps.
+  const goalConfig = useMemo(
+    () => (goal ? normalizeGoal(goal) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [goalKey],
+  );
+  useEffect(() => {
+    if (source === 'override' || !client || !funnel || !goalConfig) return;
+    maybeDeclareFunnel(client, apiKey, id, funnel, goalConfig);
+  }, [client, apiKey, id, funnel, goalConfig, source]);
+
+  // Passive micro-signals → optional named goal. Gated on armCreditable like
+  // the container goal: before an arm is served (or when it never rendered) a
+  // rage-click would record a micro_signal against an arm nobody saw. The
+  // mapping is read through a ref and keyed on its CONTENT — an inline literal
+  // is a new object every render, and re-attaching resets the detectors'
+  // once-per-attach latches (the same bug use-variant-component fixed).
+  const microRef = useRef(microSignalGoals);
+  microRef.current = microSignalGoals;
+  // Latched for the COMPONENT's lifetime, not per attach: an arm change
+  // re-attaches the detectors, and a per-attach latch let one visitor fire the
+  // same mapped goal once per arm (use-variant-component latches per variant
+  // for the same reason it must not double-fire).
+  const microFiredRef = useRef<Set<string>>(new Set());
+  const microKey = microSignalGoals ? JSON.stringify(microSignalGoals) : '';
+  useEffect(() => {
+    if (!client || source === 'override' || !armCreditable || arm === '') return;
+    const node = nodeRef.current;
+    if (!node) return;
+    return attachMicroSignalDetectors(
+      (signalType, extra = {}) => {
+        client.track({
+          projectId: apiKey,
+          componentId: id,
+          variantId: arm,
+          eventType: 'micro_signal',
+          payload: { signalType, ...extra },
+        });
+        const mapping = microRef.current?.[signalType];
+        if (!mapping || microFiredRef.current.has(signalType)) return;
+        microFiredRef.current.add(signalType);
+        const name = typeof mapping === 'string' ? mapping : mapping.name;
+        const weight = typeof mapping === 'string' ? 1.0 : (mapping.weight ?? 1.0);
+        const stepIndex = typeof mapping === 'string' ? 0 : (mapping.stepIndex ?? 0);
+        // Session goal ONLY, as on the variants path. componentGoal on a slot
+        // feeds computeSlotCredit (closeout), so a rage click would reward the
+        // version that was on screen — a scoring bug, not parity.
+        client.goal(name, { metadata: { componentId: id, arm, signalType, ...extra }, weight, stepIndex });
+      },
+      node,
+      Date.now(),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, apiKey, id, arm, source, armCreditable, microKey, hidden]);
+
+  // Agent data for the SERVED arm only (agents see what visitors see). A
+  // hand-written arm is looked up by its authored key — the key the developer
+  // wrote — and any other arm by its id. With agentDataByVariant given it alone decides (an
+  // arm missing from it sends nothing, as /v1/assign); agentData alone is the
+  // shorthand for every served arm.
+  // Read through refs: captured at mount, like the variants path.
+  const agentRef = useRef({ agentData, agentDataByVariant });
+  agentRef.current = { agentData, agentDataByVariant };
+  const agentSentRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!client || source === 'override' || !armCreditable || arm === '') return;
+    if (agentSentRef.current === arm) return;
+    const { agentData: fallback, agentDataByVariant: byArm } = agentRef.current;
+    const lookup = authoredArm ?? arm;
+    // As /v1/assign: when agentDataByVariant is given it ALONE decides; an arm
+    // missing from it sends nothing (agentData is only the no-map shorthand).
+    const data = byArm !== undefined ? (Object.prototype.hasOwnProperty.call(byArm, lookup) ? byArm[lookup] : undefined) : fallback;
+    if (data === undefined) return;
+    agentSentRef.current = arm;
+    client.reportAgentData?.(id, arm, data);
+  }, [client, id, arm, armCreditable, authoredArm, source]);
 
   // The adaptation reveal. Fires only when the ARM CHANGES after mount — an
   // SSR-rendered slot arrives with its arm already in the HTML, so the page was
@@ -398,12 +551,14 @@ export function AdaptiveSlot({
     // not passed either — `dataProps` already stamps `data-sentient-arm`, and
     // writing it twice would let the two drift.
     reveal(node);
-  }, [arm]);
+  }, [arm, hidden]);
 
   const dataProps = useMemo(
     () => ({ 'data-sentient-slot': id, ...(arm !== '' ? { 'data-sentient-arm': arm } : {}) }),
     [id, arm],
   );
+
+  if (hidden) return null;
 
   return (
     <Tag ref={nodeRef as Ref<never>} className={className} {...dataProps}>

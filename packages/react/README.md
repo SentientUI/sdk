@@ -227,6 +227,7 @@ Imported from `@sentientui/react/next`.
 | `components` | `Array<{ id: string; variantIds: string[] }>` *(optional, default `[]`)* | Code-variant components to preload server-side. `id` must match `<Adaptive id="…" variants={…}>`; generated-version `<Adaptive>` regions need no entry. Omit when the tree uses only slots/sections or assigns client-side. |
 | `sections` | `string[]` *(optional)* | Page section IDs in default order. When provided, a single `POST /v1/decide` returns both layout order and assignments; `useLayoutOrder()` becomes available. Give each section's element `data-sentient-id="<sectionId>"` — the only attribute a section needs — so the graph scanner can register it; without it the server types the section `generic` and every persona gets the same order. The provider warns about unresolvable ids in development. |
 | `registrySlotIds` | `string[]` *(optional)* | The generated-mode `<Adaptive id>`s this page renders. Decides their published versions in the same SSR round trip and serializes the served content into the HTML, so first paint shows the version instead of the original children. Scoped to exactly these ids — an unscoped registry decide would record a trial for every published slot on every page. Omit and the regions decide client-side after mount. |
+| `registrySlots` | `{ id: string; authored?: string[]; forms?: boolean }[]` *(optional)* | Like `registrySlotIds`, with what each region can render. For a hybrid `<Adaptive id variants={…}>{original}</Adaptive>`, list its `variants` keys as `authored` so the SSR decide can serve a hand-written version on first paint. Without them, only the original or a generated version can be served on first paint. Set `forms: false` when the `<Adaptive>` has no `onFormSubmit` (default `true`). An id may appear in both props; it is decided once. |
 | `sectionTypes` | `Partial<Record<string, SemanticType>>` *(optional)* | What each section is, keyed by `data-sentient-id`: `{ about: 'trust', contact: 'cta' }`. Sections are classified from their content, so declare only the ones it gets wrong — a band with little signal-bearing copy (an "About us" block, a contact form) reads `generic` and is ordered the same for every persona. Any section with a `data-sentient-id` can appear, reorderable or not. Also accepted by `AdaptiveProvider`. |
 | `apiKey` | `string` | `pk_…` key — used by both the browser SDK and server-side SSR requests. |
 | `slots` | `Array<{ id, dims? \| arms?, baseline? }>` *(optional)* | The `useAdaptiveTokens` / `<AdaptiveGroup>` slots this tree renders. Declaring them decides them in the same SSR round trip, so their values serialize into the server HTML; undeclared ones decide after mount. |
@@ -270,6 +271,7 @@ Accepts the same `apiKey`, `persona`, `consent`, `debug` props as `<AdaptiveRoot
 | `ssrSessionId` | `string` | The `sessionId` field of `loadAdaptiveAssignments`' return value. Required with `initialAssignments` so the browser adopts the same session the server assigned — otherwise exposures and goals attach to a different session than the SSR assignment. |
 | `sessionSegment` | `string` | Segment from SSR (`device:source`). Must match the value used in `loadAdaptiveAssignments`. |
 | `initialLayoutOrder` | `string[] \| null` | Preloaded section order from `loadAdaptiveDecision` (for Pages-Router-style SSR with sections). |
+| `initialUnified` | `string[]` | The `unified` field of `loadAdaptiveAssignments` / `loadAdaptiveDecision`: components you moved onto the shared track, which `<Adaptive>` then renders as slots from the first paint. `<AdaptiveRoot>` passes it for you. |
 
 ### `<Adaptive>`
 
@@ -297,7 +299,7 @@ never both. `AdaptiveProps` is the union of the two exported prop types below.
 | `goal` | `string \| GoalConfig` | Conversion goal (required). A string is a click-goal label; an object is an explicit `GoalConfig`. |
 | `funnel` | `string` *(optional)* | Funnel this component serves — see [Funnels](#funnels--funnel-prop). |
 | `microSignalGoals` | `MicroSignalGoals` *(optional)* | When a passive micro-signal fires on this component, also record a named goal: micro-signal type → goal name (or `{ name, weight?, stepIndex? }`), e.g. `{ rage_click: 'confused_by_hero' }`. |
-| `agentDataByVariant` | `Record<string, unknown>` *(optional)* | Structured data keyed by variant ID that AI agents can consume via `GET /v1/agent/layout`. Only the assigned variant's entry is sent to the server. Preferred over `agentData`. |
+| `agentDataByVariant` | `Record<string, unknown>` *(optional)* | Structured data keyed by variant ID that AI agents can consume via `GET /v1/agent/layout`. Only the assigned variant's entry is sent to the server. Preferred over `agentData`. A new or changed value is served to agents once visitors on a few different networks have reported it, so one forged request cannot rewrite it. |
 | `agentData` | `unknown` *(optional, deprecated)* | Deprecated in favour of `agentDataByVariant`. Single value stored once regardless of which variant is shown; kept for backward compatibility. |
 | `as`, `className` | *(optional)* | Wrapper element and its class, as for generated versions. |
 | `clientOnly` | `boolean` | Render nothing on the server; resolve on the client only. Use for cookie-dependent components. Without it, a component with no preloaded assignment server-renders its first variant. (This replaces the deprecated provider-level `ssrFallback="none"`, which is still accepted.) |
@@ -593,6 +595,8 @@ export async function getServerSideProps({ req }) {
 
 Pass `assignments` as `initialAssignments` **and `sessionId` as `ssrSessionId`** on `<AdaptiveProvider>` in `_app.tsx` — the return value is `{ assignments, sessionId }`, and without `ssrSessionId` the browser starts a different session than the one the server assigned, so the preload silently does nothing and events attach to the wrong session. For pages with a `sections` layout, use `loadAdaptiveDecision` (same options shape, plus `sections: string[]`) — its return value carries both `assignments` and `layoutOrder`.
 
+Both also return `unified` (on `loadAdaptiveDecision` it can be absent, meaning none): the components you moved onto the shared track, which are not in `assignments`. Pass it as `initialUnified`. In the browser, `client.isUnified(id)` answers the same question for ids learned after load.
+
 ### Forwarding to your own analytics
 
 ```tsx
@@ -622,6 +626,34 @@ window.__sentient_overrides = { hero_cta: 'variant_a' };
 ```
 
 Overrides bypass the bandit entirely — no events recorded, weights unchanged.
+
+## Record a conversion from your server
+
+Some conversions happen where the browser can't see them: a payment confirmed by a webhook, an order saved by a server action. `trackServerGoal` records one with your secret key (`sk_…`, server-only).
+
+**Same request** (the visitor's browser made the request, so their cookie is there):
+
+```ts
+import { cookies } from 'next/headers';
+import { readSessionCookie, trackServerGoal } from '@sentientui/react/server';
+
+const sessionId = readSessionCookie(await cookies(), process.env.NEXT_PUBLIC_SENTIENT_API_KEY!);
+await trackServerGoal({
+  serverKey: process.env.SENTIENT_SECRET_KEY!,
+  sessionId,
+  name: 'purchase',
+  dedupeKey: order.id,        // your own id for this conversion
+  value: order.total,
+  currency: 'USD',
+});
+```
+
+**Later, from a webhook** (Stripe, Clerk, a queue: no cookie in sight). Save the visitor id when the visitor acts, then use it when the confirmation arrives:
+
+1. In the browser, read `client.getVisitorId()` and send it along with the checkout or sign-up (for example in its metadata). It is `null` until the visitor has agreed to tracking, so nothing is saved for people who haven't.
+2. In your webhook handler, read that id back from the event and pass it as `sessionId`.
+
+`trackServerGoal` resolves `'recorded'`, `'skipped_no_visitor'` (no id, so nothing is sent) or `'failed'`. It never throws. Sending the same `name` and `dedupeKey` for the same visitor again, for example when a webhook is redelivered, counts once. The id is scoped to the visitor's session, so another site using the same order number never collides with yours. It refuses to run in a browser and never sends the secret key there.
 
 ## Graph scanning & engagement capture (on by default)
 

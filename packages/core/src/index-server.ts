@@ -3,8 +3,8 @@
  * never needed in the browser — kept out of the lean client bundle.
  */
 
-export { preloadAssignments, readSessionCookie, preloadDecisions } from './server.js';
-export type { ServerAssignConfig, ServerAssignments, DecideResult, SlotDeclInput, SlotResult } from './server.js';
+export { preloadAssignments, preloadAssignmentsDetailed, readSessionCookie, preloadDecisions, trackServerGoal, SERVER_GOAL_NAMESPACE } from './server.js';
+export type { TrackServerGoalOptions, ServerAssignConfig, ServerAssignments, ServerAssignmentsDetailed, DecideResult, SlotDeclInput, SlotResult } from './server.js';
 
 export {
   deriveSessionSegment,

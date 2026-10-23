@@ -17,6 +17,8 @@ const PUBLIC = [
   'setCspNonce',
   'forgetVisitor',
   'renderPrePaintScript',
+  'urlMatches',
+  'normalizeUrlPattern',
 ] as const;
 
 /** Shared with the other SentientUI packages. No semver promise; leaves the

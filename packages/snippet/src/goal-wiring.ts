@@ -1,4 +1,4 @@
-import type { GoalDefinition } from '@sentientui/core';
+import { urlMatches, type GoalDefinition } from '@sentientui/core';
 import { pathname, resolveLocatorOne } from './locator';
 
 // Editor-defined goal wiring (Phase 3, §2.2). One delegated click listener and
@@ -23,18 +23,10 @@ type GoalClient = {
 
 export type GoalListeners = { teardown: () => void; checkUrl: () => void };
 
-// A url_reached pattern matches the current path on an exact hit or a path-segment
-// boundary — never a bare substring. Substring matching made the degenerate '/'
-// pattern (what the editor's "Track page visits" button saves on a homepage)
-// contain every path, firing the homepage goal on every route; it also let
-// '/pricing' over-match '/pricing-details'. The root '/' now matches only '/',
-// and '/pricing' matches '/pricing' and '/pricing/monthly' but not '/pricing-x'.
-export function urlMatches(pattern: string, path: string): boolean {
-  if (!pattern) return false;
-  if (pattern === '/') return path === '/';
-  const p = pattern.endsWith('/') ? pattern.slice(0, -1) : pattern;
-  return path === p || path.startsWith(`${p}/`);
-}
+// urlMatches lives in @sentientui/core so the API's server-side url_reached
+// matching and this client wiring share one definition (they disagreed on
+// '/' and '/pricing-x' before it was shared).
+export { urlMatches };
 
 /**
  * sessionStorage key holding the goals already fired this session.
