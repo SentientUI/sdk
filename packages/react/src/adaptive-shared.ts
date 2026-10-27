@@ -324,28 +324,91 @@ export function __resetFunnelDeclarations(): void {
   declaredMemberships.clear();
 }
 
+/**
+ * The funnel a weighted composite declares when no `funnel` prop names one.
+ * Composites and funnels are one model: without this, a composite on its own
+ * was credited the SUM of its steps' weights while the same steps under a
+ * `funnel` prop earned the furthest step reached — two rewards for one
+ * journey, picked by whether a prop was present. Deterministic from the
+ * component id so every page and visit lands on the same funnel; the
+ * `-steps` suffix keeps it off ids a human is likely to author (a human funnel
+ * with the id would otherwise absorb the component as a member).
+ */
+export function compositeFunnelId(componentId: string): string {
+  const slug = componentId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 100);
+  // A lossy slug ("Hero CTA" and "hero_cta" both → "hero-cta") gets a short
+  // hash of the raw id so two components never share one funnel.
+  if (slug && slug === componentId) return `${slug}-steps`;
+  let h = 5381;
+  for (let i = 0; i < componentId.length; i++) h = ((h << 5) + h + componentId.charCodeAt(i)) >>> 0;
+  return `${slug || 'component'}-${h.toString(36)}-steps`;
+}
+
+const MAX_FUNNEL_STEPS = 12;
+
+/**
+ * A composite's steps as a funnel declaration the server will ACCEPT
+ * (funnel-declare parseSteps + validateFunnelSteps). A rejected declaration is
+ * silent and leaves the component off the funnel, back on the summed-steps
+ * reward — so instead of sending something invalid: weights clamp to [0, 1];
+ * a repeated name, a name the server can't take as a goal id (empty, > 128,
+ * the reserved `funnel:` prefix) and anything past 12 steps are skipped.
+ *
+ * Steps are then ORDERED BY WEIGHT, lowest first. A composite's steps were
+ * never ordered — each was credited on its own and summed — so the weight is
+ * the only statement of which step matters most. Keeping the listed order made
+ * a low-value step listed last the funnel's completion (full credit) and the
+ * real conversion an intermediate step: the objective, inverted. The sort is
+ * stable, so equal weights keep their listed order. Dev builds say when any of
+ * this changed what was written.
+ */
+export function compositeFunnelSteps(componentId: string, goal: WeightedCompositeGoal): Array<{ goalId: string; weight: number }> {
+  const seen = new Set<string>();
+  const steps: Array<{ goalId: string; weight: number }> = [];
+  for (const s of goal.steps) {
+    const n = s.name;
+    if (!n || n.length > 128 || n.startsWith('funnel:') || seen.has(n) || steps.length === MAX_FUNNEL_STEPS) continue;
+    seen.add(n);
+    steps.push({ goalId: n, weight: Math.min(1, Math.max(0, s.weight || 0)) });
+  }
+  const ordered = [...steps].sort((a, b) => a.weight - b.weight);
+  // Bundle budget: one message for every adjustment, not one per kind.
+  if ((steps.length < goal.steps.length || ordered.some((s, i) => s !== steps[i])) && isDevBuild()) {
+    console.warn(`[SentientUI] "${componentId}": weighted_composite steps adjusted for its funnel (skipped invalid/repeated/over-12 steps, or ordered by weight)`);
+  }
+  return ordered;
+}
+
+/**
+ * Declares the component's funnel: the explicit `funnel` prop, else — for a
+ * weighted composite — its own derived funnel (compositeFunnelId). Anything
+ * else declares nothing.
+ */
 export function maybeDeclareFunnel(
   client: SentientClient,
   apiKey: string,
   componentId: string,
-  funnelId: string,
-  goal: GoalConfig,
+  explicitFunnelId: string | undefined,
+  goal: GoalConfig | null,
 ): void {
+  const composite = goal?.type === 'weighted_composite' ? goal : null;
+  const funnelId = explicitFunnelId ?? (composite ? compositeFunnelId(componentId) : undefined);
+  if (!funnelId) return;
   const memberKey = `${funnelId}|${componentId}`;
   if (declaredMemberships.has(memberKey)) return;
   declaredMemberships.add(memberKey);
-  const withSteps = goal.type === 'weighted_composite' && !declaredFunnels.has(funnelId);
+  // Counted AFTER cleaning: a composite whose steps dedupe to one is a single
+  // goal, not a funnel (the server needs 2+, and rejecting it would leave the
+  // component on the summed rule).
+  const steps = composite && !declaredFunnels.has(funnelId) ? compositeFunnelSteps(componentId, composite) : null;
+  const withSteps = steps !== null && steps.length >= 2;
   if (withSteps) declaredFunnels.add(funnelId);
+  if (!withSteps && explicitFunnelId === undefined) return; // nothing a derived funnel could join
   client.track({
     projectId: apiKey,
     componentId,
     eventType: 'funnel_declared',
-    payload: withSteps
-      ? {
-          funnelId,
-          steps: (goal as WeightedCompositeGoal).steps.map((s) => ({ goalId: s.name, weight: s.weight })),
-        }
-      : { funnelId },
+    payload: withSteps ? { funnelId, steps } : { funnelId },
   });
 }
 

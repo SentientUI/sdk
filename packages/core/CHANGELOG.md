@@ -1,5 +1,21 @@
 # @sentientui/core
 
+## 0.40.1
+
+### Patch Changes
+
+- f174ae8: Documentation-only: source comments and examples for the shared visitor cookie now use `example.com`.
+
+## 0.40.0
+
+### Minor Changes
+
+- a231a56: One visitor across your site's own subdomains. The visitor cookie (`_snt_uid_<key>`) is now written on your site's registrable domain, found automatically (`example.com` for a page on `app.example.com`), so a marketing site and its app running the same project key count one visitor and one journey, and a goal fired in the app credits the landing page that earned it. Browsers refuse public suffixes such as `vercel.app`, so the id never reaches another site. If a host already had its own id, the shared one wins and the host's copy is removed. Pass `cookieDomain: false` (`<AdaptiveProvider cookieDomain={false}>`) to keep the old host-only cookie, or a domain to choose one. Forget-me clears the shared copy too. A visit that moves between your subdomains is no longer recorded as a referral.
+
+  `trackServerGoal({ userId })`: record a server-side conversion by your own user id (the one you pass to `identify()`) instead of our visitor id. It needs the secret key, credits that user's most recent visit, and resolves `'skipped_no_visitor'` when no visit carries the id.
+
+- 4dd1e07: Verified identify. `identify(userId, { userHash })` takes a hash your server signs with `signUserId(userId, secretKey)` from `@sentientui/core/server`. On Next.js, `<AdaptiveRoot userId={user?.id}>` signs it for you with `SENTIENT_SECRET_KEY` and identifies the visitor; `<AdaptiveProvider identity={{ userId, userHash }}>` does the same from any React setup. The signing secret is derived from your secret key, so there is nothing new to configure. Once a project sends a signed identify, server goals by `userId` only reach signed visits, and a user's profile only carries across their signed visits, so a visitor can no longer claim to be one of your users.
+
 ## 0.39.1
 
 ### Patch Changes

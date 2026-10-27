@@ -2,6 +2,7 @@ import { sessionCookieName, storageSuffix, LEGACY_SESSION_COOKIE_NAME, markForgo
 import { SNAPSHOT_STORAGE_KEY_PREFIX } from './snapshot.js';
 import { retryStorageKey } from './queue.js';
 import { goalRetryStorageKey } from './goal-queue.js';
+import { parentDomains } from './cookie-domain.js';
 
 /**
  * Forget-me WITHOUT a client: delete everything the SDK stores for `apiKey`'s
@@ -24,7 +25,13 @@ export function forgetVisitor(apiKey: string): boolean {
   try {
     if (new RegExp(`(?:^|; )${name}=`).test(document.cookie)) {
       const secure = location.protocol === 'https:' ? '; Secure' : '';
-      document.cookie = `${name}=; max-age=0; SameSite=lax; path=/${secure}`;
+      // The visitor cookie may be shared on a parent domain (cookie-domain.ts),
+      // and a host-only delete leaves that copy for every sibling host to
+      // re-adopt. Which domain was configured is not known here, so every
+      // parent is cleared — deleting a cookie that isn't there is a no-op.
+      for (const d of ['', ...parentDomains(location.hostname)]) {
+        document.cookie = `${name}=; max-age=0; SameSite=lax; path=/${d ? `; domain=${d}` : ''}${secure}`;
+      }
       removed = true;
     }
   } catch {

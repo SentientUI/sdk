@@ -1,5 +1,6 @@
 import { deriveSessionSegment, exposedStage, extractTrackedParams, matchedAgentToken } from '@sentientui/core';
 import { consentFromCookies } from '@sentientui/core/consent';
+import { signUserId } from '@sentientui/core/server';
 import type { RenderCaps, SlotDeclInput, SlotResult } from '@sentientui/core';
 import { cookies, headers } from 'next/headers';
 // `type JSX` from react, not the global namespace removed in @types/react@19
@@ -60,6 +61,7 @@ export type AdaptiveRootProps = Omit<
   | 'declaredSections'
   | 'sessionSegment'
   | 'consentFrom'
+  | 'identity'
 > & {
   /**
    * Consent source — see `AdaptiveProviderProps.consentFrom`. A platform preset
@@ -200,6 +202,15 @@ export type AdaptiveRootProps = Omit<
    * Pass through from Next.js middleware / `headers()` when using a strict CSP.
    */
   nonce?: string;
+  /**
+   * The signed-in user's id (null/undefined when signed out). AdaptiveRoot
+   * signs it on the server and identifies the visitor as that user — a
+   * VERIFIED identify, so `trackServerGoal({ userId })` from your backend
+   * reaches this visit and nobody else's.
+   */
+  userId?: string | null;
+  /** Secret key used to sign `userId`. Defaults to `process.env.SENTIENT_SECRET_KEY`. Server-only. */
+  serverKey?: string;
   children: ReactNode;
 };
 
@@ -277,8 +288,23 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
     captureAgents,
     nonce,
     children,
+    userId,
+    serverKey = process.env.SENTIENT_SECRET_KEY,
     ...providerProps
   } = props;
+  // Verified identify, signed HERE on the server: the secret key never leaves
+  // it, and the hash it yields is useless for any other user id. Without a key
+  // the identify still happens, unverified — said once in dev, since a project
+  // that signs elsewhere would stop trusting these.
+  let identity: AdaptiveProviderProps['identity'];
+  if (userId) {
+    // `|| undefined`: signUserId returns '' when it refuses (a browser global
+    // present) — an empty hash is no hash, not a failed verification.
+    identity = { userId, userHash: (serverKey && (await signUserId(userId, serverKey))) || undefined };
+    if (!serverKey && process.env.NODE_ENV !== 'production') {
+      console.warn('[SentientUI] <AdaptiveRoot userId> without SENTIENT_SECRET_KEY: the identify is unverified. Set the env var (or pass serverKey) to verify it.');
+    }
+  }
 
   const headerStore = await headers();
   const host = headerStore.get('host');
@@ -516,6 +542,7 @@ export async function AdaptiveRoot(props: AdaptiveRootProps): Promise<JSX.Elemen
       initialPersona={initialPersona ?? undefined}
       sessionSegment={sessionSegment}
       ssrSessionId={ssrSessionId}
+      identity={identity}
     >
       {children}
     </AdaptiveRootClient>

@@ -24,8 +24,24 @@ projects on one domain never share a visitor.
 
 | Name | Purpose | Duration | Attributes |
 |---|---|---|---|
-| `_snt_uid_<key>` | Pseudonymous visitor ID (random UUID), so decisions and conversions from one browser join up across visits | 365 days | First-party, `SameSite=Lax` (sent on a top-level navigation into your site, never on another site's subresource or POST requests), `Path=/`, `Secure` on https pages, set from JavaScript (not `HttpOnly`) |
-| `_snt_uid_<key>_probe` | The value `1`, written once to test whether cookies can be stored at all | 1 second | Same |
+| `_snt_uid_<key>` | Pseudonymous visitor ID (random UUID), so decisions and conversions from one browser join up across visits — and across your site's own subdomains | 365 days | First-party, `SameSite=Lax` (sent on a top-level navigation into your site, never on another site's subresource or POST requests), `Path=/`, `Secure` on https pages, set from JavaScript (not `HttpOnly`). `Domain=` your site's registrable domain (see below) |
+| `_snt_uid_<key>_probe` | The value `1`, written once to test whether cookies can be stored at all | 1 second | Same, without `Domain=` |
+| `_snt_uid_<key>_dom` | The value `1`, written once per page load to find the domain the visitor ID can be shared on, and deleted at once | 10 seconds at most | Same, on each parent domain tried |
+
+**Shared across your subdomains, never across sites.** The visitor ID is set on
+your site's registrable domain — `example.com` for a page on
+`app.example.com` — so your marketing site and your app, running the same
+project key, see one visitor and one journey. The SDK finds that domain by
+trying the shortest parent the browser accepts; browsers refuse public
+suffixes (`co.uk`, `vercel.app`), so the ID never reaches another company's
+site. Pass `cookieDomain: false` (`<AdaptiveProvider cookieDomain={false}>`) to
+keep it on the current host only, or a domain to choose one. Forget-me clears
+the shared copy too.
+
+Sharing means **every subdomain of that domain is trusted** with the visitor
+ID: any of them can read it, or set it to a value of its choosing. If a
+subdomain serves content you don't control (user uploads, a third-party
+hosted page), use `cookieDomain: false` or name a narrower domain.
 
 Older installs used the bare name `_snt_uid`. The SDK still **reads** it so an
 existing visitor keeps their ID. Forget-me leaves that shared name in place
@@ -156,7 +172,7 @@ even with `consent: true`, and `grantConsent()` can't override it. Pass
 ## Sample cookie-notice entry
 
 > **SentientUI** (personalization and measurement): sets `_snt_uid_…` (365
-> days) and stores related data in your browser's local storage, to show you
+> days, shared across this site's subdomains) and stores related data in your browser's local storage, to show you
 > the version of this site that works best and measure which version performs
 > better. Set only with your consent. Not used for advertising and not shared
 > with other sites.

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Server Component deps are all mocked so we can call AdaptiveRoot() directly
 // and inspect the element it returns, without a Next.js runtime.
@@ -712,5 +712,46 @@ describe('AdaptiveRoot — keyless local mode', () => {
     // Mirrors the client: localMode: false is the opt-out from local mode.
     await AdaptiveRoot(baseProps({ apiKey: '', localMode: false }));
     expect(mockedAssign).toHaveBeenCalledOnce();
+  });
+});
+
+describe('AdaptiveRoot — verified identify', () => {
+  // Same pinned vector as core's server.test.ts and the API's lib/keys.test.ts.
+  const SK = 'sk_test_identity_vector_000';
+  const WANT = 'v1.1800000000.da00d5fc5a07e9a9b4cc1460694e3c298d308149e21fe0315585462e34be6e18';
+
+  // A Server Component has no window; this suite runs under jsdom. The clock
+  // is pinned so the signed expiry (default 24 h) lands on the vector's.
+  beforeEach(() => {
+    vi.stubGlobal('window', undefined);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(1_800_000_000_000 - 86_400_000);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('signs userId on the server with SENTIENT_SECRET_KEY and hands the client a verified identity', async () => {
+    vi.stubEnv('SENTIENT_SECRET_KEY', SK);
+    const el = await AdaptiveRoot(baseProps({ appOrigin: 'https://acme.com', userId: 'user_42' }));
+    expect(clientEl(el as never).props.identity).toEqual({ userId: 'user_42', userHash: WANT });
+    // The key itself never reaches the client.
+    expect(JSON.stringify(clientEl(el as never).props)).not.toContain(SK);
+  });
+
+  it('an explicit serverKey wins; with no key the identify is unverified', async () => {
+    const signed = await AdaptiveRoot(baseProps({ appOrigin: 'https://acme.com', userId: 'user_42', serverKey: SK }));
+    expect(clientEl(signed as never).props.identity).toEqual({ userId: 'user_42', userHash: WANT });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const unsigned = await AdaptiveRoot(baseProps({ appOrigin: 'https://acme.com', userId: 'user_42' }));
+    expect(clientEl(unsigned as never).props.identity).toEqual({ userId: 'user_42', userHash: undefined });
+    warn.mockRestore();
+  });
+
+  it('signed out (no userId) identifies nobody', async () => {
+    vi.stubEnv('SENTIENT_SECRET_KEY', SK);
+    const el = await AdaptiveRoot(baseProps({ appOrigin: 'https://acme.com', userId: null }));
+    expect(clientEl(el as never).props.identity).toBeUndefined();
   });
 });

@@ -131,11 +131,12 @@ export function useVariantComponent(
 
   // Declare funnel membership (and, for weighted composites, the funnel's
   // steps) once per page load. Same settle/override gates as the exposure —
-  // a forced dev view must not declare anything.
+  // a forced dev view must not declare anything. A weighted composite with no
+  // `funnel` declares its own (compositeFunnelId).
   const funnel = opts.funnel;
   useEffect(() => {
     if (isOverride || !settled) return;
-    if (!client || !funnel || !goal) return;
+    if (!client || !goal) return;
     maybeDeclareFunnel(client, apiKey, id, funnel, goal);
   }, [client, apiKey, id, funnel, goal, isOverride, settled]);
 

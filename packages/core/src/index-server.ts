@@ -3,7 +3,7 @@
  * never needed in the browser — kept out of the lean client bundle.
  */
 
-export { preloadAssignments, preloadAssignmentsDetailed, readSessionCookie, preloadDecisions, trackServerGoal, SERVER_GOAL_NAMESPACE } from './server.js';
+export { preloadAssignments, preloadAssignmentsDetailed, readSessionCookie, preloadDecisions, trackServerGoal, signUserId, SERVER_GOAL_NAMESPACE } from './server.js';
 export type { TrackServerGoalOptions, ServerAssignConfig, ServerAssignments, ServerAssignmentsDetailed, DecideResult, SlotDeclInput, SlotResult } from './server.js';
 
 export {

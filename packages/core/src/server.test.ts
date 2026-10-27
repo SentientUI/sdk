@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { preloadAssignments, readSessionCookie, trackServerGoal, SERVER_GOAL_NAMESPACE, uuidV5, sha1Fallback } from './server.js';
+import { preloadAssignments, readSessionCookie, trackServerGoal, signUserId, sha256Fallback, SERVER_GOAL_NAMESPACE, uuidV5, sha1Fallback } from './server.js';
+import { createHash } from 'node:crypto';
 
 const BASE_URL = 'https://api.example.com/v1';
 const API_KEY = 'pk_test_key';
@@ -656,6 +657,81 @@ describe('trackServerGoal', () => {
     expect(f).not.toHaveBeenCalled();
     expect(err).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(err.mock.calls)).not.toContain(SK);
+    err.mockRestore();
+  });
+
+  it('with only a userId, sends userId (no sessionId) and keys the goal id on the secret key', async () => {
+    const f = okFetch();
+    const res = await trackServerGoal({ serverKey: SK, userId: 'user_42', name: 'activated', dedupeKey: 'acct_9', fetch: f as unknown as typeof fetch });
+    expect(res).toBe('recorded');
+    const body = bodyOf(f);
+    expect(body).not.toHaveProperty('sessionId');
+    expect(body.userId).toBe('user_42');
+    expect(body.goalId).toBe(await uuidV5(`user:${SK}:user_42:activated:acct_9`, SERVER_GOAL_NAMESPACE));
+    // "42" exists in every tenant's database: another project's key must not
+    // derive the same id (the bare goal_id unique would drop one silently).
+    const g = okFetch();
+    await trackServerGoal({ serverKey: 'sk_other_tenant', userId: 'user_42', name: 'activated', dedupeKey: 'acct_9', fetch: g as unknown as typeof fetch });
+    expect(bodyOf(g).goalId).not.toBe(body.goalId);
+  });
+
+  it('a sessionId wins over a userId', async () => {
+    const f = okFetch();
+    await trackServerGoal({ ...base, userId: 'user_42', fetch: f as unknown as typeof fetch });
+    expect(bodyOf(f).sessionId).toBe('sess-1');
+    expect(bodyOf(f)).not.toHaveProperty('userId');
+  });
+
+  it('a userId no visit carries (404) is skipped_no_visitor, not failed', async () => {
+    const f = vi.fn().mockResolvedValue({ ok: false, status: 404 } as Response);
+    expect(await trackServerGoal({ serverKey: SK, userId: 'ghost', name: 'activated', dedupeKey: 'x', fetch: f as unknown as typeof fetch }))
+      .toBe('skipped_no_visitor');
+  });
+
+  it('neither sessionId nor userId sends nothing', async () => {
+    const f = okFetch();
+    expect(await trackServerGoal({ serverKey: SK, sessionId: null, userId: '', name: 'activated', dedupeKey: 'x', fetch: f as unknown as typeof fetch }))
+      .toBe('skipped_no_visitor');
+    expect(f).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('signUserId (verified identify)', () => {
+  // Pinned with node:crypto, and pinned to the SAME vector in the API's
+  // lib/keys.test.ts — the two sides of verification must never drift.
+  const SK = 'sk_test_identity_vector_000';
+  const WANT = 'v1.1800000000.da00d5fc5a07e9a9b4cc1460694e3c298d308149e21fe0315585462e34be6e18';
+  const at = { now: 1_800_000_000_000 - 86_400_000 }; // default 24 h -> exp 1800000000
+
+  beforeEach(() => vi.stubGlobal('window', undefined));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('derives the secret from the sk_ and signs the user id (Web Crypto)', async () => {
+    expect(await signUserId('user_42', SK, at)).toBe(WANT);
+    // ttlSeconds moves the signed expiry.
+    expect(await signUserId('user_42', SK, { ...at, ttlSeconds: 3600 })).toMatch(/^v1\.1799917200\.[0-9a-f]{64}$/);
+    // Over the 7-day maximum is clamped, never minted to be refused.
+    expect(await signUserId('user_42', SK, { ...at, ttlSeconds: 30 * 86_400 })).toMatch(/^v1\.1800518400\.[0-9a-f]{64}$/);
+  });
+
+  it('gives the same hash with no Web Crypto (Node 18) through the pure-JS SHA-256', async () => {
+    vi.stubGlobal('crypto', undefined);
+    expect(await signUserId('user_42', SK, at)).toBe(WANT);
+  });
+
+  it('pure-JS SHA-256 matches node:crypto across block boundaries', () => {
+    for (const n of [0, 1, 55, 56, 63, 64, 65, 119, 120, 1000]) {
+      const data = new Uint8Array(n).map((_, i) => (i * 31 + 7) & 0xff);
+      const got = Array.from(sha256Fallback(data), (b) => b.toString(16).padStart(2, '0')).join('');
+      expect(got, `length ${n}`).toBe(createHash('sha256').update(data).digest('hex'));
+    }
+  });
+
+  it('refuses to run in a browser (it needs the secret key)', async () => {
+    vi.stubGlobal('window', {});
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(await signUserId('user_42', SK, at)).toBe('');
     err.mockRestore();
   });
 });

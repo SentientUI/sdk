@@ -161,7 +161,16 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // `unified` answer, `initialUnified`/`isUnified` and the cache gate that
     // stops a moved component settling on a pre-move assignment. Measured
     // 18088 against 17728.
-    limit: 16 * 1024 + 1280 + 64 + 720,
+    //
+    // +256 (2026-10-27, cross-host identity branch): the visitor cookie on the
+    // registrable domain (probe-detected, the shared copy wins over the host's
+    // own, a refused write falls back to host-only), the same-site referrer
+    // rule, and identify()'s userHash for verified identify. Each is a
+    // capability that didn't exist — a marketing site and its app were two
+    // visitors, and a server goal by user id was spoofable — not a regression.
+    // The first two fit in the remaining headroom after trimming; userHash
+    // landed 1–2 bytes over. Measured 18448.
+    limit: 16 * 1024 + 1280 + 64 + 720 + 256,
   },
   {
     name: '@sentientui/core/graph (with shared chunks)',

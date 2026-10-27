@@ -2,6 +2,7 @@
 
 import { randomUuidV4 } from './uuid.js';
 import { sessionCookieName, storageSuffix } from './storage-key.js';
+import { parentDomains, type CookieDomainOption } from './cookie-domain.js';
 
 export type SessionConfig = {
   cookieName?: string;
@@ -19,12 +20,21 @@ export type SessionConfig = {
    * on first visit rather than generating a new, orphaned ID.
    */
   ssrSessionId?: string;
+  /**
+   * Where the visitor cookie lives. Default (undefined): the site's
+   * registrable domain, auto-detected, so `example.com` and `app.example.com`
+   * share one visitor. `false`: this host only. A string: that domain.
+   */
+  cookieDomain?: CookieDomainOption;
 };
 
 export type SessionManager = {
   getSessionId(): string | null;
   /** True when neither cookie nor localStorage could be written — id is in-memory only. */
   isEphemeral(): boolean;
+  /** The domain the visitor cookie is shared on (null = this host only) —
+   *  also the site's extent for referrer classification. */
+  domain: string | null;
   destroy(): void;
 };
 
@@ -67,9 +77,9 @@ function secureAttr(): string {
 // page and minted an orphan session whose slot trials never saw the visit's
 // conversions (the browser kept its own id). Lax still never rides cross-site
 // subresource or POST requests, and the cookie is first-party only.
-function writeCookie(name: string, value: string, maxAgeSeconds: number): void {
+function writeCookie(name: string, value: string, maxAgeSeconds: number, domain?: string | null): void {
   try {
-    document.cookie = `${name}=${encodeURIComponent(value)}; max-age=${maxAgeSeconds}; SameSite=lax; path=/${secureAttr()}`;
+    document.cookie = `${name}=${encodeURIComponent(value)}; max-age=${maxAgeSeconds}; SameSite=lax; path=/${domain ? `; domain=${domain}` : ''}${secureAttr()}`;
   } catch {
     /* ignore */
   }
@@ -134,19 +144,36 @@ function removeLocalStorage(key: string): void {
   }
 }
 
-function clearCookie(name: string): void {
-  try {
-    document.cookie = `${name}=; max-age=0; SameSite=lax; path=/${secureAttr()}`;
-  } catch {
-    /* ignore */
-  }
+function clearCookie(name: string, domain?: string | null): void {
+  writeCookie(name, '', 0, domain); // writeCookie already swallows a throw
 }
 
 const SSR_MANAGER: SessionManager = {
   getSessionId: () => null,
   isEphemeral: () => false,
+  domain: null,
   destroy: () => undefined,
 };
+
+/**
+ * The domain to share the visitor cookie on (cookie-domain.ts), or null for
+ * host-only. undefined → the shortest parent the browser accepts a probe
+ * cookie on; false → host-only; a string → that domain (one that does not
+ * cover this host is refused by the browser, and initSession then falls back
+ * to host-only — see the write check there).
+ */
+function detectCookieDomain(option: CookieDomainOption, probe: string): string | null {
+  if (option === false) return null;
+  if (typeof option === 'string') return option.replace(/^\./, '');
+  for (const d of parentDomains(location.hostname)) {
+    writeCookie(probe, '1', 10, d);
+    if (readCookie(probe) === '1') {
+      clearCookie(probe, d);
+      return d;
+    }
+  }
+  return null;
+}
 
 /**
  * Initializes session management. Returns a no-op manager in SSR environments.
@@ -202,15 +229,34 @@ export function initSession(config?: SessionConfig): SessionManager {
         nonEmpty(readSessionStorage(STORAGE_KEY))
       : null;
 
+  // Shared visitor cookie (cookie-domain.ts). JS cannot tell a host-only
+  // cookie from a domain cookie of the same name — document.cookie lists both
+  // as `name=value` — so this host's own copy is deleted and the cookie read
+  // again: whatever survives is the SHARED id, and it wins. That is what
+  // aligns two hosts that each minted an id before sharing existed (and after
+  // Safari's 7-day cap expires the shared one): the first host to write the
+  // shared cookie decides, the other adopts it on its next page.
+  let domain = detectCookieDomain(config?.cookieDomain, `${cookieName}_dom`);
+  const ownCopy = nonEmpty(readCookie(cookieName));
+  const shared = domain ? (clearCookie(cookieName), nonEmpty(readCookie(cookieName))) : null;
+
   let sessionId: string | null =
-    nonEmpty(readCookie(cookieName)) ??
+    shared ??
+    ownCopy ??
     nonEmpty(readLocalStorage(storageKey)) ??
     nonEmpty(readSessionStorage(storageKey)) ??
     readLegacy() ??
     nonEmpty(config?.ssrSessionId) ??
     generateSessionId();
 
-  writeCookie(cookieName, sessionId, maxAgeSeconds);
+  writeCookie(cookieName, sessionId, maxAgeSeconds, domain);
+  // A domain the probe accepted but this write did not (a cookie-policy
+  // extension, a jar at capacity) must not leave the visitor with no cookie:
+  // the host-only copy was deleted above.
+  if (domain && readCookie(cookieName) !== sessionId) {
+    domain = null;
+    writeCookie(cookieName, sessionId, maxAgeSeconds);
+  }
   const lsOk = writeLocalStorage(storageKey, sessionId);
   const cookieOk = probeCookieWritable(cookieName);
   // Always write sessionStorage when localStorage fails — it covers same-tab
@@ -221,9 +267,11 @@ export function initSession(config?: SessionConfig): SessionManager {
   return {
     getSessionId: () => sessionId,
     isEphemeral: () => ephemeral,
+    domain,
     destroy: () => {
       sessionId = null;
       clearCookie(cookieName);
+      clearCookie(cookieName, domain); // the shared copy (a repeat no-op when host-only)
       removeLocalStorage(storageKey);
       removeSessionStorage(storageKey);
       // See legacyTombstoneKey: the bare `_snt_uid` keys stay for the other

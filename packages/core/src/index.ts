@@ -195,6 +195,13 @@ export type SentientConfig = {
    */
   ssrSessionId?: string;
   /**
+   * Where the visitor cookie lives. By default it is shared on the site's
+   * registrable domain (auto-detected), so `example.com` and
+   * `app.example.com` — with the same project key — count one visitor and one
+   * journey. `false` keeps it on this host only; a string names the domain.
+   */
+  cookieDomain?: string | false;
+  /**
    * ISO 3166-1 alpha-2 country code for the visitor. When provided (e.g. from
    * the `CF-IPCountry` header in a Next.js server component), it is included in
    * the session upsert so country-based segmentation works without client-side
@@ -428,7 +435,13 @@ export type SentientClient = {
    * variant experiments; `goal()` is session-level only (no component attribution).
    */
   componentGoal(componentId: string, goalType: string, opts?: ComponentGoalOptions): void;
-  identify(userId: string): void;
+  /**
+   * Links this visitor to your user id. Pass `userHash` — `signUserId(userId,
+   * secretKey)` computed on your server — to make the link VERIFIED: once a
+   * project signs its identifies, only verified links receive server goals by
+   * `userId` and carry the user's profile across devices.
+   */
+  identify(userId: string, opts?: { userHash?: string }): void;
   /**
    * The visitor id (session id) for carrying a conversion to your server
    * later: store it with the order/sign-up, then pass it to `trackServerGoal`.
@@ -1130,7 +1143,7 @@ function createPreConsentProxy(config: SentientConfig, neverUpgrades: boolean): 
     // the passthrough forwards both call shapes untouched.
     goal: ((n: string, m?: Record<string, unknown>, w?: number, s?: number) => hold((c) => c.goal(n, m, w, s))) as SentientClient['goal'],
     componentGoal: (c, g, o) => inner.componentGoal(c, g, o),
-    identify: (u) => inner.identify(u),
+    identify: (u, o) => inner.identify(u, o),
     getAssignment: (c, s) => inner.getAssignment(c, s),
     isUnified: (c) => inner.isUnified?.(c) ?? false,
     assign: (c, v, a, av, o) => inner.assign(c, v, a, av, o),
@@ -1340,7 +1353,7 @@ export function init(config: SentientConfig): SentientClient {
   const resolvedIngestUrl = config.ingestUrl ?? DEFAULT_INGEST_URL;
 
   const sessionStart = Date.now();
-  const session = initSession({ ssrSessionId: config.ssrSessionId, apiKey: config.apiKey });
+  const session = initSession({ ssrSessionId: config.ssrSessionId, apiKey: config.apiKey, cookieDomain: config.cookieDomain });
   const rawCache = createAssignmentCache(undefined, config.apiKey);
   // Set by this client's destroy(). The window marker covers other bundles'
   // forget-me, but a new grant clears it — and this client's own in-flight
@@ -1408,7 +1421,10 @@ export function init(config: SentientConfig): SentientClient {
   // No window guard here: init() already returned SSR_CLIENT at the top when
   // window is undefined, so the old `typeof window` ternary was dead code.
   const appOrigin = window.location.origin;
-  const trafficSource = detectTrafficSource(document.referrer ?? '', appOrigin);
+  // The shared cookie domain is the site: a hop between its hosts is internal
+  // navigation (like a same-host page view), not a referral that would
+  // re-label the visit and its segment.
+  const trafficSource = detectTrafficSource(document.referrer ?? '', appOrigin, session.domain);
   const sessionSegment =
     config.sessionSegment ?? `${deviceClass}:${trafficSource}`;
   const inflightAssigns = new Map<string, Promise<AssignResult | null>>();
@@ -1822,14 +1838,14 @@ export function init(config: SentientConfig): SentientClient {
       });
     },
 
-    identify(userId) {
+    identify(userId, opts) {
       const sid = session.getSessionId();
       if (!sid || slotDecideTornDown || !mayPersist()) return;
       sessionReady.then(() => {
         fetch(`${baseUrl}/sessions`, {
           method: 'POST',
           keepalive: true,
-          body: JSON.stringify({ sessionId: sid, userId, ephemeral: session.isEphemeral() }),
+          body: JSON.stringify({ sessionId: sid, userId, userHash: opts?.userHash, ephemeral: session.isEphemeral() }),
           headers: authHeaders,
         }).catch(() => undefined);
       });

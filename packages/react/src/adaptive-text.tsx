@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ElementType, type JSX } from 'react';
 import type { AssignResult } from '@sentientui/core';
 import { useSentient, useAdaptiveApiKey, useOnAssignment, useSessionSegment } from './provider.js';
-import { attachGoalListeners, goalValueOf, isDevBuild, normalizeGoal, type GoalConfig } from './adaptive-shared.js';
+import { attachGoalListeners, goalValueOf, isDevBuild, maybeDeclareFunnel, normalizeGoal, type GoalConfig } from './adaptive-shared.js';
 import { getDevOverride } from './dev-override.js';
 import { subscribeOverridesChanged } from './override-events.js';
 
@@ -128,6 +128,14 @@ export function AdaptiveText({
   useEffect(() => {
     goalFiredRef.current = false;
   }, [variantId, goalKey]);
+
+  // A weighted composite here is a funnel like everywhere else; without this
+  // declaration the copy was credited the SUM of its steps (no `funnel` prop
+  // exists on AdaptiveText, so it never joined one).
+  useEffect(() => {
+    if (override || !client || !apiKey) return;
+    maybeDeclareFunnel(client, apiKey, id, undefined, goal);
+  }, [client, apiKey, id, goal, override]);
 
   useEffect(() => {
     if (override) return; // forced variant records no goals

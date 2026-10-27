@@ -121,6 +121,51 @@ describe('Adaptive funnel declaration', () => {
     expect(componentIds).toEqual(['hero', 'pricing-cta']);
   });
 
+  it('a weighted_composite with no funnel prop declares its own funnel, so it is credited as one', async () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as unknown as ReturnType<typeof init>);
+    render(
+      createElement(Adaptive, {
+        id: 'hero', goal: wcGoal,
+        variants: { 'variant-a': createElement('button', null, 'A') },
+      }),
+      { wrapper },
+    );
+    await waitFor(() => expect(declCalls(client)).toHaveLength(1));
+    expect((declCalls(client)[0]![0] as { payload: unknown }).payload).toEqual({
+      funnelId: 'hero-steps',
+      steps: [{ goalId: 'saw_cta', weight: 0.1 }, { goalId: 'clicked_cta', weight: 1 }],
+    });
+  });
+
+  it('a one-step weighted_composite with no funnel prop declares nothing (one goal is not a funnel)', async () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as unknown as ReturnType<typeof init>);
+    const { findByText } = render(
+      createElement(Adaptive, {
+        id: 'hero', goal: { type: 'weighted_composite' as const, steps: [wcGoal.steps[1]!] },
+        variants: { 'variant-a': createElement('button', null, 'A') },
+      }),
+      { wrapper },
+    );
+    await findByText('A');
+    expect(declCalls(client)).toHaveLength(0);
+  });
+
+  it('a composite whose steps dedupe to one declares nothing (the server would reject a one-step funnel)', async () => {
+    const client = makeClient();
+    mockedInit.mockReturnValue(client as unknown as ReturnType<typeof init>);
+    const dup = { type: 'weighted_composite' as const, steps: [wcGoal.steps[1]!, wcGoal.steps[1]!] };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { findByText } = render(
+      createElement(Adaptive, { id: 'hero', goal: dup, variants: { 'variant-a': createElement('button', null, 'A') } }),
+      { wrapper },
+    );
+    await findByText('A');
+    expect(declCalls(client)).toHaveLength(0);
+    warn.mockRestore();
+  });
+
   it('no funnel prop → zero funnel_declared events', async () => {
     const client = makeClient();
     mockedInit.mockReturnValue(client as unknown as ReturnType<typeof init>);

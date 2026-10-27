@@ -126,13 +126,15 @@ export function AdaptiveGroup(props: AdaptiveGroupProps): JSX.Element {
     trackExposure(client, apiKey, props.id, arm);
   }, [client, apiKey, props.id, arm, source]);
 
-  // Funnel membership declaration — same override gate as the exposure.
+  // Funnel membership declaration — same override gate as the exposure. A
+  // weighted composite with no `funnel` declares its own (compositeFunnelId).
   const funnel = props.funnel;
+  const declaredGoalKey = props.goal === undefined || typeof props.goal === 'string' ? '' : JSON.stringify(props.goal);
   useEffect(() => {
-    if (!client || !funnel || source === 'override') return;
+    if (!client || source === 'override') return;
     maybeDeclareFunnel(client, apiKey, props.id, funnel, normalizeGoal(props.goal ?? 'click'));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, apiKey, props.id, funnel, source]);
+  }, [client, apiKey, props.id, funnel, declaredGoalKey, source]);
 
   // Optional goal — slot-scoped credit through componentGoal (the core
   // resolves the attributed arm from its slot state; see Task 3.3).

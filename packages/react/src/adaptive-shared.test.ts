@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { goalValueOf, scrollFireCollapsedThisTask } from './adaptive-shared.js';
+import { describe, expect, it, vi } from 'vitest';
+import { compositeFunnelId, compositeFunnelSteps, goalValueOf, scrollFireCollapsedThisTask } from './adaptive-shared.js';
 
 describe('goalValueOf', () => {
   it('returns the static value from simple goal configs', () => {
@@ -53,5 +53,52 @@ describe('scrollFireCollapsedThisTask', () => {
     // task; a macrotask boundary must reopen the gate.
     await new Promise((r) => setTimeout(r, 5));
     expect(scrollFireCollapsedThisTask('release-key')).toBe(false);
+  });
+});
+
+describe('composite → funnel declaration', () => {
+  it('derives a stable, server-valid funnel id from the component id', () => {
+    expect(compositeFunnelId('hero')).toBe('hero-steps');
+    expect(compositeFunnelId('pricing-cta')).toBe('pricing-cta-steps');
+    // Lossy slugs carry a hash of the raw id: these two must not share a funnel.
+    const a = compositeFunnelId('Hero CTA');
+    const b = compositeFunnelId('hero_cta');
+    expect(a).not.toBe(b);
+    for (const id of [a, b, compositeFunnelId('***'), compositeFunnelId('x'.repeat(300))]) {
+      expect(id).toMatch(/^[a-z0-9][a-z0-9-]*$/);
+      expect(id.length).toBeLessThanOrEqual(128);
+    }
+    expect(compositeFunnelId('Hero CTA')).toBe(a); // deterministic across pages/visits
+  });
+
+  it('sends steps the server accepts: clamped weights, no repeats or invalid names, at most 12', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const step = (name: string, weight: number) => ({ name, weight, goal: { type: 'click' as const } });
+    expect(compositeFunnelSteps('c', { type: 'weighted_composite', steps: [step('a', 0.2), step('b', 1.5)] }))
+      .toEqual([{ goalId: 'a', weight: 0.2 }, { goalId: 'b', weight: 1 }]);
+    expect(compositeFunnelSteps('c', { type: 'weighted_composite', steps: [step('a', 0.2), step('a', 0.3), step('b', 1)] }))
+      .toEqual([{ goalId: 'a', weight: 0.2 }, { goalId: 'b', weight: 1 }]);
+    expect(compositeFunnelSteps('c', {
+      type: 'weighted_composite', steps: [step('funnel:x', 0.1), step('x'.repeat(129), 0.2), step('', 0.3), step('ok', 1)],
+    })).toEqual([{ goalId: 'ok', weight: 1 }]);
+    expect(compositeFunnelSteps('c', {
+      type: 'weighted_composite', steps: Array.from({ length: 14 }, (_, i) => step(`s${i}`, 1)),
+    })).toHaveLength(12);
+    expect(warn).toHaveBeenCalledTimes(3);
+    warn.mockRestore();
+  });
+
+  it('orders steps by weight, so the most valuable step is the completion (composites were never ordered)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const step = (name: string, weight: number) => ({ name, weight, goal: { type: 'click' as const } });
+    // Under the summed rule this listed order meant nothing; as a funnel in
+    // listed order, view_pricing would have been the full-credit completion.
+    expect(compositeFunnelSteps('c', { type: 'weighted_composite', steps: [step('signup', 0.7), step('view_pricing', 0.3)] }))
+      .toEqual([{ goalId: 'view_pricing', weight: 0.3 }, { goalId: 'signup', weight: 0.7 }]);
+    // Ties keep their listed order.
+    expect(compositeFunnelSteps('c', { type: 'weighted_composite', steps: [step('a', 1), step('b', 1)] }).map((s) => s.goalId))
+      .toEqual(['a', 'b']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 });

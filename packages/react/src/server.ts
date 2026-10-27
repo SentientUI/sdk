@@ -5,12 +5,13 @@ import {
   preloadAssignments,
   preloadAssignmentsDetailed,
   readSessionCookie,
+  signUserId,
   trackServerGoal,
   type ServerAssignConfig,
   type ServerAssignments,
 } from '@sentientui/core/server';
 
-export { preloadAssignments, readSessionCookie, trackServerGoal };
+export { preloadAssignments, readSessionCookie, signUserId, trackServerGoal };
 export type { ServerAssignConfig, ServerAssignments };
 
 /** Return value of `loadAdaptiveAssignments` — includes the session ID used for SSR. */

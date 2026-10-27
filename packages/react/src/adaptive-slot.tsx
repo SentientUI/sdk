@@ -452,14 +452,15 @@ export function AdaptiveSlot({
   // Funnel membership — the declaration is about the COMPONENT, not an arm, so
   // it needs no served arm (an unpublished component still belongs to its
   // funnel); a forced preview must not declare anything, as on the variants
-  // path. Needs a goal: the declaration carries the goal's steps.
+  // path. Needs a goal: the declaration carries the goal's steps. A weighted
+  // composite with no `funnel` declares its own (compositeFunnelId).
   const goalConfig = useMemo(
     () => (goal ? normalizeGoal(goal) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [goalKey],
   );
   useEffect(() => {
-    if (source === 'override' || !client || !funnel || !goalConfig) return;
+    if (source === 'override' || !client || !goalConfig) return;
     maybeDeclareFunnel(client, apiKey, id, funnel, goalConfig);
   }, [client, apiKey, id, funnel, goalConfig, source]);
 

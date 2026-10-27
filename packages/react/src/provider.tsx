@@ -260,6 +260,20 @@ export type AdaptiveProviderProps = {
    */
   ssrSessionId?: string;
   /**
+   * Where the visitor cookie lives. By default it is shared on the site's
+   * registrable domain (auto-detected), so `example.com` and
+   * `app.example.com` running the same project key count one visitor and one
+   * journey. `false` keeps it on this host only; a string names the domain.
+   */
+  cookieDomain?: string | false;
+  /**
+   * The signed-in user: identifies the visitor once per client. Pass the
+   * server-signed `userHash` (`signUserId` from `@sentientui/core/server`,
+   * or let `<AdaptiveRoot userId>` do it) to make it a VERIFIED identify —
+   * required for server goals by `userId` once a project signs its identifies.
+   */
+  identity?: { userId: string; userHash?: string };
+  /**
    * ISO 3166-1 alpha-2 country code. Pass the value of the `CF-IPCountry`
    * header from your Next.js server component to populate country on landing
    * sessions without client-side geo lookup.
@@ -550,6 +564,7 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       preConsentBehavior: props.preConsentBehavior,
       respectDoNotTrack: props.respectDoNotTrack,
       ssrSessionId: props.ssrSessionId,
+      cookieDomain: props.cookieDomain,
       country: props.country,
       persona: props.persona,
       stageAttributes: props.stageAttributes,
@@ -748,6 +763,15 @@ export function AdaptiveProvider(props: AdaptiveProviderProps): JSX.Element {
       isLocal: client?.isLocal === true,
     });
   }, [client, props.apiKey, apiBaseUrl]);
+
+  // identify() is an upsert: once per client and user, never per render. A
+  // consent grant makes a new client, which identifies again — the gated one
+  // dropped it.
+  const identityUser = props.identity?.userId;
+  const identityHash = props.identity?.userHash;
+  useEffect(() => {
+    if (client && identityUser) client.identify(identityUser, { userHash: identityHash });
+  }, [client, identityUser, identityHash]);
 
   // Sections registry for devtools /v1/explain + local simulation. The decided
   // order wins when there is one (it is what the page is actually rendering);

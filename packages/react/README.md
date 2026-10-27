@@ -351,9 +351,11 @@ goal={{
   ],
 }}
 
-// Weighted composite — each step fires immediately as it completes, with a fractional reward.
-// Use for multi-step funnels where partial completion still signals quality.
-// Steps are independent: step 2 can fire before step 1.
+// Weighted composite — a funnel written in code. Its steps become the funnel "<id>-steps"
+// (or the `funnel` prop's id), and a visit earns the credit of the FURTHEST step it reached —
+// never the sum of the steps; reaching the last step earns full credit. Steps fire as they
+// complete and need not happen in order. The funnel orders steps by weight, so the
+// highest-weight step is the completion (dev builds warn when that reorders your list).
 goal={{
   type: 'weighted_composite',
   steps: [
@@ -364,7 +366,7 @@ goal={{
 }}
 ```
 
-Each goal fires at most once per variant mount. `WeightedCompositeGoal` fires each step's reward independently; `CompositeGoal` waits for all sub-goals and fires reward `1.0` once.
+Each goal fires at most once per variant mount. `WeightedCompositeGoal` is credited as a funnel (furthest step reached); `CompositeGoal` waits for all sub-goals and fires reward `1.0` once.
 
 #### Funnels — `funnel` prop
 

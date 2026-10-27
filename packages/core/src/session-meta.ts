@@ -88,7 +88,7 @@ export function detectDeviceClass(userAgent: string): string {
   return 'desktop';
 }
 
-export function detectTrafficSource(referrer: string, appOrigin?: string): string {
+export function detectTrafficSource(referrer: string, appOrigin?: string, siteDomain?: string | null): string {
   if (!referrer) return 'direct';
   try {
     const refUrl = new URL(referrer);
@@ -100,6 +100,9 @@ export function detectTrafficSource(referrer: string, appOrigin?: string): strin
       }
     }
     const host = refUrl.hostname.toLowerCase();
+    // Another host of the same site (the shared cookie domain): example.com →
+    // app.example.com is a page view inside the site, scored like one.
+    if (siteDomain && `.${host}`.endsWith(`.${siteDomain}`)) return 'direct';
     if (/(^|\.)(google|bing|duckduckgo|yahoo)\./.test(host)) return 'search';
     // Anchor to the registrable domain (exact host or a subdomain of it) so
     // hosts like `x.company.com`, `t.company.io` or `linkedinsights.com` are not

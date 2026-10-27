@@ -541,6 +541,109 @@ export async function uuidV5(name: string, namespace: string): Promise<string> {
   return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;
 }
 
+// Pure-JS SHA-256 for the same Node-18 gap sha1Fallback covers (no global
+// Web Crypto there, and this file takes no `node:` imports). @internal.
+const K256 = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+export function sha256Fallback(data: Uint8Array): Uint8Array {
+  const bitLen = data.length * 8;
+  const padded = new Uint8Array(Math.ceil((data.length + 9) / 64) * 64);
+  padded.set(data);
+  padded[data.length] = 0x80;
+  const pv = new DataView(padded.buffer);
+  pv.setUint32(padded.length - 8, Math.floor(bitLen / 0x100000000));
+  pv.setUint32(padded.length - 4, bitLen >>> 0);
+  const h = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  const w = new Uint32Array(64);
+  const rotr = (x: number, n: number): number => (x >>> n) | (x << (32 - n));
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = pv.getUint32(off + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15]!, 7) ^ rotr(w[i - 15]!, 18) ^ (w[i - 15]! >>> 3);
+      const s1 = rotr(w[i - 2]!, 17) ^ rotr(w[i - 2]!, 19) ^ (w[i - 2]! >>> 10);
+      w[i] = (w[i - 16]! + s0 + w[i - 7]! + s1) | 0;
+    }
+    let [a, b, c, d, e, f, g, hh] = [h[0]!, h[1]!, h[2]!, h[3]!, h[4]!, h[5]!, h[6]!, h[7]!];
+    for (let i = 0; i < 64; i++) {
+      const t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K256[i]! + w[i]!) | 0;
+      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      hh = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    h[0] = (h[0]! + a) | 0; h[1] = (h[1]! + b) | 0; h[2] = (h[2]! + c) | 0; h[3] = (h[3]! + d) | 0;
+    h[4] = (h[4]! + e) | 0; h[5] = (h[5]! + f) | 0; h[6] = (h[6]! + g) | 0; h[7] = (h[7]! + hh) | 0;
+  }
+  const out = new Uint8Array(32);
+  const ov = new DataView(out.buffer);
+  h.forEach((v, i) => ov.setUint32(i * 4, v));
+  return out;
+}
+
+function hmacSha256Fallback(key: Uint8Array, msg: Uint8Array): Uint8Array {
+  const k = new Uint8Array(64);
+  k.set(key.length > 64 ? sha256Fallback(key) : key);
+  const inner = new Uint8Array(64 + msg.length);
+  const outer = new Uint8Array(64 + 32);
+  for (let i = 0; i < 64; i++) {
+    inner[i] = k[i]! ^ 0x36;
+    outer[i] = k[i]! ^ 0x5c;
+  }
+  inner.set(msg, 64);
+  outer.set(sha256Fallback(inner), 64);
+  return sha256Fallback(outer);
+}
+
+/** HMAC-SHA256 as hex — Web Crypto when present, else the pure-JS fallback. */
+async function hmacSha256Hex(key: string, msg: string): Promise<string> {
+  const enc = new TextEncoder();
+  const k = enc.encode(key);
+  const m = enc.encode(msg);
+  const subtle = globalThis.crypto?.subtle;
+  const mac = subtle
+    ? new Uint8Array(await subtle.sign('HMAC', await subtle.importKey('raw', k, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), m))
+    : hmacSha256Fallback(k, m);
+  return Array.from(mac, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Verified identify: the `userHash` for `identify(userId, { userHash })`.
+ * Compute it on YOUR server (it needs the secret key) and hand it to the page
+ * with the user id — `<AdaptiveRoot userId>` from `@sentientui/react/next`
+ * does both for you. Once a project sends verified identifies, only verified
+ * bindings receive server goals by `userId` and carry a user's portrait
+ * across devices: an unsigned identify is any browser's claim.
+ *
+ * The secret is derived from the secret key, so there is nothing new to
+ * configure: `HMAC(sk, 'sentient-identity-v1')`, then `v1.<exp>.` + HMAC(that,
+ * `${userId}.${exp}`) — the API stores the same derivation per server key.
+ * Valid for `ttlSeconds` (default 24 h, at most 7 days).
+ */
+export async function signUserId(
+  userId: string,
+  serverKey: string,
+  opts?: { ttlSeconds?: number; now?: number },
+): Promise<string> {
+  if (typeof window !== 'undefined') {
+    console.error('[SentientUI] signUserId is server-only: it needs the secret key. Compute the hash on your server and pass it to identify().');
+    return '';
+  }
+  // The expiry is signed in, so a hash read off a page stops verifying: sign
+  // per render (AdaptiveRoot does), not once per user. The API refuses more
+  // than 7 days.
+  // Clamped to the API's 7-day maximum: a longer TTL would yield a hash that
+  // is refused, i.e. an identify that silently stays unverified.
+  const exp = Math.floor((opts?.now ?? Date.now()) / 1000) + Math.min(opts?.ttlSeconds ?? 86_400, 7 * 86_400);
+  const secret = await hmacSha256Hex(serverKey, 'sentient-identity-v1');
+  return `v1.${exp}.${await hmacSha256Hex(secret, `${userId}.${exp}`)}`;
+}
+
 const DEFAULT_GOAL_API_BASE = 'https://api.sentient-ui.com/v1';
 const DEFAULT_GOAL_TIMEOUT_MS = 5000;
 
@@ -550,7 +653,13 @@ export type TrackServerGoalOptions = {
   /** The visitor's session id: `readSessionCookie(cookies, apiKey)` in the same
    *  request, or the id you stored from `client.getVisitorId()`. Null/empty
    *  means nobody to credit: nothing is sent. */
-  sessionId: string | null | undefined;
+  sessionId?: string | null;
+  /** Your own user id, as passed to `client.identify()` in the browser — use it
+   *  when the backend never sees our visitor id (a webhook, a job, a signup
+   *  handled on another host). The API credits that user's most recently seen
+   *  visit in the project; with no such visit nothing is recorded and this
+   *  resolves 'skipped_no_visitor'. Ignored when `sessionId` is given. */
+  userId?: string | null;
   /** Goal name, as defined in your project (e.g. 'purchase'). */
   name: string;
   /** Your own id for this conversion (order id, Stripe event id, user id).
@@ -586,7 +695,8 @@ export async function trackServerGoal(
     console.error('[SentientUI] trackServerGoal is server-only: the secret key was not sent. Call it from a route handler, server action or webhook.');
     return 'failed';
   }
-  if (!opts.sessionId) return 'skipped_no_visitor';
+  const userId = opts.sessionId ? null : (opts.userId || null);
+  if (!opts.sessionId && !userId) return 'skipped_no_visitor';
   // The id is derived from `${sessionId}:${name}:${dedupeKey}`, so a ':' in the
   // name would let ('a:b','c') and ('a','b:c') collide on one goal id and
   // silently merge two different conversions. Goal names never need one;
@@ -617,7 +727,17 @@ export async function trackServerGoal(
     // The session id is an unguessable per-project visitor key, so the id is
     // now unique per tenant. Retry dedupe does not depend on it alone: the
     // dedupeKey also rides as externalId (unique per project + goal name).
-    const goalId = await uuidV5(`${opts.sessionId}:${opts.name}:${opts.dedupeKey}`, SERVER_GOAL_NAMESPACE);
+    // A user id is NOT unguessable or unique across tenants ("42" exists in
+    // every customer's database), so the userId path keys the hash on the
+    // secret key too — per-project and never guessable, the property the
+    // session id gave the hash above. Rotating the key changes the id; retry
+    // dedupe still holds through externalId.
+    const goalId = await uuidV5(
+      userId === null
+        ? `${opts.sessionId}:${opts.name}:${opts.dedupeKey}`
+        : `user:${opts.serverKey}:${userId}:${opts.name}:${opts.dedupeKey}`,
+      SERVER_GOAL_NAMESPACE,
+    );
     // Raced as well as aborted: a fetch that ignores its signal must still
     // not hold the caller (a webhook handler) past the timeout.
     const res = await Promise.race([
@@ -625,7 +745,7 @@ export async function trackServerGoal(
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${opts.serverKey}` },
         body: JSON.stringify({
-          sessionId: opts.sessionId,
+          ...(userId === null ? { sessionId: opts.sessionId } : { userId }),
           name: opts.name,
           goalId,
           externalId: opts.dedupeKey,
@@ -637,7 +757,18 @@ export async function trackServerGoal(
       }),
       timedOut,
     ]);
-    return res.ok ? 'recorded' : 'failed';
+    if (res.ok) return 'recorded';
+    // 404 visitor_not_found: no visit carries that user id (never identified,
+    // or erased) — nobody to credit, the same outcome as no sessionId.
+    if (userId !== null && res.status === 404) {
+      // The silent version of this was the whole debugging experience of a
+      // missing identify: the call "worked" and no conversion ever appeared.
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn(`[SentientUI] trackServerGoal: no visit is linked to userId "${userId}" yet, so "${opts.name}" was not recorded. Identify the visitor in the browser first (<AdaptiveRoot userId>, or identify(userId, { userHash })) — once a project signs its identifies, only signed visits count.`);
+      }
+      return 'skipped_no_visitor';
+    }
+    return 'failed';
   } catch {
     return 'failed';
   } finally {

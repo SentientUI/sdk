@@ -1,5 +1,29 @@
 # @sentientui/react
 
+## 0.41.1
+
+### Patch Changes
+
+- Updated dependencies [f174ae8]
+  - @sentientui/core@0.40.1
+
+## 0.41.0
+
+### Minor Changes
+
+- 591d714: A `weighted_composite` goal is now a funnel. Without a `funnel` prop it declares its own funnel, `<componentId>-steps`, so it shows on Goals → Funnels and is credited the furthest step a visit reached (finishing earns full credit), instead of the sum of its step weights. Steps are cleaned up before they are declared so the server always accepts them: weights are clamped to 0–1; repeated or invalid step names are skipped; at most 12 steps are kept; and steps are ordered by weight, so the highest-weight step is the funnel's completion (composite steps were never ordered). Dev builds warn when any of that happens. `<AdaptiveText>` composites declare their funnel too. A one-step composite is unchanged.
+- a231a56: One visitor across your site's own subdomains. The visitor cookie (`_snt_uid_<key>`) is now written on your site's registrable domain, found automatically (`example.com` for a page on `app.example.com`), so a marketing site and its app running the same project key count one visitor and one journey, and a goal fired in the app credits the landing page that earned it. Browsers refuse public suffixes such as `vercel.app`, so the id never reaches another site. If a host already had its own id, the shared one wins and the host's copy is removed. Pass `cookieDomain: false` (`<AdaptiveProvider cookieDomain={false}>`) to keep the old host-only cookie, or a domain to choose one. Forget-me clears the shared copy too. A visit that moves between your subdomains is no longer recorded as a referral.
+
+  `trackServerGoal({ userId })`: record a server-side conversion by your own user id (the one you pass to `identify()`) instead of our visitor id. It needs the secret key, credits that user's most recent visit, and resolves `'skipped_no_visitor'` when no visit carries the id.
+
+- 4dd1e07: Verified identify. `identify(userId, { userHash })` takes a hash your server signs with `signUserId(userId, secretKey)` from `@sentientui/core/server`. On Next.js, `<AdaptiveRoot userId={user?.id}>` signs it for you with `SENTIENT_SECRET_KEY` and identifies the visitor; `<AdaptiveProvider identity={{ userId, userHash }}>` does the same from any React setup. The signing secret is derived from your secret key, so there is nothing new to configure. Once a project sends a signed identify, server goals by `userId` only reach signed visits, and a user's profile only carries across their signed visits, so a visitor can no longer claim to be one of your users.
+
+### Patch Changes
+
+- Updated dependencies [a231a56]
+- Updated dependencies [4dd1e07]
+  - @sentientui/core@0.40.0
+
 ## 0.40.1
 
 ### Patch Changes

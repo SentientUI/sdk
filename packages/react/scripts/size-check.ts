@@ -63,7 +63,14 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // `registrySlots` belongs to the same work but lives in `./next`, which is
     // rebaselined below; it adds nothing here. Measured 20493 against the
     // 19712 limit.
-    limit: 19_712 + 1_192,
+    //
+    // +256 (2026-10-27, funnel-unification + cross-host identity branch):
+    // weighted composites declare themselves as funnels (compositeFunnelId +
+    // step sanitizing, which keeps a rejected declaration from silently
+    // falling back to the summed reward), the `cookieDomain` passthrough, and
+    // the `identity` prop that sends a verified identify once per client.
+    // Capabilities, not regressions. Measured 20959.
+    limit: 19_712 + 1_192 + 256,
   },
   {
     name: '@sentientui/react/server',

@@ -51,7 +51,9 @@
     declares the component serves that funnel; the optimizer credits it on journey progress
     (small credit per step reached, full or revenue-scaled credit at completion).
   - With a weighted_composite goal, the funnel prop also declares the funnel's ordered steps
-    server-side (a code-first funnel appears in the dashboard). Funnel ids are stable slugs —
+    server-side (a code-first funnel appears in the dashboard). A weighted_composite WITHOUT a
+    funnel prop is still a funnel: it declares "<componentId>-steps" and is credited the furthest
+    step reached, never the sum of its step weights. Funnel ids are stable slugs —
     use the exact id from the dashboard/chat/list_funnels. Human-edited funnels are never
     overwritten by code declarations.
 

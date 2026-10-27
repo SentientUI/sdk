@@ -129,10 +129,11 @@ export function useAdaptiveTokens(
     trackExposure(client, apiKey, id, arm);
   }, [client, apiKey, id, arm, source]);
 
-  // Funnel membership declaration — same override gate as the exposure.
+  // Funnel membership declaration — same override gate as the exposure. A
+  // weighted composite with no `funnel` declares its own (compositeFunnelId).
   const funnel = opts?.funnel;
   useEffect(() => {
-    if (!client || !funnel || source === 'override') return;
+    if (!client || source === 'override') return;
     maybeDeclareFunnel(client, apiKey, id, funnel, normalizeGoal(opts?.goal ?? 'click'));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, apiKey, id, funnel, goalKey, source]);
