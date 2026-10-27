@@ -1,5 +1,11 @@
 # @sentientui/snippet
 
+## 0.34.1
+
+### Patch Changes
+
+- e61fb2b: Smaller always-on bundle: the "couldn't load the editor" notice (shown only to site operators) uses simpler styling, making room for the shared visitor cookie within the snippet's size budget.
+
 ## 0.34.0
 
 ### Minor Changes

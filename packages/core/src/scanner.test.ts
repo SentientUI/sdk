@@ -203,8 +203,13 @@ describe('createDOMScanner', () => {
     const el = document.createElement('section');
     el.setAttribute('data-sentient-id', 'late');
     document.querySelector('main')!.appendChild(el);
-    await new Promise((r) => setTimeout(r, OBSERVE_BATCH_MS + 10));
-    expect(events.flatMap((e) => e.nodes).find((n) => n.componentId === 'late')?.semanticType).toBe('faq');
+    // Polled, not a fixed OBSERVE_BATCH_MS + 10 ms sleep: the debounced batch
+    // missed that 10 ms margin on a loaded CI runner (2026-10-27) and the test
+    // failed with no change anywhere near the scanner.
+    await vi.waitFor(
+      () => expect(events.flatMap((e) => e.nodes).find((n) => n.componentId === 'late')?.semanticType).toBe('faq'),
+      { timeout: OBSERVE_BATCH_MS + 2000, interval: 20 },
+    );
     scanner.destroy();
   });
 

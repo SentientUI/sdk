@@ -745,12 +745,12 @@ function showEditorLoadNotice(): void {
     const box = document.createElement('div');
     box.id = EDITOR_LOAD_NOTICE_ID;
     box.textContent = 'Couldn’t load the editor — check your connection and reopen it from your dashboard.';
-    // One declaration string (not a style object): this path is operator-only
-    // and its bytes ride every visitor's bundle (the preview banner that
-    // shared the old style object moved to preview.global.js).
-    box.style.cssText =
-      'position:fixed;bottom:16px;right:16px;z-index:2147483647;max-width:320px;padding:14px 16px;border-radius:14px;' +
-      'background:#111827;color:#fff;font:13px/1.45 system-ui,sans-serif;border:1px solid rgba(245,158,11,.6);cursor:pointer';
+    // One short declaration string: this path is operator-only and its bytes
+    // ride every visitor's bundle. Trimmed to the essentials (2026-10-27) to
+    // pay for the shared visitor cookie under the always-on budget, which is
+    // not raised (size-check.ts) — the cosmetics (radius, border, width cap)
+    // were the cheapest bytes in the bundle.
+    box.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:2147483647;padding:12px;background:#111;color:#fff;font:13px system-ui';
     box.onclick = () => box.remove();
     (document.body ?? document.documentElement).appendChild(box);
     setTimeout(() => box.remove(), 10000);
