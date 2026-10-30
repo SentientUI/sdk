@@ -1,7 +1,8 @@
+import type { GoalName } from './goal-names.js';
 import { useEffect, useRef } from 'react';
 import type { ComponentGoalOptions } from '@sentientui/core';
 import { useSentient } from './provider.js';
-import { useAdaptiveGoal } from './use-adaptive-goal.js';
+import { goalOptionsOf, useAdaptiveGoal } from './use-adaptive-goal.js';
 
 export interface PageGoalOptions extends ComponentGoalOptions {
   /**
@@ -46,7 +47,7 @@ export interface PageGoalOptions extends ComponentGoalOptions {
  * // Session-level only — no component to attribute it to.
  * usePageGoal('docs_view');
  */
-export function usePageGoal(goalName: string, opts: PageGoalOptions = {}): void {
+export function usePageGoal(goalName: GoalName, opts: PageGoalOptions = {}): void {
   const { componentId, ...goalOpts } = opts;
   const client = useSentient();
   // Called unconditionally (rules of hooks); only used when componentId is set.
@@ -68,18 +69,10 @@ export function usePageGoal(goalName: string, opts: PageGoalOptions = {}): void 
     // when the tracking client arrives.
     if (!client || fired.current || client.gated) return;
     fired.current = true;
-    const { metadata, reward, value, currency, externalId } = optsRef.current;
     if (componentId) {
       fireComponentGoal(goalName, optsRef.current);
       return;
     }
-    client.goal(goalName, {
-      metadata: metadata ?? {},
-      weight: reward ?? 1.0,
-      stepIndex: 0,
-      ...(value !== undefined ? { value } : {}),
-      ...(currency !== undefined ? { currency } : {}),
-      ...(externalId !== undefined ? { externalId } : {}),
-    });
+    client.goal(goalName, goalOptionsOf(optsRef.current));
   }, [client, componentId, goalName, fireComponentGoal]);
 }

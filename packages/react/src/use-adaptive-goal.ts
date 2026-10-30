@@ -1,5 +1,6 @@
+import type { GoalName } from './goal-names.js';
 import { useCallback, useRef } from 'react';
-import type { ComponentGoalOptions } from '@sentientui/core';
+import type { ComponentGoalOptions, GoalOptions } from '@sentientui/core';
 import { useSentient } from './provider.js';
 import { getDevOverride } from './dev-override.js';
 
@@ -17,7 +18,24 @@ export interface FireGoalOptions extends ComponentGoalOptions {
   once?: boolean;
 }
 
-export type FireGoal = (goalType: string, opts?: FireGoalOptions) => void;
+export type FireGoal = (goalType: GoalName, opts?: FireGoalOptions) => void;
+
+/**
+ * The session goal record's options, from a conversion's options. One builder
+ * for every hook that records a goal (this one, usePageGoal, useGoal): each
+ * built the same object inline, and the React bundle has a byte budget.
+ * Revenue fields are passed only when set, so a valueless call stays valueless.
+ */
+export function goalOptionsOf(opts?: ComponentGoalOptions): GoalOptions {
+  return {
+    metadata: opts?.metadata ?? {},
+    weight: opts?.reward ?? 1.0,
+    stepIndex: 0,
+    ...(opts?.value !== undefined ? { value: opts.value } : {}),
+    ...(opts?.currency !== undefined ? { currency: opts.currency } : {}),
+    ...(opts?.externalId !== undefined ? { externalId: opts.externalId } : {}),
+  };
+}
 
 /**
  * Returns a `fireGoal(goalType, opts?)` callback that records a conversion
@@ -66,14 +84,7 @@ export function useAdaptiveGoal(componentId: string): FireGoal {
       // session goal funnel. Revenue fields ride on both writes so read-time
       // dedup never picks a valueless row (spec §5).
       client?.componentGoal(componentId, goalType, opts);
-      client?.goal(goalType, {
-        metadata: opts?.metadata ?? {},
-        weight: opts?.reward ?? 1.0,
-        stepIndex: 0,
-        ...(opts?.value !== undefined ? { value: opts.value } : {}),
-        ...(opts?.currency !== undefined ? { currency: opts.currency } : {}),
-        ...(opts?.externalId !== undefined ? { externalId: opts.externalId } : {}),
-      });
+      client?.goal(goalType, goalOptionsOf(opts));
     },
     [client, componentId],
   );

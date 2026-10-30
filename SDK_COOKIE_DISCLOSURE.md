@@ -24,7 +24,7 @@ projects on one domain never share a visitor.
 
 | Name | Purpose | Duration | Attributes |
 |---|---|---|---|
-| `_snt_uid_<key>` | Pseudonymous visitor ID (random UUID), so decisions and conversions from one browser join up across visits — and across your site's own subdomains | 365 days | First-party, `SameSite=Lax` (sent on a top-level navigation into your site, never on another site's subresource or POST requests), `Path=/`, `Secure` on https pages, set from JavaScript (not `HttpOnly`). `Domain=` your site's registrable domain (see below) |
+| `_snt_uid_<key>` | Pseudonymous visitor ID (random UUID), so decisions and conversions from one browser join up across visits — and across your site's own subdomains | 365 days from the last visit | First-party, `SameSite=Lax` (sent on a top-level navigation into your site, never on another site's subresource or POST requests), `Path=/`, `Secure` on https pages, set from JavaScript (not `HttpOnly`). `Domain=` your site's registrable domain (see below) |
 | `_snt_uid_<key>_probe` | The value `1`, written once to test whether cookies can be stored at all | 1 second | Same, without `Domain=` |
 | `_snt_uid_<key>_dom` | The value `1`, written once per page load to find the domain the visitor ID can be shared on, and deleted at once | 10 seconds at most | Same, on each parent domain tried |
 
@@ -79,12 +79,16 @@ write it.
 ## What is sent to SentientUI
 
 When tracking is allowed, the SDK sends the visitor ID above, the page path,
-referrer, UTM parameters, device class, the versions shown, per-section dwell
-and scroll, the conversions you define, and per-visit interaction statistics
-(counts and timing of pointer, scroll and key events, and whether graphics are
-hardware- or software-rendered — used to tell people from bots). It never sends
-what was typed, form contents, or page text; page text is included only if you
-turn on `captureDomText`. Retention and sub-processors are in the
+the referring domain, UTM parameters, device class, the versions shown,
+per-section dwell and scroll, the conversions you define, and per-visit
+interaction statistics (counts and timing of pointer, scroll and key events,
+viewport size, and whether graphics are hardware- or software-rendered — used
+to tell people from bots). It never sends what was typed or form contents.
+Page text is limited: each section's heading (up to 160 characters) is sent so
+sections can be named, and an `<AdaptiveSlot>` reports its rendered text (up to
+400 characters) to record your original version — turn that off with
+`reportBaselineText={false}`. Fuller page text is sent only if you turn on
+`captureDomText`. Retention and sub-processors are in the
 [Privacy Policy](https://sentient-ui.com/privacy) and the
 [DPA](https://sentient-ui.com/dpa).
 

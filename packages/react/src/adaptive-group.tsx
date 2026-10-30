@@ -1,6 +1,7 @@
 // `type JSX` from react, not the global namespace removed in @types/react@19
 // (peers allow react >=18) — see adaptive-text.tsx.
 import { Children, isValidElement, useEffect, useMemo, useRef, type JSX, type ReactNode } from 'react';
+import type { GoalName } from './goal-names.js';
 import type { SlotDeclInput } from '@sentientui/core';
 import { useAdaptiveApiKey, useSentient } from './provider.js';
 import { useSlotResult } from './use-slot-result.js';
@@ -23,7 +24,7 @@ export type AdaptiveGroupProps = {
   /** Explicit baseline arrangement id (defaults to the first declared). */
   baseline?: string;
   /** Optional slot-scoped goal — credited via componentGoal(group id). */
-  goal?: string | GoalConfig;
+  goal?: GoalName | GoalConfig;
   /** Funnel this group serves (stable funnel id, e.g. "checkout") — same
    *  declaration semantics as <Adaptive funnel="...">. */
   funnel?: string;

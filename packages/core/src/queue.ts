@@ -17,6 +17,10 @@ export type EventType =
   // and never stores it in raw_events. Listed here so callers can express it
   // without casting through the track() signature.
   | 'funnel_declared'
+  // A goal DECLARATION (React `useGoal`, the snippet's `primaryGoal`): the
+  // server creates the goal so it shows at 0 before it first fires, and with
+  // `primary: true` makes it the main goal. Never stored in raw_events.
+  | 'goal_declared'
   // One per page load and per SPA route change, so a visit's journey through the
   // site is reconstructable. Carries `path` and nothing else.
   | 'pageview'

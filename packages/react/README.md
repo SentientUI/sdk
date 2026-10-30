@@ -310,6 +310,7 @@ One canonical path per situation — the others are for the cases these can't re
 
 | You want to record… | Use | Credits |
 |---|---|---|
+| your main goal, or any conversion you record yourself (a signup, a purchase) | `useGoal(name, { primary?, componentId? })` | the session, or that component's version |
 | a click, submit or scroll inside an adaptive region | the `goal` prop on `<Adaptive>` | the version that region showed |
 | a visitor reaching a page or route (pricing, checkout) | `usePageGoal(name, { componentId? })` | that component's version, or the session |
 | an event you fire yourself, tied to a region (a phone call, a custom widget) | `useAdaptiveGoal(componentId)` | the version that region showed |
@@ -536,6 +537,41 @@ The served variant is resolved from the SDK's assignment cache (the same one `<A
 
 `opts.once` records the goal at most once per mounted component, however many times you call it — use it for conversions that are a *state* rather than an action ("reached step 3", an effect that may re-run). Leave it off for genuine repeat actions: each click of "add to cart" is its own conversion.
  `opts` accepts `reward` (0–1, default 1) and `metadata`. This replaces hand-rolled helpers that call `client.track({ eventType: 'goal_achieved', componentId, variantId, … })` — you no longer need to pass or track the variant yourself.
+
+### `useGoal(name, opts?)`
+
+Declares a goal where it happens and returns the function that records it. Declaring is what makes the goal show up in the dashboard straight away — at an honest 0, before anyone has completed it.
+
+```tsx
+'use client';
+import { useGoal } from '@sentientui/react';
+
+export function SignupForm() {
+  const signup = useGoal('signup', { primary: true }); // your main goal
+  return <form onSubmit={() => signup()}>…</form>;
+}
+
+const purchase = useGoal('purchase', { componentId: 'hero_cta' });
+purchase({ value: order.total, externalId: order.id, once: true });
+```
+
+- **`primary: true`** makes it the project's main goal: every component that doesn't name a goal of its own learns from it, and results are measured on it. Mark one goal; a second `primary` on the same page is ignored with a console warning.
+- **When a change takes effect.** The first main goal is set by the first page load that declares it — localhost included. A *different* main goal from code takes over once real visitors on a few different networks have loaded the new version (the public key is in your page source, so one request can't change it). Local, LAN, tunnel and preview-deploy hosts never replace an existing main goal. A main goal picked in the dashboard sticks until your code names a different one. Every change is in the project's activity log.
+- **`componentId`** also credits the version currently served for that component, like `useAdaptiveGoal`.
+- The returned function takes the same per-conversion options as `fireGoal`: `value`, `currency`, `externalId`, `metadata`, `once`.
+
+#### Typed goal names
+
+Declare your goal ids once and every goal name the SDK takes — `useGoal`, `usePageGoal`, `useAdaptiveGoal`'s fire function, the `goal` prop — autocompletes and rejects typos. A misspelled goal isn't a runtime error: it quietly records a goal of its own, and a misspelled main goal reads 0% forever.
+
+```ts
+// anywhere in your app, e.g. sentient.d.ts
+declare module '@sentientui/react' {
+  interface Register { goal: 'signup' | 'viewed_pricing' | 'purchase' }
+}
+```
+
+Without it, any string works as before.
 
 ### `usePageGoal(goalName, opts?)`
 

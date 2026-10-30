@@ -1,3 +1,4 @@
+import type { GoalName } from './goal-names.js';
 import { useEffect, useMemo, useRef } from 'react';
 import type { SlotDeclInput } from '@sentientui/core';
 import { validateSlotDecl } from '@sentientui/policy';
@@ -16,7 +17,7 @@ import {
 } from './adaptive-shared.js';
 
 export type UseAdaptiveTokensOptions = {
-  goal?: string | GoalConfig;
+  goal?: GoalName | GoalConfig;
   /** Funnel this slot serves (stable funnel id, e.g. "checkout") — same
    *  declaration semantics as <Adaptive funnel="...">. */
   funnel?: string;

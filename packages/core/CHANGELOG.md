@@ -1,5 +1,11 @@
 # @sentientui/core
 
+## 0.40.2
+
+### Patch Changes
+
+- 4f9df33: `useGoal(name, { primary?, componentId? })`: declare a goal where it happens and get the function that records it. A declared goal shows up in the dashboard at once, at 0, before anyone completes it; `primary: true` makes it the project's main goal. The first main goal is set by the first page load that declares it (localhost included); a different one from code takes over once real visitors on a few different networks have loaded the new version, and a main goal picked in the dashboard sticks until the code names a new one. Core adds the `goal_declared` event type. Goal ids can be typed: augment `Register` (`declare module '@sentientui/react' { interface Register { goal: 'signup' | 'purchase' } }`) and every goal name the SDK takes autocompletes and rejects typos; without it any string works as before.
+
 ## 0.40.1
 
 ### Patch Changes

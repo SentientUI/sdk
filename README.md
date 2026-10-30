@@ -1,7 +1,8 @@
 # SentientUI SDKs
 
 Open source client SDKs for [**SentientUI**](https://sentient-ui.com) — an adaptive UI
-personalization platform. **Your site adapts to each kind of visitor — and shows you the lift against your original.**
+platform. **Let AI improve your site — and prove it worked.** Every version is measured against
+visitors kept on your original, with bots and AI agents kept out of the count.
 
 These packages are the client side of SentientUI. They observe behavior, request decisions,
 and render learned variants. The optimizer, persona clustering, and management API are hosted;

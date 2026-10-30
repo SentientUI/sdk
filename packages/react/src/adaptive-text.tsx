@@ -4,6 +4,7 @@
 // removed the global JSX while the peer range allows react >=18, so a bare
 // `JSX.*` in the public d.ts fails to resolve for React 19 consumers.
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ElementType, type JSX } from 'react';
+import type { GoalName } from './goal-names.js';
 import type { AssignResult } from '@sentientui/core';
 import { useSentient, useAdaptiveApiKey, useOnAssignment, useSessionSegment } from './provider.js';
 import { attachGoalListeners, goalValueOf, isDevBuild, maybeDeclareFunnel, normalizeGoal, type GoalConfig } from './adaptive-shared.js';
@@ -22,7 +23,7 @@ export type AdaptiveTextProps = {
    * learns. Provide a goal (a name string or a GoalConfig) to make the optimizer
    * attribute conversions to the winning wording, exactly like `<Adaptive>`.
    */
-  goal?: string | GoalConfig;
+  goal?: GoalName | GoalConfig;
 };
 
 /**

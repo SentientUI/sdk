@@ -3,6 +3,7 @@
 // `type JSX` from react, not the global namespace removed in @types/react@19
 // (peers allow react >=18) — see adaptive-text.tsx.
 import { memo, useCallback, useEffect, useState, type JSX, type ReactNode, type Ref } from 'react';
+import type { GoalName } from './goal-names.js';
 import { useVariantComponent, type MicroSignalGoals } from './use-variant-component.js';
 import { AdaptiveSlot, type AdaptiveSlotProps } from './adaptive-slot.js';
 import { useInitialUnified, useSentient } from './provider.js';
@@ -30,7 +31,7 @@ export type AdaptiveVariantsProps = {
    *  versions compete in one experiment (spec 2026-09-23 §7). Without
    *  children, `variants` keeps the variants-only experiment it always had. */
   children?: ReactNode;
-  goal: string | GoalConfig;
+  goal: GoalName | GoalConfig;
   /**
    * Funnel this component serves (stable funnel id, e.g. "checkout" —
    * shown on the dashboard's Funnels tab). Declares membership to the server;

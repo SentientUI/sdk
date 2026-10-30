@@ -40,6 +40,10 @@ export type { FireGoal } from './use-adaptive-goal.js';
 export { usePageGoal } from './use-page-goal.js';
 export type { PageGoalOptions } from './use-page-goal.js';
 
+export type { Register, GoalName } from './goal-names.js';
+export { useGoal } from './use-goal.js';
+export type { UseGoalOptions, FireNamedGoal } from './use-goal.js';
+
 export { SentientPersonaScript } from './persona-script.js';
 export type { SentientPersonaScriptProps } from './persona-script.js';
 

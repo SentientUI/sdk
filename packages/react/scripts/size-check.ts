@@ -70,7 +70,15 @@ const BUNDLES: { name: string; entry: string; limit: number }[] = [
     // falling back to the summed reward), the `cookieDomain` passthrough, and
     // the `identity` prop that sends a verified identify once per client.
     // Capabilities, not regressions. Measured 20959.
-    limit: 19_712 + 1_192 + 256,
+    //
+    // +216 (2026-10-28, useGoal; operator OK): `useGoal(name, { primary,
+    // componentId })` — the per-page declaration (goal_declared, so a goal
+    // shows at 0 before it fires), the first-primary-wins guard with its dev
+    // warning, and the session/component fire paths. Paid down first by
+    // sharing one goal-options builder across useAdaptiveGoal, usePageGoal and
+    // useGoal (-150). Typed goal names (Register/GoalName) are types only.
+    // Measured 21227 from 21000.
+    limit: 19_712 + 1_192 + 256 + 216,
   },
   {
     name: '@sentientui/react/server',

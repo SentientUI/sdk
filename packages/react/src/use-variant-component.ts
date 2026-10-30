@@ -1,3 +1,4 @@
+import type { GoalName } from './goal-names.js';
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { attachMicroSignalDetectors, type MicroSignalType, type SentientClient } from '@sentientui/core';
 import { useAdaptiveApiKey, useSentient } from './provider.js';
@@ -14,7 +15,7 @@ import {
 } from './adaptive-shared.js';
 
 /** Maps a detected micro-signal to a named session goal (`client.goal`). */
-export type MicroSignalGoalConfig = string | { name: string; weight?: number; stepIndex?: number };
+export type MicroSignalGoalConfig = GoalName | { name: GoalName; weight?: number; stepIndex?: number };
 export type MicroSignalGoals = Partial<Record<MicroSignalType, MicroSignalGoalConfig>>;
 
 export type VariantComponentOptions = {

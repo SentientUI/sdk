@@ -1,3 +1,4 @@
+import type { GoalName } from './goal-names.js';
 import type { SentientClient } from '@sentientui/core';
 
 declare const process: { env?: { NODE_ENV?: string } } | undefined;
@@ -26,7 +27,7 @@ export type ScrollDepthGoal = { type: 'scroll_depth'; threshold: number; value?:
 export type ClickGoal = { type: 'click'; selector?: string; value?: number };
 export type FormSubmitGoal = { type: 'form_submit'; value?: number };
 export type CompositeGoal = { type: 'composite'; all: GoalConfig[] };
-export type WeightedStep = { goal: GoalConfig; name: string; weight: number };
+export type WeightedStep = { goal: GoalConfig; name: GoalName; weight: number };
 export type WeightedCompositeGoal = { type: 'weighted_composite'; steps: WeightedStep[] };
 export type GoalConfig = ScrollDepthGoal | ClickGoal | FormSubmitGoal | CompositeGoal | WeightedCompositeGoal;
 

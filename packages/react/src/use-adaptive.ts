@@ -1,3 +1,4 @@
+import type { GoalName } from './goal-names.js';
 import { useCallback, useEffect, useMemo } from 'react';
 import type { ComponentGoalOptions } from '@sentientui/core';
 import { isDevBuild, type GoalConfig } from './adaptive-shared.js';
@@ -41,7 +42,7 @@ export function useAdaptive<T>(
   id: string,
   config: {
     variants: Record<string, T>;
-    goal: string | GoalConfig;
+    goal: GoalName | GoalConfig;
     /** Funnel this component serves (stable funnel id, e.g. "checkout") —
      *  same declaration semantics as <Adaptive funnel="...">. */
     funnel?: string;

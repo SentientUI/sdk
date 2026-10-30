@@ -1,4 +1,5 @@
 'use client';
+import type { GoalName } from './goal-names.js';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX, type ReactNode, type Ref } from 'react';
 import { attachMicroSignalDetectors, containsFormBlock, reveal, type RenderCaps, type SkeletonReport } from '@sentientui/core';
 import type { MicroSignalGoals } from './use-variant-component.js';
@@ -41,7 +42,7 @@ export type AdaptiveSlotProps = {
   onFormSubmit?: (values: Record<string, string>) => void;
   /** Optional goal attached to the container (click/scroll/composite), same
    *  shape as AdaptiveGroup's. Form arms fire their own submitGoal regardless. */
-  goal?: string | GoalConfig;
+  goal?: GoalName | GoalConfig;
   className?: string;
   /** Wrapper element. @default 'div' */
   as?: AdaptiveElement;
